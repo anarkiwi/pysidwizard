@@ -51,11 +51,11 @@ _INST_WF_TABLE_POS = 0x10
 
 
 def _our_pwtpos(v: Any) -> int:
-    """Convert our 0-relative pw_pos to SID-Wizard's instrument-base
-    byte offset: $10 + len(wf_table) + 1 (terminator) + pw_pos."""
+    """``pw_pos`` is already SID-Wizard's instrument-base byte offset
+    (absolute PWTPOS); just mask it to a byte."""
     if v.instrument is None:
         return 0
-    return (_INST_WF_TABLE_POS + len(v.instrument.wf_table) + 1 + v.pw_pos) & 0xFF
+    return v.pw_pos & 0xFF
 
 
 _PER_VOICE: dict[int, tuple[str, Callable[[Any], int]]] = {

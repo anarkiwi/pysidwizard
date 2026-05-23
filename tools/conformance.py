@@ -215,6 +215,8 @@ def seed_voice(
         v.instrument = player.swm.instruments[curins - 1]
         v.instrument_idx = curins
         v.octave_shift = v.instrument.octave_shift
+        # ARPSPED latched from the instrument at STRTSND.
+        v.arp_speed_reload = v.instrument.arp_speed
     else:
         # No instrument selected (e.g. voice in idle state). Predictions
         # for vars that require ins are unreliable; bail.
@@ -242,8 +244,9 @@ def seed_voice(
     wftpos = ghost_frame.get(addr(0x29, voice), INST_WF_TABLE_POS)
     v.wf_pos = max(0, wftpos - INST_WF_TABLE_POS)
     pw_table_start = INST_WF_TABLE_POS + len(v.instrument.wf_table) + 1
-    pwtpos = ghost_frame.get(addr(0x2A, voice), pw_table_start)
-    v.pw_pos = max(0, pwtpos - pw_table_start)
+    # PWTPOS is an ABSOLUTE instrument-base offset (see
+    # SWMPlayer._tick_pw_table); seed it directly.
+    v.pw_pos = ghost_frame.get(addr(0x2A, voice), pw_table_start)
 
     v.arp_speed_counter = ghost_frame.get(addr(0x2B, voice), 0)
 
@@ -334,8 +337,8 @@ def snapshot_voice(player: SWMPlayer, voice: int, tempo: int) -> Dict[int, int]:
 
     if v.instrument is not None:
         out[addr(0x29, voice)] = (INST_WF_TABLE_POS + v.wf_pos) & 0xFF
-        pw_table_start = INST_WF_TABLE_POS + len(v.instrument.wf_table) + 1
-        out[addr(0x2A, voice)] = (pw_table_start + v.pw_pos) & 0xFF
+        # pw_pos is already an absolute instrument-base offset.
+        out[addr(0x2A, voice)] = v.pw_pos & 0xFF
     else:
         out[addr(0x29, voice)] = 0
         out[addr(0x2A, voice)] = 0

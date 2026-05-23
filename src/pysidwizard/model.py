@@ -447,6 +447,26 @@ class Instrument:
     def name_str(self) -> str:
         return self.name.decode("latin-1").rstrip(" \x00")
 
+    def table_image(self) -> bytes:
+        """The instrument's contiguous after-header table memory:
+        ``wf_table + 0xFF + pw_table + 0xFF + filter_table``.
+
+        SID-Wizard's player addresses the WF / PW / filter tables by an
+        absolute offset from the instrument base (WFTPOS / PWTPOS /
+        FLTPOS), reset to each table's start only at STRTSND. Between
+        note triggers a position can therefore point into a *different*
+        table's bytes (e.g. a held PWTPOS landing in the WF region after
+        a bare instrument-select). Walking this single image with offsets
+        measured from :data:`INST_WF_TABLE_POS` reproduces that exactly.
+        """
+        return (
+            self.wf_table
+            + bytes([TABLE_END])
+            + self.pw_table
+            + bytes([TABLE_END])
+            + self.filter_table
+        )
+
     @staticmethod
     def _check_nibble(value: int, field_name: str) -> int:
         if not (0 <= value <= 0xF):
