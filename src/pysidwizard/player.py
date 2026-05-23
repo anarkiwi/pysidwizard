@@ -1136,9 +1136,22 @@ class SWMPlayer:
             # BPL check and reloads from ARPSPED.
             v.arp_speed_counter = 0xFF
             v.detune = 0
-            v.pw_sweep_count = 0
-            v.filt_sweep_count = 0
-            v.pw_kbd_track = 0
+            # PWEEPCNT / CWEPCNT / PKBDTRK are NOT cleared by STRTSND in
+            # player.asm: they're written only by their respective table
+            # walks (PWSWEEP / SEPWPOS / PWADVAN for PW; SETFILT row
+            # advance / BIGFX0B for CWEPCNT). They persist across note
+            # triggers with whatever the previous walk left them at.
+            # Clearing them here drifted the post-STRTSND walks.
+            #
+            # TODO: filt_sweep_count is per-voice here but asm CWEPCNT
+            # is a single global (player.asm:1761 ``cmp #selfmod``, no
+            # ,x). Works for the four reference tunes (single filter
+            # controller throughout) but diverges if the controller
+            # swaps mid-song. Related: SETFLTP gating below only makes
+            # this voice the controller when ft[0] in $80..$FE; asm
+            # establishes for any ft[0] != $00, $FF (sweep rows
+            # included). Both need fixing together to isolate the
+            # CWEPCNT bug via a synthetic SWM.
             # STRTSND's SETFLTP block (player.asm line 1553-1568) sets
             # FSWITCH (= our voice_in_filter) on the SAME tick: voice is
             # filtered if the new instrument's filter table starts with

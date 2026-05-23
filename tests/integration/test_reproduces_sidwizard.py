@@ -43,7 +43,7 @@ FIXTURES = REPO_ROOT / "tests" / "fixtures"
 # Number of PAL frames to capture from real SID-Wizard. 1500 matches
 # the committed ghost-CSV fixtures so the per-tune ghost seed picks
 # up the same row-0 state.
-REFERENCE_FRAMES = 1500
+REFERENCE_FRAMES = 6000
 
 # Use a non-default binmon port so concurrent agents driving their own
 # VICE containers on :6502 don't collide. Override via env if you have
