@@ -169,6 +169,9 @@ def _seed_voice(
         v.instrument = player.swm.instruments[curins - 1]
         v.instrument_idx = curins
         v.octave_shift = v.instrument.octave_shift
+        # ARPSPED is latched at STRTSND from the instrument's arp_speed;
+        # seed it so the WF tick's reload/multispeed flags are correct.
+        v.arp_speed_reload = v.instrument.arp_speed
     else:
         return False
 
@@ -188,8 +191,10 @@ def _seed_voice(
     wftpos = ghost_frame.get(_zp_addr(0x29, voice), INST_WF_TABLE_POS)
     v.wf_pos = max(0, wftpos - INST_WF_TABLE_POS)
     pw_table_start = INST_WF_TABLE_POS + len(v.instrument.wf_table) + 1
-    pwtpos = ghost_frame.get(_zp_addr(0x2A, voice), pw_table_start)
-    v.pw_pos = max(0, pwtpos - pw_table_start)
+    # PWTPOS is stored/walked as an ABSOLUTE offset from the instrument
+    # base (see SWMPlayer._tick_pw_table), so seed it directly without
+    # converting to a table-relative index.
+    v.pw_pos = ghost_frame.get(_zp_addr(0x2A, voice), pw_table_start)
 
     v.arp_speed_counter = ghost_frame.get(_zp_addr(0x2B, voice), 0)
 
@@ -311,7 +316,10 @@ def _seed_filter_globals(
     rel_pos = fltposi - filt_table_start
     if 0 <= rel_pos <= len(ins.filter_table):
         controller.filt_pos = rel_pos
-        controller.filt_sweep_count = cwepcnt
+    # NOTE: the ghost CWEPCNT value is intentionally NOT seeded.
+    # SWMPlayer.filter_sweep_count starts at 0 and the per-tick walk
+    # re-derives it; seeding it from frame 0 regresses conformance.
+    _ = cwepcnt
 
 
 def seed_player_for_cell_diff(

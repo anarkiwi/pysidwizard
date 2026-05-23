@@ -12,10 +12,16 @@ For each of the four reference tunes:
    register — proves pysidwizard reproduces what the real player
    would write.
 
+Each tune is verified for its *entire* playthrough length: songs that
+hit an ``End`` (flashitback, euphoria) are captured to their natural
+end; songs that loop forever (bronkosaurus, rain8580) are capped at
+``MAX_SONG_FRAMES``. See :func:`_song_length_frames`.
+
 This is the "every PR" enforceable-100%-reproduction gate. It's the
-slow test (~3 min wall time per tune including the tarball download):
-opt in with ``pytest -m integration tests/integration/``. CI runs it
-on every push + PR via ``.github/workflows/integration.yml``.
+slow test (several minutes' wall time per tune, scaling with song
+length plus the tarball download): opt in with
+``pytest -m integration tests/integration/``. CI runs it on every push
++ PR via ``.github/workflows/integration.yml``.
 
 Requirements:
 
@@ -34,16 +40,19 @@ from pathlib import Path
 
 import pytest
 
+from pysidwizard.player import SWMPlayer
+from pysidwizard.reader import read_swm
 from tests._diff_harness import diff_against_reference, load_reference_csv
 from tests._swm_cache import TUNE_NAMES, swm_path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURES = REPO_ROOT / "tests" / "fixtures"
 
-# Number of PAL frames to capture from real SID-Wizard. 1500 matches
-# the committed ghost-CSV fixtures so the per-tune ghost seed picks
-# up the same row-0 state.
-REFERENCE_FRAMES = 6000
+# Upper bound on the per-tune capture length. Songs that hit an ``End``
+# in their sequence (flashitback, euphoria) are captured for exactly
+# their playthrough length; songs that loop forever (bronkosaurus,
+# rain8580) are capped here. Override via env for a longer/shorter run.
+MAX_SONG_FRAMES = int(os.environ.get("SIDWIZARD_MAX_SONG_FRAMES", "20000"))
 
 # Use a non-default binmon port so concurrent agents driving their own
 # VICE containers on :6502 don't collide. Override via env if you have
@@ -63,6 +72,28 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not _docker_available(), reason="requires a reachable Docker daemon"),
 ]
+
+
+def _song_length_frames(swm_file: Path) -> int:
+    """Number of player frames for a full playthrough of ``swm_file``.
+
+    Runs pysidwizard's own player until it reports ``finished`` (the
+    sequence hit an ``End``), capped at :data:`MAX_SONG_FRAMES` for
+    songs that loop forever. The reference capture and the frame-by-
+    frame diff both run for this many frames, so the *entire* song is
+    verified rather than a fixed prefix.
+
+    Reference-CSV frame numbers map 1:1 to ``play_frame()`` calls (true
+    even for multispeed tunes like euphoria, whose IRQ-rate capture is
+    one CSV row group per player tick), so this count is directly usable
+    as sidwizard-driver's ``--frames`` argument.
+    """
+    player = SWMPlayer(read_swm(str(swm_file)))
+    frames = 0
+    while not player.finished and frames < MAX_SONG_FRAMES:
+        player.play_frame()
+        frames += 1
+    return frames
 
 
 def _run_capture(swm: Path, out_csv: Path, port: int, frames: int) -> None:
@@ -100,7 +131,8 @@ def test_pysidwizard_matches_fresh_reference(tune: str, tmp_path: Path) -> None:
     ``test_reference_progress_meter``)."""
     swm = swm_path(tune)
     fresh_ref = tmp_path / f"{tune}.reference.csv"
-    _run_capture(swm, fresh_ref, DEFAULT_PORT, REFERENCE_FRAMES)
+    frames = _song_length_frames(swm)
+    _run_capture(swm, fresh_ref, DEFAULT_PORT, frames)
 
     ghost_path = FIXTURES / f"{tune}.ghost.csv"
     assert ghost_path.exists(), f"missing ghost dump fixture {ghost_path}"
