@@ -18,9 +18,9 @@ jobs:
     name: lint (ruff + black)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -50,10 +50,10 @@ jobs:
             python-version: "3.12"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -71,7 +71,7 @@ jobs:
         # The tarball is ~9 MB; caching avoids hitting CSDB on every
         # test run. Keyed by the SHA-256 baked into sidwizard-driver's
         # fetch.py so a sidwizard-driver upgrade busts the cache.
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/sidwizard-driver
           key: sidwizard-1.94-with-sources-544e36aff3fe14b7
@@ -82,7 +82,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-xml
           path: coverage.xml
