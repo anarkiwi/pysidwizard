@@ -1,0 +1,601 @@
+"""Smoke tests for :mod:`pysidwizard.player`."""
+
+from __future__ import annotations
+
+import pytest
+
+from pysidwizard import (
+    End,
+    Instrument,
+    Pattern,
+    PlayPattern,
+    Row,
+    SWMFile,
+    Waveform,
+    straight_tempo,
+)
+from pysidwizard.player import (
+    NOTE_FREQ_HI,
+    NOTE_FREQ_LO,
+    SID_REG_BASE,
+    SWMPlayer,
+    main,
+)
+
+
+def _toy_swm() -> SWMFile:
+    """One pattern, three sequences, one instrument — enough to exercise
+    every per-frame code path."""
+    inst = Instrument(
+        name=b"TEST    ",
+        attack=0,
+        decay=0,
+        sustain=0xF,
+        release=0,
+        first_waveform=Waveform.PULSE | 0x01,  # pulse + gate
+        wf_table=bytes([0x41, 0x80, 0xFF]),  # one WF row: pulse+gate, NOP arp, no detune
+        pw_table=b"\x88\x00\x00",  # set PW to 0x800 then end-of-table
+        filter_table=b"",
+    )
+    pattern = Pattern(
+        rows=[
+            Row(note=49, instrument=1),  # middle C with instrument
+            Row(),  # NOP
+            Row(note=0x7E),  # gate-off
+            Row(note=53, instrument=1),  # different pitch
+        ],
+        length=4,
+    )
+    return SWMFile(
+        sequences=[[PlayPattern(1), End()]] * 3,
+        patterns=[pattern],
+        instruments=[inst],
+        subtune_tempos=[(straight_tempo(2), straight_tempo(2))],
+    )
+
+
+def test_freq_table_has_96_entries_and_matches_middle_c():
+    assert len(NOTE_FREQ_LO) == 96
+    assert len(NOTE_FREQ_HI) == 96
+    word = (NOTE_FREQ_HI[49] << 8) | NOTE_FREQ_LO[49]
+    # SID 985,248 Hz / 16,777,216 ~ middle C 261.63 Hz
+    hz = word * 985248 / 16777216
+    assert 260 < hz < 263
+
+
+def test_player_play_frame_returns_expected_register_window():
+    swm = _toy_swm()
+    p = SWMPlayer(swm)
+    # Skip past the HR test-bit frame; on that frame only AD/SR/CTRL/
+    # FREQ_HI are written (mirrors SID-Wizard's STRTSND which leaves
+    # PWLOGHO/PWHIGHO/FREQ_LO untouched until CNTPLY2 walks tables).
+    p.play_frame()
+    writes = p.play_frame()
+    # Steady-state emit (= post-HR, no new STRTSND): SID-Wizard's
+    # CNTPLY2 -> WRPULS + WRWFGHO writes FREQ_LO/HI + PW_LO/HI + CTRL
+    # per voice (5 regs × 3 voices = 15) plus the 4 global filter +
+    # volume registers ($D415..$D418) = 19. AD/SR are NOT in the
+    # steady-state path; they only emit on STRTSND-equivalent /
+    # HRGTOFF / SMALFX2-3/5-6 frames (gated on
+    # ``v.adsr_emit_required``).
+    assert len(writes) == 19
+    regs = {w[0] - SID_REG_BASE for w in writes}
+    expected = {0, 1, 2, 3, 4}  # voice 0: FREQ_LO, FREQ_HI, PW_LO, PW_HI, CTRL
+    expected |= {7, 8, 9, 10, 11}  # voice 1
+    expected |= {14, 15, 16, 17, 18}  # voice 2
+    expected |= {0x15, 0x16, 0x17, 0x18}  # globals
+    assert expected == regs
+
+
+def test_player_advances_notes_over_time():
+    swm = _toy_swm()
+    p = SWMPlayer(swm)
+    freq_hi_values = set()
+    for _ in range(64):
+        writes = p.play_frame()
+        for reg, val in writes:
+            if reg - SID_REG_BASE == 1:  # voice 0 freq hi
+                freq_hi_values.add(val)
+    assert len(freq_hi_values) > 1, "expected more than one pitch over time"
+
+
+def test_player_terminates_when_sequence_ends():
+    swm = _toy_swm()
+    p = SWMPlayer(swm)
+    # Pattern has 4 rows × tempo 2 = 8 frames; after that End() fires and
+    # ``finished`` flips on every voice. Give a comfortable margin.
+    for _ in range(60):
+        p.play_frame()
+        if p.finished:
+            break
+    assert p.finished
+
+
+@pytest.mark.parametrize(
+    "arp_byte,base_note,expected_pitch,expected_absolute",
+    [
+        # SID-Wizard player.asm NORMARP semantics
+        # (native/sources/include/player.asm:~1988):
+        #   $00..$7E  -> relative pitch UP   (note + arp)
+        #   $80       -> NOP (no change)
+        #   $81..$DF  -> absolute pitch (arp & 0x7F)
+        #   $E0..$FF  -> relative pitch down (arp - 0x100)
+        (0x00, 49, 49, False),  # rel-up 0 -> keep base note
+        (0x03, 49, 52, False),  # rel-up 3 -> minor third up
+        (0x7E, 49, 49 + 0x7E, False),  # max rel-up
+        (0x81, 49, 0x01, True),  # absolute pitch 1
+        (0xC4, 49, 0x44, True),  # absolute pitch 0x44 (flashitback BASS row)
+        (0xDF, 49, 0x5F, True),  # max absolute pitch
+        (0xE0, 49, 49 - 0x20, False),  # rel-down -32
+        (0xFF, 49, 48, False),  # rel-down -1
+    ],
+)
+def test_wf_arp_byte_interpretation(arp_byte, base_note, expected_pitch, expected_absolute):
+    """Pin down the WF-table arp byte semantics against player.asm.
+
+    Constructs a minimal SWM whose voice-0 instrument has a single WF
+    row ``[waveform, arp_byte, detune=0]``, runs one frame, then checks
+    the voice's ``wf_arp_pitch`` / ``wf_arp_absolute`` ended up where
+    the real player would have placed them. ``base_note`` is the
+    pattern row's pitch — relevant only as the "before arp" pitch the
+    relative variants add to.
+    """
+    inst = Instrument(
+        name=b"ARPTEST ",
+        sustain=0xF,
+        first_waveform=0x41,
+        wf_table=bytes([0x41, arp_byte, 0x00, 0xFF]),
+        pw_table=b"",
+        filter_table=b"",
+    )
+    # Pattern is row-0 trigger + several NOP rows so the voice stays on
+    # the same note long enough for HR to finish and the WF table to
+    # tick at least once.
+    pattern = Pattern(
+        rows=[Row(note=base_note, instrument=1), Row(), Row(), Row(), Row()],
+        length=5,
+    )
+    swm = SWMFile(
+        sequences=[[PlayPattern(1), End()]] * 3,
+        patterns=[pattern],
+        instruments=[inst],
+        subtune_tempos=[(straight_tempo(1), straight_tempo(1))],
+    )
+    p = SWMPlayer(swm)
+    # HR phase runs for HR_FRAMES (2) frames before the WF table ticks
+    # for the first time; advance through HR so the arp byte under test
+    # actually gets evaluated.
+    from pysidwizard.player import HR_FRAMES
+
+    for _ in range(HR_FRAMES + 1):
+        p.play_frame()
+    v = p.voices[0]
+    if expected_absolute:
+        assert v.wf_arp_absolute is True
+        assert v.wf_arp_pitch == expected_pitch
+    else:
+        assert v.wf_arp_absolute is False
+        # For relative arps, _compose_sid_writes adds wf_arp_pitch to v.note.
+        assert v.note + v.wf_arp_pitch == expected_pitch
+
+
+def test_filter_set_byte_unpacks_band_resonance_cutoff():
+    """A filter-table SET-mode row (byte0 >= $80) encodes:
+      bits 4-6 = filter band switches (LP/BP/HP -> $D418 mode bits)
+      bits 0-3 = resonance        (-> $D417 high nibble)
+      next byte = cutoff_hi       (-> $D416; cutoff_lo resets to 0)
+    Routing ($D417 low nibble) is composed from voice-active flags.
+
+    Test: voice 0 plays a filtered instrument; voices 1 & 2 play an
+    unfiltered instrument. With SET byte $94 (LP filter, resonance 4)
+    and cutoff_hi $20, we expect $D416=$20, $D417=$41 (res=$4 + only
+    voice 0 routing), $D418=$1F (LP + max vol)."""
+    from pysidwizard.player import SID_REG_BASE
+
+    filtered = Instrument(
+        name=b"FLTTEST ",
+        sustain=0xF,
+        first_waveform=0x41,
+        wf_table=bytes([0x41, 0x80, 0x00, 0xFF]),
+        filter_table=bytes([0x94, 0x20, 0x00, 0xFF]),
+    )
+    plain = Instrument(
+        name=b"PLAIN   ",
+        sustain=0xF,
+        first_waveform=0x41,
+        wf_table=bytes([0x41, 0x80, 0x00, 0xFF]),
+        filter_table=b"",  # no filter — voice should not route
+    )
+    pat_filt = Pattern(rows=[Row(note=49, instrument=1)] + [Row()] * 4, length=5)
+    pat_plain = Pattern(rows=[Row(note=49, instrument=2)] + [Row()] * 4, length=5)
+    swm = SWMFile(
+        sequences=[
+            [PlayPattern(1), End()],  # voice 0: filtered
+            [PlayPattern(2), End()],  # voice 1: plain
+            [PlayPattern(2), End()],  # voice 2: plain
+        ],
+        patterns=[pat_filt, pat_plain],
+        instruments=[filtered, plain],
+        subtune_tempos=[(straight_tempo(2), straight_tempo(2))],
+    )
+    from pysidwizard.player import HR_FRAMES
+
+    p = SWMPlayer(swm)
+    # The filter table only walks during post-HR frames; HR_FRAMES of
+    # test-bit playback come first.
+    for _ in range(HR_FRAMES):
+        p.play_frame()
+    writes = p.play_frame()
+    reg = {r - SID_REG_BASE: v for r, v in writes}
+    assert reg[0x15] == 0x00, f"cutoff_lo should reset to 0, got ${reg[0x15]:02X}"
+    assert reg[0x16] == 0x20, f"cutoff_hi should be $20, got ${reg[0x16]:02X}"
+    assert reg[0x17] == 0x41, f"$D417 should be $41 (res=$4, route=v0), got ${reg[0x17]:02X}"
+    assert reg[0x18] == 0x1F, f"$D418 should be $1F (LP + vol $F), got ${reg[0x18]:02X}"
+
+
+def test_parse_chord_starts_separates_chords_on_7e_and_7f():
+    """``$7E`` and ``$7F`` both terminate a chord and start the next one.
+    A trailing terminator at the very end of the table doesn't create a
+    phantom empty chord. Offsets are into the in-memory CHORDS table
+    which has a 1-byte dummy prefix (SWMconvert.c line 2039 sets
+    ``ChordIndex[1]=1``), so chord 1 starts at byte 1, not 0."""
+    from pysidwizard.player import _parse_chord_starts
+
+    # Three chords: [7,3,0], [7,4,0], [0,3,7,10]. Trailing $7E doesn't
+    # create chord 4. In-memory offsets: 1, 5, 9.
+    table = bytes([7, 3, 0, 0x7E, 7, 4, 0, 0x7E, 0, 3, 7, 10, 0x7E])
+    assert _parse_chord_starts(table) == [1, 5, 9]
+    # Mixed $7E / $7F separators (real captures use either).
+    table = bytes([0, 3, 7, 0x7F, 0, 5, 7, 0x7F])
+    assert _parse_chord_starts(table) == [1, 5]
+    # Empty table.
+    assert _parse_chord_starts(b"") == []
+
+
+def test_chord_table_cycles_pitches_with_loop_terminator():
+    """A ``$7F`` chord terminator restarts the chord; subsequent $7F
+    arp triggers should cycle pitches indefinitely (note + chord[0],
+    note + chord[1], ..., wrap)."""
+    # Chord 1: [3, 7, 12, $7F] — a major triad loop.
+    inst = Instrument(
+        name=b"CHORD1  ",
+        sustain=0xF,
+        first_waveform=0x41,
+        default_chord=1,
+        # WF table has ONE row that runs the chord every frame.
+        # Row: wf=$41, arp=$7F (chord trigger), detune=0, then jump back.
+        # Jump targets are absolute offsets within the instrument's
+        # memory image; the wf_table itself starts at $10, so "$10"
+        # means "jump back to wf_table[0]".
+        wf_table=bytes([0x41, 0x7F, 0x00, 0xFE, 0x10]),
+    )
+    pattern = Pattern(rows=[Row(note=49, instrument=1)] + [Row()] * 12, length=13)
+    from pysidwizard import SWMFile, straight_tempo
+
+    swm = SWMFile(
+        sequences=[[PlayPattern(1), End()]] * 3,
+        patterns=[pattern],
+        instruments=[inst],
+        chord_table=bytes([3, 7, 12, 0x7F]),
+        subtune_tempos=[(straight_tempo(1), straight_tempo(1))],
+    )
+    from pysidwizard.player import HR_FRAMES
+
+    p = SWMPlayer(swm)
+    # First note triggers HR for HR_FRAMES frames, then chord cycling
+    # begins: post-HR frame -> pitch 3, next -> pitch 7, next -> pitch 12,
+    # next -> $7F loops back to pitch 3, and so on.
+    pitches = []
+    for _ in range(HR_FRAMES + 8):
+        p.play_frame()
+        pitches.append(p.voices[0].wf_arp_pitch)
+    post_hr = pitches[HR_FRAMES:]
+    assert post_hr == [3, 7, 12, 3, 7, 12, 3, 7], f"got {post_hr}"
+
+
+def test_chord_table_return_terminator_resets_pos_and_signals_advance():
+    """A ``$7E`` chord byte is the 'return from chord to WFARP'
+    terminator. The chord-tick method should:
+      - return True (so the caller chains to the next WF row)
+      - reset chord_pos to the start of the current chord
+      - leave wf_arp_pitch unchanged
+
+    Tested by calling ``_tick_chord`` directly with a hand-built state
+    so we don't have to construct a WF table that happens to land on
+    the right byte at the right frame."""
+    inst = Instrument(
+        name=b"PLUCK   ",
+        sustain=0xF,
+        first_waveform=0x41,
+        default_chord=1,
+        wf_table=bytes([0x41, 0x80, 0x00, 0xFF]),
+    )
+    pattern = Pattern(rows=[Row(note=49, instrument=1)], length=1)
+    from pysidwizard import SWMFile, straight_tempo
+
+    # Chord 1: a single $7E. Chord 2: [5, $7E] (for the chord_start lookup).
+    swm = SWMFile(
+        sequences=[[PlayPattern(1), End()]] * 3,
+        patterns=[pattern],
+        instruments=[inst],
+        chord_table=bytes([0x7E, 5, 0x7E]),
+        subtune_tempos=[(straight_tempo(1), straight_tempo(1))],
+    )
+    p = SWMPlayer(swm)
+    v = p.voices[0]
+    # In-memory CHORDS layout (with 1-byte dummy prefix):
+    # offset 0=dummy, 1=$7E (chord 1's terminator), 2=$05 (chord 2 first
+    # pitch), 3=$7E (chord 2 terminator). Chord 2 starts at offset 2.
+    # Seed state as if chord 2 is selected and chord_pos points AT its
+    # $7E terminator (offset 3).
+    v.instrument = inst
+    v.current_chord = 2
+    v.chord_pos = 3  # pointing AT the $7E byte of chord 2
+    v.wf_arp_pitch = 99  # sentinel — must NOT be modified by $7E
+    result = p._tick_chord(v)
+    assert result is True, "expected $7E to signal 'advance WF row'"
+    assert v.chord_pos == 2, "expected chord_pos reset to chord 2's start"
+    assert v.wf_arp_pitch == 99, "expected wf_arp_pitch unchanged on $7E"
+
+
+def test_hard_restart_holds_test_bit_for_hr_frames():
+    """During the HR phase a triggered voice must emit CTRL=
+    ``first_waveform AND ptn_gate`` (the instrument's first-frame
+    waveform with the pattern gate mask applied), the post-HR AD
+    (the player pre-loads it; AD doesn't matter while the test bit
+    silences the oscillator), and the HR-SR slot — for exactly
+    HR_FRAMES frames before transitioning to normal play and letting
+    the WF-table waveform through.
+
+    HR fires on EVERY note trigger including a voice's first one (the
+    reference captures for flashitback show CTRL=$09 on song frame 0
+    for v0 and v2 — see [[flashitback-dump-findings]]). We sample the
+    very first frame of playback to verify."""
+    from pysidwizard.player import HR_FRAMES
+
+    inst = Instrument(
+        name=b"HRTEST  ",
+        control=0x08,  # bit 3 = test-bit HR enabled (FRAME1SWITCH gate)
+        hr_attack=0,
+        hr_decay=0xF,
+        hr_sustain=0,
+        hr_release=0,  # HR-SR=$00
+        attack=1,
+        decay=2,
+        sustain=0xA,
+        release=0xA,  # post-HR AD=$12, SR=$AA
+        first_waveform=0x09,  # SID-Wizard default: test bit + gate
+        wf_table=bytes([0x41, 0x80, 0x00, 0xFF]),  # pulse + gate post-HR
+    )
+    pattern = Pattern(
+        rows=[Row(note=49, instrument=1)] + [Row()] * 4,
+        length=5,
+    )
+    swm = SWMFile(
+        sequences=[[PlayPattern(1), End()]] * 3,
+        patterns=[pattern],
+        instruments=[inst],
+        subtune_tempos=[(straight_tempo(2), straight_tempo(2))],
+    )
+    p = SWMPlayer(swm)
+    samples = []
+    for _ in range(HR_FRAMES + 2):
+        p.play_frame()
+        v0 = p.voices[0]
+        samples.append((v0.sid_ctrl, v0.sid_ad, v0.sid_sr))
+    # HR frames (samples 0..HR_FRAMES-1): CTRL is first_waveform ($09)
+    # AND'd with ptn_gate ($FF after _start_note) = $09. AD/SR are the
+    # *post-HR* values — the HR-SR value lives in the 2-frames-before
+    # pre-write, not the HR frame itself (see _maybe_emit_pre_hr).
+    for f in range(HR_FRAMES):
+        ctrl, ad, sr = samples[f]
+        assert ctrl == 0x09, f"HR frame {f}: expected CTRL=$09 (test+gate), got ${ctrl:02X}"
+        assert ad == 0x12, f"HR frame {f}: expected AD=$12 (post-HR), got ${ad:02X}"
+        assert sr == 0xAA, f"HR frame {f}: expected SR=$AA (post-HR), got ${sr:02X}"
+    # Post-HR frame: CTRL gets the WF-table waveform, AD/SR are unchanged.
+    ctrl, ad, sr = samples[HR_FRAMES]
+    assert ad == 0x12, f"post-HR AD: expected $12, got ${ad:02X}"
+    assert sr == 0xAA, f"post-HR SR: expected $AA, got ${sr:02X}"
+    assert ctrl & 0x40, f"expected pulse waveform from wf_table, got ${ctrl:02X}"
+    assert not (ctrl & 0x08), f"test bit should be off post-HR, got ${ctrl:02X}"
+
+
+def test_first_note_runs_hard_restart():
+    """A voice's first-ever note DOES run the HR test-bit phase —
+    flashitback ref CSV 21 shows v0 and v2 emitting CTRL=$09 on the
+    song's row-0 trigger. With first_waveform=$09 (the SID-Wizard
+    default) and ptn_gate=$FF post-_start_note, the HR CTRL is $09."""
+    inst = Instrument(
+        name=b"FIRST   ",
+        control=0x08,  # bit 3 = test-bit HR enabled
+        sustain=0xF,
+        first_waveform=0x09,  # test bit + gate
+        wf_table=bytes([0x41, 0x80, 0x00, 0xFF]),  # pulse + gate post-HR
+    )
+    pattern = Pattern(rows=[Row(note=49, instrument=1)] + [Row()] * 4, length=5)
+    swm = SWMFile(
+        sequences=[[PlayPattern(1), End()]] * 3,
+        patterns=[pattern],
+        instruments=[inst],
+        subtune_tempos=[(straight_tempo(1), straight_tempo(1))],
+    )
+    p = SWMPlayer(swm)
+    p.play_frame()
+    assert (
+        p.voices[0].sid_ctrl == 0x09
+    ), f"first note must run HR; got CTRL=${p.voices[0].sid_ctrl:02X}"
+
+
+def test_hard_restart_freezes_wf_table_position():
+    """A 1-row WF table tick advances ``wf_pos`` by ``WF_ROW_STRIDE``;
+    that advance must NOT happen during the HR phase, otherwise the
+    table runs past its first row before the test bit is released.
+
+    HR only fires on note-to-note transitions, so the test pattern has
+    a warm-up note (which skips HR) followed by a fresh note that does
+    trigger HR — we sample wf_pos during the HR window of that second
+    trigger."""
+    from pysidwizard.player import HR_FRAMES, WF_ROW_STRIDE
+
+    inst = Instrument(
+        name=b"HRWF    ",
+        sustain=0xF,
+        first_waveform=0x41,
+        wf_table=bytes([0x41, 0x80, 0x00, 0x21, 0x80, 0x00, 0xFF]),
+    )
+    pattern = Pattern(
+        rows=[Row(note=49, instrument=1), Row(note=53, instrument=1)] + [Row()] * 6,
+        length=8,
+    )
+    swm = SWMFile(
+        sequences=[[PlayPattern(1), End()]] * 3,
+        patterns=[pattern],
+        instruments=[inst],
+        subtune_tempos=[(straight_tempo(4), straight_tempo(4))],
+    )
+    p = SWMPlayer(swm)
+    # Tempo=4 -> row 0 occupies frames 0-3, row 1 starts on frame 4.
+    # Run through row 0 first (warm-up, no HR, WF table advances).
+    for _ in range(4):
+        p.play_frame()
+    # Frame 4: row 1's note triggers _start_note, which resets wf_pos
+    # to 0 AND starts the HR window. During HR wf_pos must stay at 0
+    # (the WF table is paused).
+    for f in range(HR_FRAMES):
+        p.play_frame()
+        assert (
+            p.voices[0].wf_pos == 0
+        ), f"HR frame {f}: WF table ticked (wf_pos={p.voices[0].wf_pos})"
+    # On the first post-HR frame the WF table finally ticks.
+    p.play_frame()
+    assert p.voices[0].wf_pos == WF_ROW_STRIDE
+
+
+def test_untriggered_voice_emits_no_register_writes():
+    """A voice whose first pattern row carries no note and no instrument
+    must produce zero writes to its $D40x register block — SID-Wizard's
+    player gates the per-voice write loop on having seen a real note.
+
+    Voice 0 plays a note; voices 1 and 2 sit on empty rows. The first
+    frame's writes should include voice 0's seven registers and the four
+    global registers, and nothing for voices 1 and 2.
+    """
+    inst = Instrument(
+        name=b"V0      ",
+        sustain=0xF,
+        first_waveform=0x41,
+        wf_table=bytes([0x41, 0x80, 0x00, 0xFF]),
+    )
+    pattern_active = Pattern(rows=[Row(note=49, instrument=1)], length=1)
+    pattern_silent = Pattern(rows=[Row()], length=1)  # note=None instrument=None
+    swm = SWMFile(
+        sequences=[
+            [PlayPattern(1), End()],  # voice 0: note + instrument
+            [PlayPattern(2), End()],  # voice 1: empty row
+            [PlayPattern(2), End()],  # voice 2: empty row
+        ],
+        patterns=[pattern_active, pattern_silent],
+        instruments=[inst],
+        subtune_tempos=[(straight_tempo(2), straight_tempo(2))],
+    )
+    p = SWMPlayer(swm)
+    # Step past the HR test-bit frame — SID-Wizard's STRTSND only
+    # writes AD/SR/CTRL/FREQ_HI on the HR tick; the other 3 voice-
+    # block registers (FREQ_LO, PW_LO, PW_HI) emit from the first
+    # post-HR frame onward when CNTPLY2 starts walking the tables.
+    # AD/SR are NOT in the steady-state path — they only emit at
+    # STRTSND / pre-HR / SMALFX2-3/5-6, gated on
+    # ``v.adsr_emit_required``.
+    p.play_frame()
+    writes = p.play_frame()
+    # Steady-state voice 0 emits FREQ_LO/HI + PW_LO/HI + CTRL.
+    voice0_steady = {SID_REG_BASE + r for r in (0, 1, 2, 3, 4)}
+    voice1_regs = {SID_REG_BASE + r for r in range(7, 14)}
+    voice2_regs = {SID_REG_BASE + r for r in range(14, 21)}
+    written = {reg for reg, _ in writes}
+    assert voice0_steady <= written, "voice 0 (triggered) must emit its 5-reg block"
+    assert not (voice1_regs & written), "voice 1 (empty row) must emit no writes"
+    assert not (voice2_regs & written), "voice 2 (empty row) must emit no writes"
+
+
+def test_voice_starts_emitting_once_triggered():
+    """A voice that's empty on row 0 but plays a note on row 1 must
+    start emitting writes on the frame the note triggers — and keep
+    emitting thereafter, even when later rows are empty."""
+    inst = Instrument(
+        name=b"LATE    ",
+        sustain=0xF,
+        first_waveform=0x41,
+        wf_table=bytes([0x41, 0x80, 0x00, 0xFF]),
+    )
+    # Voice 0: row 0 empty, row 1 plays a note, row 2 empty.
+    pattern = Pattern(
+        rows=[Row(), Row(note=49, instrument=1), Row()],
+        length=3,
+    )
+    swm = SWMFile(
+        sequences=[[PlayPattern(1), End()]] * 3,
+        patterns=[pattern],
+        instruments=[inst],
+        subtune_tempos=[(straight_tempo(1), straight_tempo(1))],
+    )
+    p = SWMPlayer(swm)
+    frames_with_v0 = []
+    for _ in range(4):
+        writes = p.play_frame()
+        v0_wrote = any(reg - SID_REG_BASE < 7 for reg, _ in writes)
+        frames_with_v0.append(v0_wrote)
+    # Frame 0: row 0 is empty -> no write. Frame 1+: triggered -> writes.
+    assert frames_with_v0[0] is False
+    assert all(frames_with_v0[1:]), f"expected v0 writes from frame 1 on: {frames_with_v0}"
+
+
+def test_player_handles_loop_command_without_infinite_advance():
+    """A Loop(position=0) re-enters the sequence at the start each time
+    an End-like terminator is reached — but since SID-Wizard's player
+    treats Loop as the actual terminator, the player should never get
+    "stuck" in the sequence-advance loop within a single frame."""
+    pattern = Pattern(rows=[Row(note=49, instrument=1)], length=1)
+    inst = Instrument(name=b"LP      ", sustain=0xF, first_waveform=0x41)
+    from pysidwizard import Loop
+
+    swm = SWMFile(
+        sequences=[[PlayPattern(1), Loop(position=0)]] * 3,
+        patterns=[pattern],
+        instruments=[inst],
+        subtune_tempos=[(straight_tempo(1), straight_tempo(1))],
+    )
+    p = SWMPlayer(swm)
+    for _ in range(40):
+        p.play_frame()
+    # The loop variant never sets ``finished``; the player must still
+    # have produced steady writes.
+    assert not p.finished
+
+
+@pytest.mark.parametrize("model", ["MOS6581", "MOS8580"])
+def test_render_wav_main_entry_point(tmp_path, model):
+    """End-to-end: drive the package's CLI to render a tiny WAV."""
+    pytest.importorskip("pyresidfp")
+    pytest.importorskip("numpy")
+    from tests._swm_cache import swm_path
+
+    sample = swm_path("flashitback")
+    out_wav = tmp_path / "out.wav"
+    rc = main(
+        [
+            str(sample),
+            str(out_wav),
+            "--seconds",
+            "0.5",
+            "--model",
+            model,
+            "--no-dedupe-writes",
+        ]
+    )
+    assert rc == 0
+    assert out_wav.exists()
+    assert out_wav.stat().st_size > 1000  # at least a few hundred ms of audio
+    csv_path = out_wav.with_suffix(".csv")
+    assert csv_path.exists()
+    assert csv_path.read_text().startswith("frame,reg,value\n")

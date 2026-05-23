@@ -1,0 +1,1746 @@
+[
+  {
+    "tune": "flashitback",
+    "tempo": 6,
+    "frame_speed": 1,
+    "ghost_frames": 1500,
+    "scored_frames": 750,
+    "skipped_frames": 748,
+    "voices": {
+      "0": {
+        "FREQLO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQHI": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWLOGHO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWHIGHO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFGHOST": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PTNGATE": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWEEPCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SPDCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFTPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWTPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "ARPSCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "DPITCH": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SLIDEVIB": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODL": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODH": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIDELCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBFREQU": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBRACNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CURCHORD": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CHORDPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        }
+      },
+      "1": {
+        "FREQLO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQHI": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWLOGHO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWHIGHO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFGHOST": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PTNGATE": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWEEPCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SPDCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFTPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWTPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "ARPSCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "DPITCH": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SLIDEVIB": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODL": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODH": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIDELCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBFREQU": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBRACNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CURCHORD": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CHORDPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        }
+      },
+      "2": {
+        "FREQLO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQHI": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWLOGHO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWHIGHO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFGHOST": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PTNGATE": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWEEPCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SPDCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFTPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWTPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "ARPSCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "DPITCH": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SLIDEVIB": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODL": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODH": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIDELCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBFREQU": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBRACNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CURCHORD": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CHORDPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        }
+      }
+    }
+  },
+  {
+    "tune": "bronkosaurus",
+    "tempo": 6,
+    "frame_speed": 1,
+    "ghost_frames": 1500,
+    "scored_frames": 750,
+    "skipped_frames": 748,
+    "voices": {
+      "0": {
+        "FREQLO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQHI": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWLOGHO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWHIGHO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFGHOST": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PTNGATE": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWEEPCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SPDCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFTPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWTPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "ARPSCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "DPITCH": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SLIDEVIB": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODL": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODH": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIDELCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBFREQU": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBRACNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CURCHORD": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CHORDPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        }
+      },
+      "1": {
+        "FREQLO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQHI": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWLOGHO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWHIGHO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFGHOST": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PTNGATE": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWEEPCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SPDCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFTPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWTPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "ARPSCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "DPITCH": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SLIDEVIB": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODL": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODH": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIDELCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBFREQU": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBRACNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CURCHORD": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CHORDPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        }
+      },
+      "2": {
+        "FREQLO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQHI": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWLOGHO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWHIGHO": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFGHOST": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PTNGATE": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWEEPCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SPDCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFTPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWTPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "ARPSCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "DPITCH": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SLIDEVIB": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODL": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODH": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIDELCNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBFREQU": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBRACNT": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CURCHORD": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CHORDPOS": {
+          "hits": 750,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        }
+      }
+    }
+  },
+  {
+    "tune": "euphoria",
+    "tempo": 5,
+    "frame_speed": 2,
+    "ghost_frames": 1500,
+    "scored_frames": 600,
+    "skipped_frames": 898,
+    "voices": {
+      "0": {
+        "FREQLO": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQHI": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWLOGHO": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWHIGHO": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFGHOST": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PTNGATE": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWEEPCNT": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SPDCNT": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFTPOS": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWTPOS": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "ARPSCNT": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "DPITCH": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SLIDEVIB": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODL": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODH": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIDELCNT": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBFREQU": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBRACNT": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CURCHORD": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CHORDPOS": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        }
+      },
+      "1": {
+        "FREQLO": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQHI": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWLOGHO": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWHIGHO": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFGHOST": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PTNGATE": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWEEPCNT": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SPDCNT": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFTPOS": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWTPOS": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "ARPSCNT": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "DPITCH": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SLIDEVIB": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODL": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODH": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIDELCNT": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBFREQU": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBRACNT": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CURCHORD": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CHORDPOS": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        }
+      },
+      "2": {
+        "FREQLO": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQHI": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWLOGHO": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWHIGHO": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFGHOST": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PTNGATE": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWEEPCNT": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SPDCNT": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFTPOS": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWTPOS": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "ARPSCNT": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "DPITCH": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SLIDEVIB": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODL": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODH": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIDELCNT": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBFREQU": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBRACNT": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CURCHORD": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CHORDPOS": {
+          "hits": 600,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        }
+      }
+    }
+  },
+  {
+    "tune": "rain8580",
+    "tempo": 7,
+    "frame_speed": 1,
+    "ghost_frames": 1500,
+    "scored_frames": 856,
+    "skipped_frames": 642,
+    "voices": {
+      "0": {
+        "FREQLO": {
+          "hits": 855,
+          "misses": 1,
+          "first_miss_frame": 913,
+          "first_miss_ref": 28,
+          "first_miss_ours": 27
+        },
+        "FREQHI": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWLOGHO": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWHIGHO": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFGHOST": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PTNGATE": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWEEPCNT": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SPDCNT": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFTPOS": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWTPOS": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "ARPSCNT": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "DPITCH": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SLIDEVIB": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODL": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODH": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIDELCNT": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBFREQU": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBRACNT": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CURCHORD": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CHORDPOS": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        }
+      },
+      "1": {
+        "FREQLO": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQHI": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWLOGHO": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWHIGHO": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFGHOST": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PTNGATE": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWEEPCNT": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SPDCNT": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFTPOS": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWTPOS": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "ARPSCNT": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "DPITCH": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SLIDEVIB": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODL": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODH": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIDELCNT": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBFREQU": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBRACNT": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CURCHORD": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CHORDPOS": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        }
+      },
+      "2": {
+        "FREQLO": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQHI": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWLOGHO": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWHIGHO": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFGHOST": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PTNGATE": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWEEPCNT": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SPDCNT": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "WFTPOS": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "PWTPOS": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "ARPSCNT": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "DPITCH": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "SLIDEVIB": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODL": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "FREQMODH": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIDELCNT": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBFREQU": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "VIBRACNT": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CURCHORD": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        },
+        "CHORDPOS": {
+          "hits": 856,
+          "misses": 0,
+          "first_miss_frame": null,
+          "first_miss_ref": null,
+          "first_miss_ours": null
+        }
+      }
+    }
+  }
+]

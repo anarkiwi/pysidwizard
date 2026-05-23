@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pysidwizard"
+version = "0.1.0"
+description = "Pure-Python reader, writer, and player for SID-Wizard SWM modules"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Josh Bailey" }]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio",
+]
+
+[project.optional-dependencies]
+# Tools used in CI's lint + unit-test gates. The test suite fetches
+# the four SWM test tunes from the SID-Wizard 1.94 source tarball
+# via ``sidwizard-driver``'s download cache — that's why it's pulled
+# in even for unit tests.
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.0",
+    "ruff>=0.4",
+    "black>=24.0",
+    "sidwizard-driver>=0.4.2",
+]
+# Integration tests additionally need Docker + the headlessvice image
+# to drive a real SID-Wizard inside asid-vice. CI installs ``[integration]``
+# on the dedicated integration runner only.
+integration = [
+    "pytest>=7.4",
+    "sidwizard-driver>=0.4.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/anarkiwi/pysidwizard"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "integration: tests that drive sidwizard-driver + a VICE container (slow, opt-in via ``-m integration``)",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["pysidwizard"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 85
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["tests/fixtures", "tools/__pycache__"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP"]
+ignore = [
+    "E501",  # line length — black manages this; we set 100 to be lenient
+    "UP007", # we still support 3.9, so keep Optional[T] / Union forms
+    "UP035", # same — typing.List / typing.Tuple are fine
+    "UP006", # same
+    "UP045",
+    "B007",  # loop var not used in body — common in test stubs
+    "E741",  # ambiguous variable names (h, l in hex helpers)
+    "B904",  # raise from — we have many legacy raises that don't chain
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]  # late imports after sys.path tweak
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+extend-exclude = "tests/fixtures"

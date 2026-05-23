@@ -1,0 +1,89 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint (ruff + black)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: ruff check
+        run: python -m ruff check src tools tests
+
+      - name: black --check
+        run: python -m black --check src tools tests
+
+  test:
+    name: pytest (py${{ matrix.python-version }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python-version: "3.12"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package and test dependencies
+        # ``[dev]`` pulls in pytest + ruff + black + sidwizard-driver
+        # (the latter provides the on-demand SWM tune fetcher used by
+        # tests/_swm_cache.py).
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Cache SID-Wizard tarball + extracted SWMs
+        # The tarball is ~9 MB; caching avoids hitting CSDB on every
+        # test run. Keyed by the SHA-256 baked into sidwizard-driver's
+        # fetch.py so a sidwizard-driver upgrade busts the cache.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sidwizard-driver
+          key: sidwizard-1.94-with-sources-544e36aff3fe14b7
+
+      - name: Run tests with coverage
+        run: |
+          python -m pytest --cov=pysidwizard --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage artifact
+        if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: warn
