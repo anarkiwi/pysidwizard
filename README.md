@@ -44,6 +44,37 @@ print(ins.wf_table.hex(), ins.pw_table.hex(), ins.filter_table.hex())
 2). The writer emits the PRG wrapper by default; set
 `swm.load_address = None` for a bare payload.
 
+## Read a SID file
+
+SID-Wizard tunes exported to `.sid` (PSID) can be read straight into the
+same `SWMFile` model, so the player below works on them unchanged:
+
+```python
+from pysidwizard import read_sid, parse_sid, is_sidwizard_sid, SWMPlayer
+
+swm = read_sid("tune.sid")            # or parse_sid(open("tune.sid", "rb").read())
+print(swm.author_str(), len(swm.patterns), len(swm.instruments))
+
+player = SWMPlayer(swm)
+for _ in range(500):
+    player.play_frame()
+
+# Gate it cheaply before parsing a directory of mixed .sid files:
+data = open("maybe.sid", "rb").read()
+if is_sidwizard_sid(data):
+    swm = parse_sid(data)
+```
+
+This path is **read-only and lossy**: the exporter discards instrument
+names (placeholders like `INST 01` are synthesised) and the editor's exact
+per-pattern row length, so do not route the result back through the writer
+expecting a byte-exact round-trip.
+
+Scope is **single-SID PSID** files — roughly 95% of the SID-Wizard tunes in
+HVSC. `RSID`, multi-SID, and a small tail of files exported by unusual
+player variants raise `SIDFormatError` (a subclass of `SWMFormatError`) and
+are left for a later phase.
+
 ## Build an SWM from scratch
 
 ```python

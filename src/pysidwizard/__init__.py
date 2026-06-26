@@ -19,7 +19,7 @@ Three public surfaces:
 """
 
 from .constants import Waveform, attack_decay, straight_tempo, sustain_release
-from .errors import SWMError, SWMFormatError
+from .errors import SIDFormatError, SWMError, SWMFormatError
 from .model import (
     End,
     Instrument,
@@ -39,6 +39,8 @@ from .model import (
 )
 from .player import SWMPlayer, iter_writes, render_wav, write_csv
 from .reader import parse_swm, read_swm
+from .sidfile import PsidHeader, is_sidwizard_sid, parse_psid_header
+from .sidreader import parse_sid, read_sid
 from .writer import build_swm, write_swm
 
 __all__ = [
@@ -47,8 +49,10 @@ __all__ = [
     "Loop",
     "Pattern",
     "PlayPattern",
+    "PsidHeader",
     "RawSequenceByte",
     "Row",
+    "SIDFormatError",
     "SWMError",
     "SWMFile",
     "SWMFormatError",
@@ -61,9 +65,13 @@ __all__ = [
     "build_swm",
     "decode_sequence",
     "encode_sequence",
+    "is_sidwizard_sid",
     "iter_writes",
     "pack_pattern",
+    "parse_psid_header",
+    "parse_sid",
     "parse_swm",
+    "read_sid",
     "read_swm",
     "render_wav",
     "straight_tempo",
