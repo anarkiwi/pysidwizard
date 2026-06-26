@@ -339,7 +339,7 @@ demand from the SID-Wizard 1.94 source tarball via
 
 | Workflow                             | What it runs                                                              |
 | ------------------------------------ | ------------------------------------------------------------------------- |
-| `.github/workflows/test.yml`         | `ruff` + `black` + `pytest` (matrix: Python 3.10-3.13 on Linux + 3.12 on macOS/Windows) |
+| `.github/workflows/test.yml`         | `ruff` + `black` + `pytest` (matrix: Python 3.10-3.13 on Linux) |
 | `.github/workflows/integration.yml`  | Fresh capture from real SID-Wizard inside `asid-vice`; asserts pysidwizard matches |
 | `.github/workflows/publish.yml`      | Builds + uploads to PyPI via trusted publishing on release                |
 

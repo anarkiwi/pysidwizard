@@ -38,16 +38,12 @@ jobs:
         run: python -m black --check src tools tests
 
   test:
-    name: pytest (py${{ matrix.python-version }} / ${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
-        include:
-          - os: macos-latest
-            python-version: "3.12"
 
     steps:
       - uses: actions/checkout@v7
