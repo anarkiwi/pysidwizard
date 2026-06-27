@@ -12,17 +12,20 @@ module synthesises placeholder instrument names and best-effort lengths. Do
 **not** route the result back through the writer expecting a byte-exact
 round-trip.
 
-Scope: single-SID ``PSID`` and ``RSID`` tunes whose ``SWM1`` tune data is
-laid out uncompressed in the SID image. Multi-subtune tunes are fully decoded
-(each subtune is reachable via :meth:`SWMFile.subtune`). Out of scope, rejected
-with a clear, specific error: multi-SID files (the player is single-SID only),
-SID-Wizard *packed* (SWP) tunes (the data is compressed and only expanded at
-runtime), and the occasional relocated/loader layout that hides or omits the
-``SWM1`` header.
+Scope: single-SID ``PSID`` and ``RSID`` tunes, including SID-Wizard's
+*packed* (``SWP``) exports. Multi-subtune tunes are fully decoded (each
+subtune is reachable via :meth:`SWMFile.subtune`). Out of scope, rejected
+with a clear, specific error: multi-SID files (the player is single-SID
+only), and the occasional relocated/loader layout that hides the tune
+tables entirely.
 
-Format notes (verified against SID-Wizard's ``exporter.asm`` /
-``packdepack.inc``)
--------------------------------------------------------------------------
+Two on-disk layouts are decoded; the byte-level decoding of patterns,
+instruments, sequences and chord/tempo tables is identical between them and
+shared. They differ only in how the pointer-table bases are located and
+whether the pointers they hold are absolute or relative.
+
+Plain (uncompressed) layout
+---------------------------
 The exporter copies the 64-byte SWM tune header verbatim into the player's
 variable area (so it survives as ``SWM1`` in the file) and lays the fully
 expanded tune data out in memory as, low address to high::
@@ -44,6 +47,25 @@ subtune, 8 bytes each for one SID) sits just below ``inst_lo`` separated by
 the chord/tempo pointer tables; it is located by scanning for the block whose
 sequence pointers fall in the (low-address) sequences region. The chord and
 tempo tables are then derived from the subtune base.
+
+Packed (``SWP``) layout
+-----------------------
+"SWP-packed" is a misnomer: the tune data is **not** compressed. It is the
+same compact runtime layout, with two differences. First, the pointer tables
+hold pointers **relative** to a base (the C64 address of the ``SWP1`` magic;
+the player adds it at init). Second, the table bases are not recovered by
+scanning from end-of-data but read from an offset-table inside the ``SWP1``
+header: nine little-endian 16-bit offsets (relative to that same base) at
+fixed byte positions — subtunes, ptn-lo/hi, inst-lo/hi, chord table/ptrs and
+tempo table/ptrs (see :data:`_SWP_TABLE_OFFSETS`).
+
+The structural counts come from the table extents (the tables are laid out
+contiguously, so e.g. ``patterns = ptn_hi_off - ptn_lo_off`` and
+``subtunes = (next_off - subtunes_off) // 8``), not from the ``SWM1`` header:
+some packed exports ship a stale player-template ``SWM1`` header (placeholder
+counts, author ``"SIW-WIZARD"``) or omit it entirely. When an ``SWM1`` header
+is present it is still used for the lossy metadata (frame speed, author,
+driver/tuning, chord/tempo-table lengths); otherwise model defaults are used.
 """
 
 from __future__ import annotations
@@ -88,12 +110,27 @@ from .model import (
 )
 from .sidfile import PSID_MAGIC, RSID_MAGIC, parse_psid_header
 
-# SID-Wizard's packer (``include/packdepack.inc``) compresses the tune data and
-# the runtime expands it backward in place at init time. The packed blob keeps
-# a ``SWP1`` magic (the ``SWM1`` header with its ``M`` turned into ``P``). We
-# cannot reconstruct the expanded image without re-implementing the depacker, so
-# packed tunes are detected and rejected with a clear, specific error.
+# SID-Wizard's "packed" (``SWP``) export keeps an ``SWP1`` magic (the ``SWM1``
+# header with its ``M`` turned into ``P``). Despite the name the tune data is
+# not compressed: it is the same runtime layout with relative pointers located
+# via an offset-table in the ``SWP1`` header (see the module docstring and
+# :func:`_build_swp`).
 SWP_MAGIC = b"SWP1"
+
+# Byte positions, within the ``SWP1`` block, of the nine little-endian 16-bit
+# table-base offsets (each relative to the C64 address of the ``SWP1`` magic).
+# Mirrors SID-Wizard's ``settings.cfg`` packer layout.
+_SWP_TABLE_OFFSETS = {
+    "subtunes": 4,
+    "ptn_lo": 6,
+    "ptn_hi": 8,
+    "inst_lo": 10,
+    "inst_hi": 12,
+    "chord_table": 14,
+    "chord_ptr": 16,
+    "tempo_table": 18,
+    "tempo_ptr": 20,
+}
 
 # Per-subtune block in the runtime "subtunes" table: SID_CHANNELS 16-bit
 # sequence pointers followed by a [left, right] funktempo pair.
@@ -131,12 +168,11 @@ def parse_sid(data: bytes) -> SWMFile:
 
     Both ``PSID`` and ``RSID`` containers are accepted: RSID uses a different
     init/play convention but the embedded SID-Wizard tune-data layout is
-    identical, so any RSID whose tables resolve is parsed too. Raises
-    :class:`SIDFormatError` for: an unrecognised magic, a multi-SID file
-    (the player and model are single-SID only, so playback would be wrong),
-    a SID-Wizard *packed* (SWP) tune (the data is only expanded at runtime),
-    a missing ``SWM1`` tune header, truncation, or pointer tables that do not
-    resolve.
+    identical, so any RSID whose tables resolve is parsed too. Plain and
+    *packed* (``SWP``) exports are both decoded. Raises :class:`SIDFormatError`
+    for: an unrecognised magic, a multi-SID file (the player and model are
+    single-SID only, so playback would be wrong), a missing tune header on a
+    plain export, truncation, or pointer tables that do not resolve.
     """
     header = parse_psid_header(data)
     if header.magic not in (PSID_MAGIC, RSID_MAGIC):
@@ -150,11 +186,14 @@ def parse_sid(data: bytes) -> SWMFile:
 
     load = header.real_load_address
     base = header.data_start  # file offset that maps to ``load``
-    if data.find(SWP_MAGIC, base) >= 0:
-        raise SIDFormatError(
-            "SID-Wizard packed (SWP) tunes are not supported: the tune data is "
-            "compressed and only expanded into memory at runtime by the player"
-        )
+    swp_pos = data.find(SWP_MAGIC, base)
+    if swp_pos >= 0:
+        # A "packed" (SWP) export: relative-pointer tables located via the
+        # SWP1 offset-table. Not compressed; decoded directly (see _build_swp).
+        try:
+            return _build_swp(data, load, base, swp_pos)
+        except _LayoutError as exc:
+            raise SIDFormatError(f"SID-Wizard packed (SWP) tables did not resolve: {exc}") from exc
     swm_pos = data.find(SWM_MAGIC, base)
     if swm_pos < 0:
         raise SIDFormatError(
@@ -203,17 +242,7 @@ def _build(
     tempo_len = swm_header[TEMPO_LENGTH_POS]
     subtunes = (seq_amount - 1) // SID_CHANNELS + 1 if seq_amount > 0 else 1
 
-    def byte(addr: int) -> int:
-        off = addr - load + base
-        if off < 0 or off >= len(data):
-            raise _LayoutError(f"address {addr:#06x} out of range")
-        return data[off]
-
-    def chunk(addr: int, length: int) -> bytes:
-        off = addr - load + base
-        if off < 0 or off + length > len(data):
-            raise _LayoutError(f"slice at {addr:#06x}+{length} out of range")
-        return bytes(data[off : off + length])
+    byte, chunk = _memory_accessors(data, load, base)
 
     # Pointer-table bases, derived backward from end-of-data (exporter math).
     ptn_hi = end - (pat_amount + 1)
@@ -244,19 +273,74 @@ def _build(
     chord_table = chunk(chord_base, chord_len) if chord_len else b""
     tempo_table = chunk(chord_base + chord_len + _RESTEMP_SHIFT, tempo_len) if tempo_len else b""
 
+    return _assemble(
+        swm_header,
+        load,
+        sequences,
+        patterns,
+        instruments,
+        chord_table,
+        tempo_table,
+        subtune_tempos,
+    )
+
+
+def _memory_accessors(data: bytes, load: int, base: int):
+    """Return ``(byte, chunk)`` closures mapping C64 addresses into ``data``.
+
+    ``byte(addr)`` reads a single byte and ``chunk(addr, length)`` a slice,
+    both translating the C64 address to a file offset via ``addr - load +
+    base`` and raising :class:`_LayoutError` on an out-of-range access.
+    """
+
+    def byte(addr: int) -> int:
+        off = addr - load + base
+        if off < 0 or off >= len(data):
+            raise _LayoutError(f"address {addr:#06x} out of range")
+        return data[off]
+
+    def chunk(addr: int, length: int) -> bytes:
+        off = addr - load + base
+        if off < 0 or off + length > len(data):
+            raise _LayoutError(f"slice at {addr:#06x}+{length} out of range")
+        return bytes(data[off : off + length])
+
+    return byte, chunk
+
+
+def _assemble(
+    swm_header: Optional[bytes],
+    load: int,
+    sequences,
+    patterns,
+    instruments,
+    chord_table: bytes,
+    tempo_table: bytes,
+    subtune_tempos,
+) -> SWMFile:
+    """Build the :class:`SWMFile` from decoded regions and the tune header.
+
+    ``swm_header`` carries the lossy metadata (frame speed, author, driver /
+    tuning type, ...). It is ``None`` for a packed export that omits the
+    ``SWM1`` header, in which case the model's own field defaults are kept.
+    """
+    meta = {}
+    if swm_header is not None:
+        meta = dict(
+            frame_speed=swm_header[FRAMESPEED_POS],
+            highlight=swm_header[HIGHLIGHT_POS],
+            auto_advance=swm_header[AUTO_POS],
+            config_bits=swm_header[CONFIG_BITS_POS],
+            mute=bytes(swm_header[MUTE_POS : MUTE_POS + 3]),
+            default_pattern_length=swm_header[DEFAULT_PATTERN_LEN_POS],
+            color_theme=swm_header[COLOR_THEME_POS],
+            keyboard_type=swm_header[KEYBOARD_TYPE_POS],
+            driver_type=swm_header[DRIVER_TYPE_POS],
+            tuning_type=swm_header[TUNING_TYPE_POS],
+            reserved=bytes(swm_header[RESERVED_POS:AUTHOR_POS]),
+            author=bytes(swm_header[AUTHOR_POS : AUTHOR_POS + AUTHOR_LEN]),
+        )
     return SWMFile(
-        frame_speed=swm_header[FRAMESPEED_POS],
-        highlight=swm_header[HIGHLIGHT_POS],
-        auto_advance=swm_header[AUTO_POS],
-        config_bits=swm_header[CONFIG_BITS_POS],
-        mute=bytes(swm_header[MUTE_POS : MUTE_POS + 3]),
-        default_pattern_length=swm_header[DEFAULT_PATTERN_LEN_POS],
-        color_theme=swm_header[COLOR_THEME_POS],
-        keyboard_type=swm_header[KEYBOARD_TYPE_POS],
-        driver_type=swm_header[DRIVER_TYPE_POS],
-        tuning_type=swm_header[TUNING_TYPE_POS],
-        reserved=bytes(swm_header[RESERVED_POS:AUTHOR_POS]),
-        author=bytes(swm_header[AUTHOR_POS : AUTHOR_POS + AUTHOR_LEN]),
         sequences=sequences,
         patterns=patterns,
         instruments=instruments,
@@ -264,10 +348,99 @@ def _build(
         tempo_table=tempo_table,
         subtune_tempos=subtune_tempos,
         load_address=load,
+        **meta,
     )
 
 
-def _decode_instruments(byte, chunk, inst_lo, inst_hi, inst_amount, load, end):
+def _build_swp(data: bytes, load: int, base: int, swp_off: int) -> SWMFile:
+    """Decode a "packed" (``SWP``) export.
+
+    The tune data is the ordinary runtime layout; only the pointer-table
+    bases and pointer values differ. The bases are read from the ``SWP1``
+    offset-table (:data:`_SWP_TABLE_OFFSETS`) and every table entry is a
+    pointer relative to ``swp_base`` (the C64 address of the ``SWP1`` magic).
+
+    Raises :class:`SIDFormatError` if the offset-table or any resolved table
+    does not yield a coherent tune.
+    """
+    swp_base = load + (swp_off - base)
+    byte, chunk = _memory_accessors(data, load, base)
+    end = load + (len(data) - base)  # one past the last addressable byte
+
+    def swp_u16(pos: int) -> int:
+        off = swp_off + pos
+        if off + 1 >= len(data):
+            raise _LayoutError("SWP1 offset-table is truncated")
+        return data[off] | (data[off + 1] << 8)
+
+    offs = {name: swp_u16(pos) for name, pos in _SWP_TABLE_OFFSETS.items()}
+
+    # Structural counts come from the (contiguous) table extents, not the
+    # SWM1 header: packed exports may ship a stale template header or none.
+    sub_off = offs["subtunes"]
+    higher = [v for v in offs.values() if v > sub_off]
+    if not higher:
+        raise _LayoutError("SWP subtune table has no following table")
+    subtunes = (min(higher) - sub_off) // _SUBTUNE_BLOCK
+    inst_amount = offs["ptn_lo"] - offs["inst_hi"]
+    pat_amount = offs["ptn_hi"] - offs["ptn_lo"]
+    if subtunes < 1 or inst_amount < 0 or pat_amount < 0:
+        raise _LayoutError(
+            f"implausible SWP counts: subtunes={subtunes}, "
+            f"instruments={inst_amount}, patterns={pat_amount}"
+        )
+    seq_amount = subtunes * SID_CHANNELS
+
+    # The SWM1 header, when present, supplies the lossy metadata and the
+    # chord/tempo-table lengths. It is optional for packed tunes.
+    swm_pos = data.find(SWM_MAGIC, base)
+    if 0 <= swm_pos and swm_pos + TUNE_HEADER_SIZE <= len(data):
+        swm_header: Optional[bytes] = data[swm_pos : swm_pos + TUNE_HEADER_SIZE]
+        chord_len = swm_header[CHORD_LENGTH_POS]
+        tempo_len = swm_header[TEMPO_LENGTH_POS]
+    else:
+        swm_header = None
+        chord_len = tempo_len = 0
+
+    inst_lo = swp_base + offs["inst_lo"]
+    inst_hi = swp_base + offs["inst_hi"]
+    ptn_lo = swp_base + offs["ptn_lo"]
+    ptn_hi = swp_base + offs["ptn_hi"]
+    subtune_base = swp_base + offs["subtunes"]
+
+    instruments = _decode_instruments(
+        byte, chunk, inst_lo, inst_hi, inst_amount, load, end, ptr_base=swp_base
+    )
+    patterns, _ = _decode_patterns(
+        byte, chunk, ptn_lo, ptn_hi, pat_amount, load, end, ptr_base=swp_base
+    )
+    sequences = _decode_sequences(
+        byte, chunk, subtune_base, seq_amount, load, end, ptr_base=swp_base
+    )
+    subtune_tempos = [
+        (
+            byte(subtune_base + _SUBTUNE_BLOCK * st + 2 * SID_CHANNELS),
+            byte(subtune_base + _SUBTUNE_BLOCK * st + 2 * SID_CHANNELS + 1),
+        )
+        for st in range(subtunes)
+    ]
+
+    chord_table = chunk(swp_base + offs["chord_table"], chord_len) if chord_len else b""
+    tempo_table = chunk(swp_base + offs["tempo_table"], tempo_len) if tempo_len else b""
+
+    return _assemble(
+        swm_header,
+        load,
+        sequences,
+        patterns,
+        instruments,
+        chord_table,
+        tempo_table,
+        subtune_tempos,
+    )
+
+
+def _decode_instruments(byte, chunk, inst_lo, inst_hi, inst_amount, load, end, ptr_base=0):
     """Decode the ``inst_amount`` instruments (1-based; index 0 is the dummy).
 
     Each instrument is a 16-byte header followed by three inline ``$FF``-
@@ -277,7 +450,7 @@ def _decode_instruments(byte, chunk, inst_lo, inst_hi, inst_amount, load, end):
     """
     instruments: List[Instrument] = []
     for k in range(1, inst_amount + 1):
-        addr = byte(inst_lo + k) | (byte(inst_hi + k) << 8)
+        addr = ptr_base + (byte(inst_lo + k) | (byte(inst_hi + k) << 8))
         if not (load <= addr < end):
             raise _LayoutError(f"instrument {k} pointer {addr:#06x} out of range")
         # The filter-table pointer is relative to the instrument base; walk to
@@ -330,12 +503,12 @@ def _scan_pattern_end(byte, start: int) -> int:
                     addr += 1
 
 
-def _decode_patterns(byte, chunk, ptn_lo, ptn_hi, pat_amount, load, end):
+def _decode_patterns(byte, chunk, ptn_lo, ptn_hi, pat_amount, load, end, ptr_base=0):
     """Decode the ``pat_amount`` patterns (1-based; index 0 is the reserved slot)."""
     patterns: List[Pattern] = []
     min_pattern = end
     for k in range(1, pat_amount + 1):
-        addr = byte(ptn_lo + k) | (byte(ptn_hi + k) << 8)
+        addr = ptr_base + (byte(ptn_lo + k) | (byte(ptn_hi + k) << 8))
         if not (load <= addr < end):
             raise _LayoutError(f"pattern {k} pointer {addr:#06x} out of range")
         min_pattern = min(min_pattern, addr)
@@ -386,7 +559,7 @@ def _subtune_pointers_valid(byte, base, seq_amount, load, min_pattern) -> bool:
     return True
 
 
-def _decode_sequences(byte, chunk, subtune_base, seq_amount, load, end):
+def _decode_sequences(byte, chunk, subtune_base, seq_amount, load, end, ptr_base=0):
     """Decode the ``seq_amount`` channel sequences via the subtune table.
 
     Sequence ``k`` lives in subtune ``k // 3`` channel ``k % 3``; each runs
@@ -396,7 +569,7 @@ def _decode_sequences(byte, chunk, subtune_base, seq_amount, load, end):
     sequences: List[List] = []
     for k in range(seq_amount):
         blk = _subtune_block_addr(subtune_base, k)
-        start = byte(blk) | (byte(blk + 1) << 8)
+        start = ptr_base + (byte(blk) | (byte(blk + 1) << 8))
         if not (load <= start < end):
             raise _LayoutError(f"sequence {k} pointer {start:#06x} out of range")
         addr = start

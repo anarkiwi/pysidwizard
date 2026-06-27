@@ -267,6 +267,230 @@ def _build_two_subtune_image():
     return _make_psid(LOAD, image, end), expected
 
 
+_SWP_OFFSET_POS = {
+    "subtunes": 4,
+    "ptn_lo": 6,
+    "ptn_hi": 8,
+    "inst_lo": 10,
+    "inst_hi": 12,
+    "chord_table": 14,
+    "chord_ptr": 16,
+    "tempo_table": 18,
+    "tempo_ptr": 20,
+}
+
+
+def _build_swp_image(subtunes=1, with_header=True, with_chord=True):
+    """Construct a "packed" (SWP) tune image with relative-pointer tables.
+
+    Mirrors the runtime SWP layout: an ``SWP1`` offset-table whose nine
+    entries give table bases relative to the SWP1 magic, and pointer tables
+    that hold pointers relative to that same base. Structural counts are
+    implied purely by the table extents, so the (optional) ``SWM1`` header
+    deliberately carries *stale* counts to prove the reader ignores them.
+    Returns ``(sid_bytes, expected)``.
+    """
+    swp_base = LOAD + 0x80
+    image: dict = {}
+
+    def put(addr, data):
+        for i, b in enumerate(data):
+            image[addr + i] = b & 0xFF
+
+    chord_table = bytes([0x00, 0x03, 0x07, 0x0C, 0x7F]) if with_chord else b""
+    chord_len = len(chord_table)
+
+    # Optional SWM1 header (metadata + chord/tempo lengths). Stale seq/pat/inst
+    # counts (99/99) so the test fails if the reader trusts them.
+    if with_header:
+        swm_pos = LOAD + 0x20
+        put(swm_pos, _swm_header(99, 99, 99, chord_len, 0, author=b"SWPTESTER"))
+
+    # --- bodies: sequences, patterns, instruments (all above swp_base) ---
+    cursor = swp_base + 0x40
+    seq_cmds_all = [
+        [PlayPattern(1), PlayPattern(2)],
+        [Transpose(1), PlayPattern(2)],
+        [PlayPattern(1)],
+        [PlayPattern(2)],
+        [PlayPattern(2), PlayPattern(1)],
+        [PlayPattern(1)],
+    ]
+    seq_amount = subtunes * 3
+    seq_addrs = []
+    for cmds in seq_cmds_all[:seq_amount]:
+        seq_addrs.append(cursor)
+        body = encode_sequence(cmds) + b"\xfe"
+        put(cursor, body)
+        cursor += len(body)
+
+    pat_rows = [
+        [Row(note=0x31, instrument=1), Row(note=0x33), Row(), Row(note=0x35, instrument=2)],
+        [Row(note=0x10)],
+    ]
+    pat_amount = len(pat_rows)
+    pat_addrs = []
+    for rows in pat_rows:
+        pat_addrs.append(cursor)
+        unpacked = b"".join(r.encode() for r in rows)
+        packed = pack_pattern(unpacked)
+        put(cursor, packed + b"\xff" + bytes([len(unpacked) + 1]))
+        cursor += len(packed) + 2
+
+    insts = [
+        Instrument(
+            control=0x21,
+            attack=2,
+            decay=3,
+            sustain=10,
+            release=5,
+            wf_table=bytes([0x41, 0x42]),
+            pw_table=bytes([0x00, 0x08]),
+            filter_table=bytes([0xF0]),
+        ),
+        Instrument(
+            control=0x40,
+            attack=0,
+            decay=15,
+            first_waveform=0x11,
+            wf_table=bytes([0x21]),
+            pw_table=b"",
+            filter_table=b"",
+        ),
+    ]
+    inst_amount = len(insts)
+    inst_addrs = []
+    for inst in insts:
+        inst_addrs.append(cursor)
+        put(cursor, inst.encode() + b"\xff")
+        cursor += len(inst.encode()) + 1
+
+    # Chord table sits below the subtune table (so it is excluded from the
+    # subtune-extent count probe).
+    chord_addr = cursor
+    if chord_len:
+        put(chord_addr, chord_table)
+        cursor += chord_len
+
+    # --- tables (contiguous; counts are read from these extents) ---
+    sub_addr = cursor
+    tempopt_addr = sub_addr + 8 * subtunes  # immediate successor of subtunes
+    chordpt_addr = tempopt_addr + 1
+    inst_lo_addr = chordpt_addr + 1
+    inst_hi_addr = inst_lo_addr + (inst_amount + 1)
+    ptn_lo_addr = inst_hi_addr + inst_amount
+    ptn_hi_addr = ptn_lo_addr + pat_amount
+    end_addr = ptn_hi_addr + (pat_amount + 1)
+
+    subtune_tempos = [(0x86 + st, 0x83 + st) for st in range(subtunes)]
+    for st in range(subtunes):
+        for ch in range(3):
+            rel = seq_addrs[st * 3 + ch] - swp_base
+            put(sub_addr + 8 * st + 2 * ch, rel.to_bytes(2, "little"))
+        put(sub_addr + 8 * st + 6, bytes(subtune_tempos[st]))
+
+    for k in range(1, inst_amount + 1):
+        rel = inst_addrs[k - 1] - swp_base
+        image[inst_lo_addr + k] = rel & 0xFF
+        image[inst_hi_addr + k] = (rel >> 8) & 0xFF
+    for k in range(1, pat_amount + 1):
+        rel = pat_addrs[k - 1] - swp_base
+        image[ptn_lo_addr + k] = rel & 0xFF
+        image[ptn_hi_addr + k] = (rel >> 8) & 0xFF
+
+    # --- SWP1 header offset-table (offsets relative to swp_base) ---
+    put(swp_base, b"SWP1")
+    offsets = {
+        "subtunes": sub_addr - swp_base,
+        "ptn_lo": ptn_lo_addr - swp_base,
+        "ptn_hi": ptn_hi_addr - swp_base,
+        "inst_lo": inst_lo_addr - swp_base,
+        "inst_hi": inst_hi_addr - swp_base,
+        "chord_table": chord_addr - swp_base,
+        "chord_ptr": chordpt_addr - swp_base,
+        "tempo_table": chord_addr - swp_base,  # tl=0, value unused
+        "tempo_ptr": tempopt_addr - swp_base,
+    }
+    for name, pos in _SWP_OFFSET_POS.items():
+        put(swp_base + pos, offsets[name].to_bytes(2, "little"))
+
+    expected = {
+        "seq_amount": seq_amount,
+        "pat_amount": pat_amount,
+        "inst_amount": inst_amount,
+        "subtune_count": subtunes,
+        "chord_table": chord_table if (with_header and with_chord) else b"",
+        "subtune_tempos": subtune_tempos,
+        "pat_rows": pat_rows,
+        "insts": insts,
+    }
+    return _make_psid(LOAD, image, end_addr), expected
+
+
+def test_parse_swp_recovers_counts_and_content():
+    sid, exp = _build_swp_image()
+    swm = parse_sid(sid)
+    # Counts come from the SWP table extents, not the (stale 99/99) SWM1 header.
+    assert len(swm.sequences) == exp["seq_amount"]
+    assert len(swm.patterns) == exp["pat_amount"]
+    assert len(swm.instruments) == exp["inst_amount"]
+    assert swm.subtune_count == exp["subtune_count"]
+    assert swm.load_address == LOAD
+    assert swm.chord_table == exp["chord_table"]
+    assert swm.subtune_tempos == exp["subtune_tempos"]
+    assert swm.author.startswith(b"SWPTESTER")
+
+
+def test_parse_swp_recovers_pattern_and_instrument_content():
+    sid, exp = _build_swp_image()
+    swm = parse_sid(sid)
+    p0 = swm.patterns[0]
+    assert [r.note for r in p0.rows] == [0x31, 0x33, None, 0x35]
+    assert p0.rows[0].instrument == 1 and p0.rows[3].instrument == 2
+    i0, i1 = swm.instruments
+    assert i0.control == 0x21
+    assert (i0.attack, i0.decay, i0.sustain, i0.release) == (2, 3, 10, 5)
+    assert i0.wf_table == bytes([0x41, 0x42])
+    assert i0.pw_table == bytes([0x00, 0x08])
+    assert i0.filter_table == bytes([0xF0])
+    assert i1.first_waveform == 0x11
+    assert swm.sequences[0] == [PlayPattern(1), PlayPattern(2), End()]
+    assert swm.sequences[1] == [Transpose(1), PlayPattern(2), End()]
+
+
+def test_parse_swp_result_plays():
+    sid, _ = _build_swp_image()
+    player = SWMPlayer(parse_sid(sid))
+    for _ in range(200):
+        player.play_frame()
+
+
+def test_parse_swp_without_swm1_header():
+    # Packed exports may omit the SWM1 header entirely; the reader must still
+    # resolve the tables (using model defaults for the lossy metadata).
+    sid, exp = _build_swp_image(with_header=False, with_chord=False)
+    assert b"SWM1" not in sid[0x7E:]
+    swm = parse_sid(sid)
+    assert len(swm.patterns) == exp["pat_amount"]
+    assert len(swm.instruments) == exp["inst_amount"]
+    assert swm.chord_table == b""
+    SWMPlayer(swm).play_frame()
+
+
+def test_parse_swp_exposes_all_subtunes():
+    sid, exp = _build_swp_image(subtunes=2, with_chord=False)
+    swm = parse_sid(sid)
+    assert swm.subtune_count == 2
+    assert len(swm.sequences) == 6
+    assert swm.subtune_tempos == exp["subtune_tempos"]
+    for n in range(2):
+        st = swm.subtune(n)
+        assert len(st.sequences) == 3
+        player = SWMPlayer(st)
+        for _ in range(60):
+            player.play_frame()
+
+
 def test_parse_sid_recovers_counts_and_content():
     sid, exp = _build_reference_image()
     swm = parse_sid(sid)
@@ -394,13 +618,15 @@ def test_parse_sid_accepts_rsid_with_resolvable_data():
     SWMPlayer(swm).play_frame()
 
 
-def test_parse_sid_rejects_packed_swp_tune():
-    # A SID-Wizard 'packed' export keeps an 'SWP1' magic; we can't expand it.
+def test_parse_sid_rejects_unresolvable_swp_tune():
+    # An 'SWP1' magic whose offset-table is garbage (here spliced over an
+    # otherwise-absolute image) must raise a clear, SWP-specific error rather
+    # than silently mis-parsing.
     sid, _ = _build_reference_image()
     tampered = bytearray(sid)
     # Splice an SWP1 magic into the data area (after the container header).
     tampered[0x90:0x94] = b"SWP1"
-    with pytest.raises(SIDFormatError, match="packed"):
+    with pytest.raises(SIDFormatError, match="SWP"):
         parse_sid(bytes(tampered))
 
 
@@ -480,11 +706,25 @@ def test_real_corpus_row_parses_and_plays(row):
     try:
         swm = parse_sid(data)
     except SIDFormatError:
-        pytest.skip("packed / relocated tail is allowed to fail cleanly")
-    header = data[data.find(SWM_MAGIC) :][:TUNE_HEADER_SIZE]
-    assert len(swm.instruments) == header[0x0E]
-    assert len(swm.patterns) == header[0x0D]
-    assert len(swm.sequences) == header[0x0C]
+        pytest.skip("relocated tail is allowed to fail cleanly")
+    is_swp = data.find(b"SWP1", 0x7E) >= 0
+    if is_swp:
+        # Packed exports derive their counts from the SWP table extents (the
+        # SWM1 header, if any, is a stale player template), so cross-check
+        # content sanity instead: every pattern reference must resolve.
+        max_ref = max(
+            (c.pattern for s in swm.sequences for c in s if isinstance(c, PlayPattern)),
+            default=0,
+        )
+        assert max_ref <= len(swm.patterns)
+        for pat in swm.patterns:
+            for r_ in pat.rows:
+                assert r_.note is None or r_.note <= 0x7F
+    else:
+        header = data[data.find(SWM_MAGIC) :][:TUNE_HEADER_SIZE]
+        assert len(swm.instruments) == header[0x0E]
+        assert len(swm.patterns) == header[0x0D]
+        assert len(swm.sequences) == header[0x0C]
     # Drive the player for a bounded sample.
     player = SWMPlayer(swm)
     for _ in range(300):
@@ -505,6 +745,7 @@ def test_real_corpus_has_expected_coverage():
     parsed = 0
     rsid_seen = False
     multisubtune_seen = False
+    swp_parsed = 0
     for r in _CORPUS_ROWS:
         path = os.path.join(_HVSC, r[0])
         try:
@@ -513,11 +754,14 @@ def test_real_corpus_has_expected_coverage():
             continue
         if not is_sidwizard_sid(data):
             continue
+        is_swp = data.find(b"SWP1", 0x7E) >= 0
         try:
             swm = parse_sid(data)
         except SIDFormatError:
-            continue  # the packed / relocated tail is allowed to fail cleanly
+            continue  # the relocated tail is allowed to fail cleanly
         parsed += 1
+        if is_swp:
+            swp_parsed += 1
         if data[:4] == b"RSID":
             rsid_seen = True
         if swm.subtune_count > 1:
@@ -525,13 +769,15 @@ def test_real_corpus_has_expected_coverage():
     assert parsed >= 800, "expected to parse the bulk of the corpus"
     assert rsid_seen, "expected at least one RSID tune to parse and play"
     assert multisubtune_seen, "expected at least one multi-subtune tune"
+    assert swp_parsed >= 20, "expected the packed (SWP) tunes to parse now"
 
 
 @pytest.mark.skipif(not _CORPUS_PRESENT, reason="local HVSC corpus not present")
 @pytest.mark.parametrize("row", _CORPUS_ROWS, ids=_corpus_id)
 def test_real_corpus_row_rejection_is_clear(row):
-    # Packed and multi-SID tunes must raise specific, actionable errors rather
-    # than parsing into a misleading model. Parametrized per row for isolation.
+    # Multi-SID tunes must raise a specific, actionable error rather than
+    # parsing into a misleading model. (Packed/SWP tunes are now decoded, not
+    # rejected.) Parametrized per row for isolation.
     path = os.path.join(_HVSC, row[0])
     try:
         data = open(path, "rb").read()
@@ -544,18 +790,14 @@ def test_real_corpus_row_rejection_is_clear(row):
     if header.version >= 3 or header.is_multi_sid:
         with pytest.raises(SIDFormatError, match="multi-SID"):
             parse_sid(data)
-    elif data.find(b"SWP1", header.data_start) >= 0:
-        with pytest.raises(SIDFormatError, match="packed"):
-            parse_sid(data)
     else:
-        pytest.skip("neither packed nor multi-SID")
+        pytest.skip("not a multi-SID tune")
 
 
 @pytest.mark.skipif(not _CORPUS_PRESENT, reason="local HVSC corpus not present")
 def test_real_corpus_has_rejection_categories():
-    # Corpus-health fold: the catalog must contain at least one packed and one
-    # multi-SID tune so the per-row rejection test actually exercises both.
-    saw_packed = False
+    # Corpus-health fold: the catalog must contain at least one multi-SID tune
+    # so the per-row rejection test actually exercises it.
     saw_multisid = False
     for r in _CORPUS_ROWS:
         path = os.path.join(_HVSC, r[0])
@@ -569,6 +811,69 @@ def test_real_corpus_has_rejection_categories():
             continue
         if header.version >= 3 or header.is_multi_sid:
             saw_multisid = True
-        elif data.find(b"SWP1", header.data_start) >= 0:
-            saw_packed = True
-    assert saw_packed and saw_multisid
+    assert saw_multisid
+
+
+# The 27 known SID-Wizard "packed" (SWP) tunes in HVSC, relative to _HVSC.
+_KNOWN_SWP_FILES = [
+    "GAMES/G-L/Immensity_preview_2.sid",
+    *(
+        f"MUSICIANS/C/C0zmo/{name}.sid"
+        for name in (
+            "50_Shades_of_Gradius",
+            "Archon_Reimagined",
+            "Arkanoid_Remake",
+            "Ben_Daglish_Tribute",
+            "Boulder_Dash_Remake",
+            "Elite_Remake",
+            "Katakis_Remake",
+            "Last_Ninja_Remix-Remix",
+            "Out_Run",
+            "Performers_Demo_2018",
+            "Pirates_Bach_Prelude_C_Minor",
+            "R-Type_Amiga_Title_Remake",
+            "Space_Harrier_Remake",
+            "Times_of_Lore",
+            "To_Be_on_Top",
+            "Wizard_of_Wor",
+        )
+    ),
+    *(
+        f"MUSICIANS/H/Hermit/{name}.sid"
+        for name in (
+            "Civilization",
+            "Crawl_Out_Through_the_Fallout",
+            "Easy_Living",
+            "Emomyst",
+            "End_of_the_World",
+            "Fallout_4_Main_Theme",
+            "I_Dont_Want_to_Set_the_World_on_Fire",
+            "Sixty_Minute_Man",
+            "Uranium_Fever",
+            "Wonderful_Guy",
+        )
+    ),
+]
+
+
+@pytest.mark.skipif(not _CORPUS_PRESENT, reason="local HVSC corpus not present")
+@pytest.mark.parametrize("rel", _KNOWN_SWP_FILES)
+def test_known_swp_file_parses_and_plays(rel):
+    # The packed (SWP) tunes must now decode and play (all subtunes), with
+    # every pattern reference resolving.
+    path = os.path.join(_HVSC, rel)
+    try:
+        data = open(path, "rb").read()
+    except OSError:
+        pytest.skip("file not present on disk")
+    assert data.find(b"SWP1", 0x7E) >= 0, "expected an SWP1 block"
+    swm = parse_sid(data)
+    max_ref = max(
+        (c.pattern for s in swm.sequences for c in s if isinstance(c, PlayPattern)),
+        default=0,
+    )
+    assert max_ref <= len(swm.patterns)
+    for n in range(swm.subtune_count):
+        player = SWMPlayer(swm.subtune(n))
+        for _ in range(500):
+            player.play_frame()
