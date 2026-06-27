@@ -626,6 +626,48 @@ class SWMFile:
             return 1
         return (n - 1) // 3 + 1
 
+    def subtune(self, index: int) -> SWMFile:
+        """Return a single-subtune view of this module for playback.
+
+        SID-Wizard groups :attr:`sequences` into subtunes of three (one
+        orderlist per SID channel) and keeps a funktempo pair per subtune
+        in :attr:`subtune_tempos`. :class:`~pysidwizard.player.SWMPlayer`
+        only ever plays the first three sequences with ``subtune_tempos[0]``,
+        so to audition subtune ``index`` of a multi-subtune tune, wrap it as
+        ``SWMPlayer(swm.subtune(index))``.
+
+        The returned :class:`SWMFile` shares this module's patterns,
+        instruments, and chord / tempo tables (they are global to the tune)
+        but exposes only the three sequences and the single tempo pair of the
+        requested subtune. ``index`` is 0-based and must be in
+        ``range(self.subtune_count)``.
+        """
+        if not (0 <= index < self.subtune_count):
+            raise IndexError(f"subtune {index} out of range 0..{self.subtune_count - 1}")
+        start = index * 3
+        tempos = [self.subtune_tempos[index]] if index < len(self.subtune_tempos) else []
+        return SWMFile(
+            frame_speed=self.frame_speed,
+            highlight=self.highlight,
+            auto_advance=self.auto_advance,
+            config_bits=self.config_bits,
+            mute=self.mute,
+            default_pattern_length=self.default_pattern_length,
+            color_theme=self.color_theme,
+            keyboard_type=self.keyboard_type,
+            driver_type=self.driver_type,
+            tuning_type=self.tuning_type,
+            reserved=self.reserved,
+            author=self.author,
+            sequences=self.sequences[start : start + 3],
+            patterns=self.patterns,
+            instruments=self.instruments,
+            chord_table=self.chord_table,
+            tempo_table=self.tempo_table,
+            subtune_tempos=tempos,
+            load_address=self.load_address,
+        )
+
     def author_str(self) -> str:
         return self.author.decode("latin-1").rstrip(" \x00")
 

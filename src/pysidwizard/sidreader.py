@@ -12,9 +12,13 @@ module synthesises placeholder instrument names and best-effort lengths. Do
 **not** route the result back through the writer expecting a byte-exact
 round-trip.
 
-Scope (Phase 1): single-SID ``PSID`` only. ``RSID``, multi-SID, and the
-occasional player variant that lays its data out differently are rejected
-with a clear error and left for a later phase.
+Scope: single-SID ``PSID`` and ``RSID`` tunes whose ``SWM1`` tune data is
+laid out uncompressed in the SID image. Multi-subtune tunes are fully decoded
+(each subtune is reachable via :meth:`SWMFile.subtune`). Out of scope, rejected
+with a clear, specific error: multi-SID files (the player is single-SID only),
+SID-Wizard *packed* (SWP) tunes (the data is compressed and only expanded at
+runtime), and the occasional relocated/loader layout that hides or omits the
+``SWM1`` header.
 
 Format notes (verified against SID-Wizard's ``exporter.asm`` /
 ``packdepack.inc``)
@@ -82,7 +86,14 @@ from .model import (
     decode_sequence,
     unpack_pattern,
 )
-from .sidfile import PSID_MAGIC, parse_psid_header
+from .sidfile import PSID_MAGIC, RSID_MAGIC, parse_psid_header
+
+# SID-Wizard's packer (``include/packdepack.inc``) compresses the tune data and
+# the runtime expands it backward in place at init time. The packed blob keeps
+# a ``SWP1`` magic (the ``SWM1`` header with its ``M`` turned into ``P``). We
+# cannot reconstruct the expanded image without re-implementing the depacker, so
+# packed tunes are detected and rejected with a clear, specific error.
+SWP_MAGIC = b"SWP1"
 
 # Per-subtune block in the runtime "subtunes" table: SID_CHANNELS 16-bit
 # sequence pointers followed by a [left, right] funktempo pair.
@@ -111,27 +122,45 @@ class _LayoutError(SIDFormatError):
 
 
 def parse_sid(data: bytes) -> SWMFile:
-    """Parse a single-SID PSID SID-Wizard ``.sid`` image into a :class:`SWMFile`.
+    """Parse a single-SID SID-Wizard ``.sid`` image into a :class:`SWMFile`.
 
     The returned model plays under :class:`~pysidwizard.player.SWMPlayer`
-    exactly as a parsed ``.swm`` would. Read-only and lossy (see the module
-    docstring). Raises :class:`SIDFormatError` for: not a PSID, an ``RSID`` or
-    multi-SID file (deferred to a later phase), a missing ``SWM1`` tune header,
-    truncation, or pointer tables that do not resolve.
+    exactly as a parsed ``.swm`` would (multi-subtune tunes expose their other
+    subtunes via :meth:`SWMFile.subtune`). Read-only and lossy (see the module
+    docstring).
+
+    Both ``PSID`` and ``RSID`` containers are accepted: RSID uses a different
+    init/play convention but the embedded SID-Wizard tune-data layout is
+    identical, so any RSID whose tables resolve is parsed too. Raises
+    :class:`SIDFormatError` for: an unrecognised magic, a multi-SID file
+    (the player and model are single-SID only, so playback would be wrong),
+    a SID-Wizard *packed* (SWP) tune (the data is only expanded at runtime),
+    a missing ``SWM1`` tune header, truncation, or pointer tables that do not
+    resolve.
     """
     header = parse_psid_header(data)
-    if header.is_rsid:
-        raise SIDFormatError("RSID files are not supported yet (Phase 2)")
-    if header.magic != PSID_MAGIC:
+    if header.magic not in (PSID_MAGIC, RSID_MAGIC):
         raise SIDFormatError(f"unsupported SID magic {header.magic!r}")
     if header.version >= 3 or header.is_multi_sid:
-        raise SIDFormatError("multi-SID files are not supported yet (Phase 2)")
+        raise SIDFormatError(
+            "multi-SID (2-SID / 3-SID) files are not supported: the player and "
+            "SWMFile model are single-SID only, so parsing one SID's channels "
+            "would misrepresent the tune"
+        )
 
     load = header.real_load_address
     base = header.data_start  # file offset that maps to ``load``
+    if data.find(SWP_MAGIC, base) >= 0:
+        raise SIDFormatError(
+            "SID-Wizard packed (SWP) tunes are not supported: the tune data is "
+            "compressed and only expanded into memory at runtime by the player"
+        )
     swm_pos = data.find(SWM_MAGIC, base)
     if swm_pos < 0:
-        raise SIDFormatError("no 'SWM1' tune header found in the SID image")
+        raise SIDFormatError(
+            "no 'SWM1' tune header found in the SID image (the file may be a "
+            "packed or relocated SID-Wizard tune, which is not supported)"
+        )
     if swm_pos + TUNE_HEADER_SIZE > len(data):
         raise SIDFormatError("'SWM1' tune header is truncated")
     swm_header = data[swm_pos : swm_pos + TUNE_HEADER_SIZE]

@@ -795,8 +795,21 @@ class SWMPlayer:
     def _advance_sequence(self, v: VoiceState) -> None:
         """Walk the orderlist forward, applying every Transpose /
         TempoOverride encountered, until we find a PlayPattern or run
-        into End / Loop."""
+        into End / Loop.
+
+        A well-formed orderlist always reaches a PlayPattern (or End) within
+        one pass, so the loop below returns at the first one. Degenerate
+        orderlists — e.g. an empty/unused subtune whose only command is a
+        ``Loop`` pointing back at itself with no pattern in the cycle — would
+        otherwise spin forever inside a single frame. ``seen`` records each
+        position visited in *this* call and breaks the cycle by treating the
+        voice as ended; because a real loop returns at its PlayPattern before
+        ever revisiting a position, this never triggers for valid tunes."""
+        seen: set = set()
         while v.seq_pos < len(v.sequence):
+            if v.seq_pos in seen:
+                break
+            seen.add(v.seq_pos)
             cmd = v.sequence[v.seq_pos]
             v.seq_pos += 1
             if isinstance(cmd, PlayPattern):
