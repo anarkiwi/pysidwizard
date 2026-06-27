@@ -56,4 +56,8 @@ jobs:
         # the real SID-Wizard binary inside asid-vice, for each of the
         # four reference tunes. Asserts pysidwizard's SWMPlayer output
         # matches every frame × every SID register.
-        run: python -m pytest -m integration -ra tests/integration/
+        #
+        # ``-n0`` overrides the ``-n auto`` in pyproject's addopts: each
+        # integration test spins its own VICE Docker container and they
+        # would conflict if run in parallel, so force a single process.
+        run: python -m pytest -m integration -ra -n0 tests/integration/

@@ -24,6 +24,29 @@ if str(_SRC) not in sys.path:
 from tests._swm_cache import TUNE_NAMES, all_swm_paths, swm_path  # noqa: E402
 
 
+def pytest_addoption(parser, pluginmanager):
+    """Keep ``-p no:xdist`` usable for serial debugging.
+
+    ``-n auto`` lives in ``addopts`` (see pyproject) so the suite
+    parallelises by default. When xdist is explicitly disabled via
+    ``-p no:xdist``, that option is no longer registered and pytest would
+    abort on the unknown ``-n`` argument. Re-register a no-op ``-n`` in
+    that case so the run simply proceeds serially (the value is ignored —
+    without xdist there are no workers to spawn).
+    """
+    if not pluginmanager.hasplugin("xdist"):
+        group = parser.getgroup("xdist-disabled-fallback")
+        # ``-n`` is a reserved lowercase short option; use the same private
+        # entry point xdist itself uses to register it.
+        group._addoption(
+            "-n",
+            "--numprocesses",
+            dest="numprocesses",
+            default=None,
+            help="(ignored: pytest-xdist is disabled — running serially)",
+        )
+
+
 @pytest.fixture(scope="session")
 def swm_paths() -> dict:
     """Cached ``{tune: Path}`` for the four reference tunes. Materialised
