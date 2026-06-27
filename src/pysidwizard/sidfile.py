@@ -133,16 +133,20 @@ def parse_psid_header(data: bytes) -> PsidHeader:
 
 
 def is_sidwizard_sid(data: bytes) -> bool:
-    """Return True if ``data`` looks like a single-SID PSID SID-Wizard tune.
+    """Return True if ``data`` looks like a single-SID SID-Wizard tune.
 
-    Cheap predicate: a ``PSID`` magic, version below 3 (so single-SID), no
-    advertised second/third SID, and an ``SWM1`` tune-header magic somewhere
-    in the memory image. Does not attempt a full parse.
+    Cheap predicate: a ``PSID`` or ``RSID`` magic, single-SID (version below 3
+    with no advertised second/third SID), and an ``SWM1`` tune-header magic
+    somewhere in the memory image. Both container types carry the same
+    SID-Wizard tune-data layout, so both are accepted. Does not attempt a full
+    parse.
     """
     try:
         header = parse_psid_header(data)
     except SIDFormatError:
         return False
-    if not header.is_psid or header.version >= 3 or header.is_multi_sid:
+    if not (header.is_psid or header.is_rsid):
+        return False
+    if header.version >= 3 or header.is_multi_sid:
         return False
     return data.find(SWM_MAGIC, header.data_start) >= 0

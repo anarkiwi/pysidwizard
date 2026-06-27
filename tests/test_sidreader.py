@@ -18,6 +18,7 @@ from pysidwizard import (
     Instrument,
     PlayPattern,
     Row,
+    SequenceCommand,
     SIDFormatError,
     SWMPlayer,
     Transpose,
@@ -90,7 +91,7 @@ def _build_reference_image():
     # --- low regions: sequences, then patterns, then instruments ---
     seq_addrs = []
     cursor = LOAD + 0x100
-    seq_cmds = [
+    seq_cmds: list[list[SequenceCommand]] = [
         [PlayPattern(1), PlayPattern(2)],  # ch0: End terminator appended below
         [Transpose(2), PlayPattern(1)],  # ch1
         [PlayPattern(2)],  # ch2
@@ -180,6 +181,92 @@ def _build_reference_image():
     return _make_psid(LOAD, image, end), expected
 
 
+def _build_two_subtune_image():
+    """Build a structurally complete two-subtune tune image.
+
+    Six sequences (two subtunes of three channels), each subtune with its own
+    funktempo pair. Returns ``(sid_bytes, expected)``.
+    """
+    seq_amount, pat_amount, inst_amount = 6, 2, 1
+    chord_len, tempo_len = 0, 0
+    subtunes = 2
+    image: dict = {}
+
+    def put(addr, data):
+        for i, b in enumerate(data):
+            image[addr + i] = b
+
+    swm_pos = LOAD + 0x20
+    put(swm_pos, _swm_header(seq_amount, pat_amount, inst_amount, chord_len, tempo_len))
+
+    cursor = LOAD + 0x100
+    # Distinct orderlist per channel so we can tell subtunes apart.
+    seq_cmds: list[list[SequenceCommand]] = [
+        [PlayPattern(1)],
+        [PlayPattern(2)],
+        [PlayPattern(1), PlayPattern(2)],
+        [PlayPattern(2)],
+        [PlayPattern(1)],
+        [PlayPattern(2), PlayPattern(1)],
+    ]
+    seq_addrs = []
+    for cmds in seq_cmds:
+        seq_addrs.append(cursor)
+        body = encode_sequence(cmds) + b"\xfe"
+        put(cursor, body)
+        cursor += len(body)
+
+    pat_rows = [[Row(note=0x31, instrument=1)], [Row(note=0x10)]]
+    pat_addrs = []
+    for rows in pat_rows:
+        pat_addrs.append(cursor)
+        unpacked = b"".join(r.encode() for r in rows)
+        packed = pack_pattern(unpacked)
+        put(cursor, packed + b"\xff" + bytes([len(unpacked) + 1]))
+        cursor += len(packed) + 2
+
+    inst = Instrument(
+        control=0x10,
+        attack=2,
+        decay=3,
+        wf_table=bytes([0x41]),
+        pw_table=b"",
+        filter_table=b"",
+    )
+    inst_addr = cursor
+    put(cursor, inst.encode() + b"\xff")
+    cursor += len(inst.encode()) + 1
+
+    # No chord/tempo tables; the subtune table sits next.
+    subtune_base = cursor
+    subtune_tempos = [(0x86, 0x83), (0x88, 0x84)]
+    block = bytearray()
+    for st in range(subtunes):
+        for ch in range(3):
+            block += seq_addrs[st * 3 + ch].to_bytes(2, "little")
+        block += bytes(subtune_tempos[st])
+    put(subtune_base, block)
+
+    inst_lo = subtune_base + 8 * subtunes
+    inst_hi = inst_lo + (inst_amount + 1)
+    ptn_lo = inst_hi + inst_amount
+    ptn_hi = ptn_lo + pat_amount
+    end = ptn_hi + (pat_amount + 1)
+
+    image[inst_lo + 1] = inst_addr & 0xFF
+    image[inst_hi + 1] = (inst_addr >> 8) & 0xFF
+    for k in range(1, pat_amount + 1):
+        image[ptn_lo + k] = pat_addrs[k - 1] & 0xFF
+        image[ptn_hi + k] = (pat_addrs[k - 1] >> 8) & 0xFF
+
+    expected = {
+        "seq_amount": seq_amount,
+        "subtune_count": subtunes,
+        "subtune_tempos": subtune_tempos,
+    }
+    return _make_psid(LOAD, image, end), expected
+
+
 def test_parse_sid_recovers_counts_and_content():
     sid, exp = _build_reference_image()
     swm = parse_sid(sid)
@@ -193,7 +280,7 @@ def test_parse_sid_recovers_counts_and_content():
 
 
 def test_parse_sid_recovers_pattern_notes():
-    sid, exp = _build_reference_image()
+    sid, _ = _build_reference_image()
     swm = parse_sid(sid)
     p0 = swm.patterns[0]
     assert [r.note for r in p0.rows] == [0x31, 0x33, None, 0x35]
@@ -234,6 +321,33 @@ def test_parse_sid_result_plays():
         player.play_frame()
 
 
+def test_parse_sid_exposes_all_subtunes():
+    sid, exp = _build_two_subtune_image()
+    swm = parse_sid(sid)
+    assert len(swm.sequences) == exp["seq_amount"]
+    assert swm.subtune_count == exp["subtune_count"]
+    assert swm.subtune_tempos == exp["subtune_tempos"]
+    # Each subtune is reachable as its own playable, three-sequence view.
+    for n in range(exp["subtune_count"]):
+        st = swm.subtune(n)
+        assert len(st.sequences) == 3
+        assert st.subtune_tempos == [exp["subtune_tempos"][n]]
+        assert st.sequences == swm.sequences[n * 3 : n * 3 + 3]
+        # Shared global tables are preserved.
+        assert st.patterns is swm.patterns
+        assert st.instruments is swm.instruments
+        player = SWMPlayer(st)
+        for _ in range(60):
+            player.play_frame()
+
+
+def test_subtune_out_of_range_raises():
+    sid, exp = _build_two_subtune_image()
+    swm = parse_sid(sid)
+    with pytest.raises(IndexError):
+        swm.subtune(exp["subtune_count"])
+
+
 def test_read_sid_from_path(tmp_path):
     sid, exp = _build_reference_image()
     path = tmp_path / "reference.sid"
@@ -268,12 +382,26 @@ def test_parse_sid_rejects_bad_magic():
         parse_sid(b"NOPE" + b"\x00" * 0x80)
 
 
-def test_parse_sid_rejects_rsid():
-    sid, _ = _build_reference_image()
+def test_parse_sid_accepts_rsid_with_resolvable_data():
+    # RSID uses a different init/play convention, but the embedded SID-Wizard
+    # tune-data layout is identical, so a resolvable RSID parses like a PSID.
+    sid, exp = _build_reference_image()
     rsid = b"RSID" + sid[4:]
-    with pytest.raises(SIDFormatError, match="RSID"):
-        parse_sid(rsid)
-    assert is_sidwizard_sid(rsid) is False
+    assert is_sidwizard_sid(rsid) is True
+    swm = parse_sid(rsid)
+    assert len(swm.patterns) == exp["pat_amount"]
+    assert len(swm.instruments) == exp["inst_amount"]
+    SWMPlayer(swm).play_frame()
+
+
+def test_parse_sid_rejects_packed_swp_tune():
+    # A SID-Wizard 'packed' export keeps an 'SWP1' magic; we can't expand it.
+    sid, _ = _build_reference_image()
+    tampered = bytearray(sid)
+    # Splice an SWP1 magic into the data area (after the container header).
+    tampered[0x90:0x94] = b"SWP1"
+    with pytest.raises(SIDFormatError, match="packed"):
+        parse_sid(bytes(tampered))
 
 
 def test_parse_sid_rejects_multi_sid():
@@ -314,16 +442,24 @@ _HVSC = "/scratch/preframr/hvsc/C64Music"
 _CATALOG = "/scratch/anarkiwi/cbm/hvsc-tracker-catalog/data/results.csv"
 
 
+def _corpus_rows():
+    import csv
+
+    return [r for r in csv.reader(open(_CATALOG)) if len(r) > 1 and "SidWizard" in r[1]]
+
+
 @pytest.mark.skipif(
     not (os.path.isdir(_HVSC) and os.path.isfile(_CATALOG)),
     reason="local HVSC corpus not present",
 )
 def test_real_corpus_sample_parses_and_plays():
-    import csv
-
-    rows = [r for r in csv.reader(open(_CATALOG)) if len(r) > 1 and "SidWizard" in r[1]]
-    checked = 0
-    for r in rows:
+    # Parse the whole corpus (fast) but cap per-file playback so the test stays
+    # CI-friendly. RSID and multi-subtune tunes are guaranteed a play below.
+    parsed = 0
+    played = 0
+    rsid_played = 0
+    multisubtune_played = 0
+    for r in _corpus_rows():
         path = os.path.join(_HVSC, r[0])
         try:
             data = open(path, "rb").read()
@@ -331,18 +467,65 @@ def test_real_corpus_sample_parses_and_plays():
             continue
         if not is_sidwizard_sid(data):
             continue
+        is_rsid = data[:4] == b"RSID"
         try:
             swm = parse_sid(data)
         except SIDFormatError:
-            continue  # the long Phase-2 tail is allowed to fail cleanly
+            continue  # the packed / relocated tail is allowed to fail cleanly
         header = data[data.find(SWM_MAGIC) :][:TUNE_HEADER_SIZE]
         assert len(swm.instruments) == header[0x0E]
         assert len(swm.patterns) == header[0x0D]
         assert len(swm.sequences) == header[0x0C]
-        player = SWMPlayer(swm)
-        for _ in range(500):
-            player.play_frame()
-        checked += 1
-        if checked >= 40:
-            break
-    assert checked >= 10, "expected to parse+play a healthy sample of the corpus"
+        parsed += 1
+        # Drive the player for a bounded sample, always including RSID and
+        # multi-subtune tunes so the new categories are exercised.
+        is_multi = swm.subtune_count > 1
+        if played < 40 or (is_rsid and rsid_played < 3) or (is_multi and multisubtune_played < 3):
+            player = SWMPlayer(swm)
+            for _ in range(300):
+                player.play_frame()
+            played += 1
+            if is_rsid:
+                rsid_played += 1
+            if is_multi:
+                multisubtune_played += 1
+                # Every subtune must be independently playable.
+                for n in range(swm.subtune_count):
+                    sub_player = SWMPlayer(swm.subtune(n))
+                    for _ in range(120):
+                        sub_player.play_frame()
+    assert parsed >= 800, "expected to parse the bulk of the corpus"
+    assert rsid_played >= 1, "expected at least one RSID tune to parse and play"
+    assert multisubtune_played >= 1, "expected at least one multi-subtune tune"
+
+
+@pytest.mark.skipif(
+    not (os.path.isdir(_HVSC) and os.path.isfile(_CATALOG)),
+    reason="local HVSC corpus not present",
+)
+def test_real_corpus_rejections_are_clear():
+    # Packed and multi-SID tunes must raise specific, actionable errors rather
+    # than parsing into a misleading model.
+    from pysidwizard import parse_psid_header
+
+    saw_packed = False
+    saw_multisid = False
+    for r in _corpus_rows():
+        path = os.path.join(_HVSC, r[0])
+        try:
+            data = open(path, "rb").read()
+        except OSError:
+            continue
+        try:
+            header = parse_psid_header(data)
+        except SIDFormatError:
+            continue
+        if header.version >= 3 or header.is_multi_sid:
+            with pytest.raises(SIDFormatError, match="multi-SID"):
+                parse_sid(data)
+            saw_multisid = True
+        elif data.find(b"SWP1", header.data_start) >= 0:
+            with pytest.raises(SIDFormatError, match="packed"):
+                parse_sid(data)
+            saw_packed = True
+    assert saw_packed and saw_multisid
