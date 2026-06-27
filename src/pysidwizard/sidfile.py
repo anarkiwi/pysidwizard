@@ -22,6 +22,11 @@ from .errors import SIDFormatError
 PSID_MAGIC = b"PSID"
 RSID_MAGIC = b"RSID"
 
+# SID-Wizard's "packed" (SWP) export keeps an ``SWP1`` magic instead of (or in
+# addition to) the ``SWM1`` tune header. Some packed tunes carry no ``SWM1``
+# header at all, so the predicate below accepts either magic.
+_SWP_MAGIC = b"SWP1"
+
 # Field offsets within the (big-endian) SID container header.
 _MAGIC_POS = 0x00
 _VERSION_POS = 0x04
@@ -136,10 +141,10 @@ def is_sidwizard_sid(data: bytes) -> bool:
     """Return True if ``data`` looks like a single-SID SID-Wizard tune.
 
     Cheap predicate: a ``PSID`` or ``RSID`` magic, single-SID (version below 3
-    with no advertised second/third SID), and an ``SWM1`` tune-header magic
-    somewhere in the memory image. Both container types carry the same
-    SID-Wizard tune-data layout, so both are accepted. Does not attempt a full
-    parse.
+    with no advertised second/third SID), and an ``SWM1`` tune-header magic (or
+    an ``SWP1`` packed-export magic) somewhere in the memory image. Both
+    container types carry the same SID-Wizard tune-data layout, so both are
+    accepted. Does not attempt a full parse.
     """
     try:
         header = parse_psid_header(data)
@@ -149,4 +154,7 @@ def is_sidwizard_sid(data: bytes) -> bool:
         return False
     if header.version >= 3 or header.is_multi_sid:
         return False
-    return data.find(SWM_MAGIC, header.data_start) >= 0
+    return (
+        data.find(SWM_MAGIC, header.data_start) >= 0
+        or data.find(_SWP_MAGIC, header.data_start) >= 0
+    )

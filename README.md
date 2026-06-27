@@ -70,10 +70,18 @@ names (placeholders like `INST 01` are synthesised) and the editor's exact
 per-pattern row length, so do not route the result back through the writer
 expecting a byte-exact round-trip.
 
-Scope is **single-SID PSID** files — roughly 95% of the SID-Wizard tunes in
-HVSC. `RSID`, multi-SID, and a small tail of files exported by unusual
-player variants raise `SIDFormatError` (a subclass of `SWMFormatError`) and
-are left for a later phase.
+Both plain and **packed (`SWP`)** SID-Wizard exports are decoded. "Packed"
+is a misnomer — the tune data is not compressed; it is the same runtime
+layout with *relative* pointer tables located via an offset-table in the
+`SWP1` header. Some packed exports ship a stale player-template `SWM1`
+header or omit it, so for `SWP` tunes the structural counts come from the
+table extents and the lossy metadata (author, frame speed, ...) defaults
+when no real header is present.
+
+Scope is **single-SID** `PSID`/`RSID` tunes (plain or `SWP`) — the large
+majority of SID-Wizard tunes in HVSC. Multi-SID files, and a small tail of
+files exported by unusual/relocated player variants, raise `SIDFormatError`
+(a subclass of `SWMFormatError`).
 
 ## Build an SWM from scratch
 
