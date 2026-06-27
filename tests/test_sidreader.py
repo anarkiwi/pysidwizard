@@ -442,24 +442,70 @@ _HVSC = "/scratch/preframr/hvsc/C64Music"
 _CATALOG = "/scratch/anarkiwi/cbm/hvsc-tracker-catalog/data/results.csv"
 
 
+_CORPUS_PRESENT = os.path.isdir(_HVSC) and os.path.isfile(_CATALOG)
+
+
 def _corpus_rows():
     import csv
 
+    # Return an empty list when the corpus isn't present so module-level
+    # parametrize() collection (below) never touches the missing catalog.
+    # The per-test skipif still guards execution; an empty parameter set
+    # skips cleanly.
+    if not _CORPUS_PRESENT:
+        return []
     return [r for r in csv.reader(open(_CATALOG)) if len(r) > 1 and "SidWizard" in r[1]]
 
 
-@pytest.mark.skipif(
-    not (os.path.isdir(_HVSC) and os.path.isfile(_CATALOG)),
-    reason="local HVSC corpus not present",
-)
-def test_real_corpus_sample_parses_and_plays():
-    # Parse the whole corpus (fast) but cap per-file playback so the test stays
-    # CI-friendly. RSID and multi-subtune tunes are guaranteed a play below.
+# Materialised once at import so xdist workers parametrize over a stable set.
+_CORPUS_ROWS = _corpus_rows()
+
+
+def _corpus_id(row):
+    return row[0]
+
+
+@pytest.mark.skipif(not _CORPUS_PRESENT, reason="local HVSC corpus not present")
+@pytest.mark.parametrize("row", _CORPUS_ROWS, ids=_corpus_id)
+def test_real_corpus_row_parses_and_plays(row):
+    # Per-tune parse + bounded playback. Parametrized (one case per corpus
+    # row) so xdist distributes the work and a failure points at one tune.
+    path = os.path.join(_HVSC, row[0])
+    try:
+        data = open(path, "rb").read()
+    except OSError:
+        pytest.skip("file not present on disk")
+    if not is_sidwizard_sid(data):
+        pytest.skip("not a SID-Wizard tune")
+    try:
+        swm = parse_sid(data)
+    except SIDFormatError:
+        pytest.skip("packed / relocated tail is allowed to fail cleanly")
+    header = data[data.find(SWM_MAGIC) :][:TUNE_HEADER_SIZE]
+    assert len(swm.instruments) == header[0x0E]
+    assert len(swm.patterns) == header[0x0D]
+    assert len(swm.sequences) == header[0x0C]
+    # Drive the player for a bounded sample.
+    player = SWMPlayer(swm)
+    for _ in range(300):
+        player.play_frame()
+    if swm.subtune_count > 1:
+        # Every subtune must be independently playable.
+        for n in range(swm.subtune_count):
+            sub_player = SWMPlayer(swm.subtune(n))
+            for _ in range(120):
+                sub_player.play_frame()
+
+
+@pytest.mark.skipif(not _CORPUS_PRESENT, reason="local HVSC corpus not present")
+def test_real_corpus_has_expected_coverage():
+    # Corpus-health fold (natural loop): the catalog must actually resolve to
+    # a substantial set of parseable tunes, including the RSID and
+    # multi-subtune categories the per-row test exercises.
     parsed = 0
-    played = 0
-    rsid_played = 0
-    multisubtune_played = 0
-    for r in _corpus_rows():
+    rsid_seen = False
+    multisubtune_seen = False
+    for r in _CORPUS_ROWS:
         path = os.path.join(_HVSC, r[0])
         try:
             data = open(path, "rb").read()
@@ -467,50 +513,51 @@ def test_real_corpus_sample_parses_and_plays():
             continue
         if not is_sidwizard_sid(data):
             continue
-        is_rsid = data[:4] == b"RSID"
         try:
             swm = parse_sid(data)
         except SIDFormatError:
             continue  # the packed / relocated tail is allowed to fail cleanly
-        header = data[data.find(SWM_MAGIC) :][:TUNE_HEADER_SIZE]
-        assert len(swm.instruments) == header[0x0E]
-        assert len(swm.patterns) == header[0x0D]
-        assert len(swm.sequences) == header[0x0C]
         parsed += 1
-        # Drive the player for a bounded sample, always including RSID and
-        # multi-subtune tunes so the new categories are exercised.
-        is_multi = swm.subtune_count > 1
-        if played < 40 or (is_rsid and rsid_played < 3) or (is_multi and multisubtune_played < 3):
-            player = SWMPlayer(swm)
-            for _ in range(300):
-                player.play_frame()
-            played += 1
-            if is_rsid:
-                rsid_played += 1
-            if is_multi:
-                multisubtune_played += 1
-                # Every subtune must be independently playable.
-                for n in range(swm.subtune_count):
-                    sub_player = SWMPlayer(swm.subtune(n))
-                    for _ in range(120):
-                        sub_player.play_frame()
+        if data[:4] == b"RSID":
+            rsid_seen = True
+        if swm.subtune_count > 1:
+            multisubtune_seen = True
     assert parsed >= 800, "expected to parse the bulk of the corpus"
-    assert rsid_played >= 1, "expected at least one RSID tune to parse and play"
-    assert multisubtune_played >= 1, "expected at least one multi-subtune tune"
+    assert rsid_seen, "expected at least one RSID tune to parse and play"
+    assert multisubtune_seen, "expected at least one multi-subtune tune"
 
 
-@pytest.mark.skipif(
-    not (os.path.isdir(_HVSC) and os.path.isfile(_CATALOG)),
-    reason="local HVSC corpus not present",
-)
-def test_real_corpus_rejections_are_clear():
+@pytest.mark.skipif(not _CORPUS_PRESENT, reason="local HVSC corpus not present")
+@pytest.mark.parametrize("row", _CORPUS_ROWS, ids=_corpus_id)
+def test_real_corpus_row_rejection_is_clear(row):
     # Packed and multi-SID tunes must raise specific, actionable errors rather
-    # than parsing into a misleading model.
-    from pysidwizard import parse_psid_header
+    # than parsing into a misleading model. Parametrized per row for isolation.
+    path = os.path.join(_HVSC, row[0])
+    try:
+        data = open(path, "rb").read()
+    except OSError:
+        pytest.skip("file not present on disk")
+    try:
+        header = parse_psid_header(data)
+    except SIDFormatError:
+        pytest.skip("not a parseable PSID/RSID header")
+    if header.version >= 3 or header.is_multi_sid:
+        with pytest.raises(SIDFormatError, match="multi-SID"):
+            parse_sid(data)
+    elif data.find(b"SWP1", header.data_start) >= 0:
+        with pytest.raises(SIDFormatError, match="packed"):
+            parse_sid(data)
+    else:
+        pytest.skip("neither packed nor multi-SID")
 
+
+@pytest.mark.skipif(not _CORPUS_PRESENT, reason="local HVSC corpus not present")
+def test_real_corpus_has_rejection_categories():
+    # Corpus-health fold: the catalog must contain at least one packed and one
+    # multi-SID tune so the per-row rejection test actually exercises both.
     saw_packed = False
     saw_multisid = False
-    for r in _corpus_rows():
+    for r in _CORPUS_ROWS:
         path = os.path.join(_HVSC, r[0])
         try:
             data = open(path, "rb").read()
@@ -521,11 +568,7 @@ def test_real_corpus_rejections_are_clear():
         except SIDFormatError:
             continue
         if header.version >= 3 or header.is_multi_sid:
-            with pytest.raises(SIDFormatError, match="multi-SID"):
-                parse_sid(data)
             saw_multisid = True
         elif data.find(b"SWP1", header.data_start) >= 0:
-            with pytest.raises(SIDFormatError, match="packed"):
-                parse_sid(data)
             saw_packed = True
     assert saw_packed and saw_multisid

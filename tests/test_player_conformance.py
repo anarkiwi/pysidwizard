@@ -48,30 +48,30 @@ def baseline() -> dict:
     return {entry["tune"]: entry for entry in raw}
 
 
-@pytest.fixture(scope="module")
-def current() -> dict:
-    """Run the conformance harness on every fixture tune once per session."""
+def _conform_tune(tune: str) -> dict:
+    """Run the conformance harness on a single fixture tune.
+
+    Computed per-(parametrized) tune so ``pytest-xdist`` can distribute the
+    four tunes across workers and each worker only does its own tune's work.
+    """
     from tests._swm_cache import swm_path as fetch_swm
 
-    out: dict = {}
-    for tune in TUNES:
-        ghost_path = FIXTURES / f"{tune}.ghost.csv"
-        out[tune] = conform_tune(
-            tune=tune,
-            swm_path=fetch_swm(tune),
-            ghost_path=ghost_path,
-            start_frame=1,
-            max_frames=None,
-            report_all=False,
-        )
-    return out
+    ghost_path = FIXTURES / f"{tune}.ghost.csv"
+    return conform_tune(
+        tune=tune,
+        swm_path=fetch_swm(tune),
+        ghost_path=ghost_path,
+        start_frame=1,
+        max_frames=None,
+        report_all=False,
+    )
 
 
 @pytest.mark.parametrize("tune", list(TUNES))
-def test_no_var_regresses_from_baseline(tune, baseline, current, capsys):
+def test_no_var_regresses_from_baseline(tune, baseline, capsys):
     """No (voice, var) cell may have MORE misses than its baseline."""
     base = baseline[tune]["voices"]
-    now = current[tune]["voices"]
+    now = _conform_tune(tune)["voices"]
     regressions: list[tuple[int, str, int, int]] = []
     improvements: list[tuple[int, str, int, int]] = []
     for vi_str, base_vars in base.items():
