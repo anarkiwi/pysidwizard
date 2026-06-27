@@ -78,10 +78,18 @@ header or omit it, so for `SWP` tunes the structural counts come from the
 table extents and the lossy metadata (author, frame speed, ...) defaults
 when no real header is present.
 
-Scope is **single-SID** `PSID`/`RSID` tunes (plain or `SWP`) — the large
-majority of SID-Wizard tunes in HVSC. Multi-SID files, and a small tail of
-files exported by unusual/relocated player variants, raise `SIDFormatError`
-(a subclass of `SWMFormatError`).
+*Relocated* exports — where the player is moved away from the tune data (so
+the SID `init` address points at an appended loader stub) but the pointer
+tables stay **absolute and contiguous** — are also recovered, by locating
+those tables mid-image instead of at end-of-data.
+
+Scope is **single-SID** `PSID`/`RSID` tunes (plain, `SWP`, or relocated as
+above) — the large majority of SID-Wizard tunes in HVSC. Out of scope, and
+raising `SIDFormatError` (a subclass of `SWMFormatError`): multi-SID files;
+and relocated/loader layouts whose pointer tables are *relative* (re-based by
+the player at init, with no `SWP1` offset-table to read) or whose bodies use a
+format the shared decoders reject — these need a per-version player map to
+resolve unambiguously and are left rejected rather than mis-parsed.
 
 ## Build an SWM from scratch
 

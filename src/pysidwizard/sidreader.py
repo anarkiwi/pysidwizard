@@ -14,10 +14,18 @@ round-trip.
 
 Scope: single-SID ``PSID`` and ``RSID`` tunes, including SID-Wizard's
 *packed* (``SWP``) exports. Multi-subtune tunes are fully decoded (each
-subtune is reachable via :meth:`SWMFile.subtune`). Out of scope, rejected
-with a clear, specific error: multi-SID files (the player is single-SID
-only), and the occasional relocated/loader layout that hides the tune
-tables entirely.
+subtune is reachable via :meth:`SWMFile.subtune`). *Relocated* exports — where
+the player is moved away from the tune data (so ``init`` points at an appended
+loader stub) but the pointer tables stay **absolute and contiguous** — are
+also recovered, by locating those tables mid-image instead of at end-of-data
+(see :func:`_build_relocated`).
+
+Out of scope, rejected with a clear, specific error: multi-SID files (the
+player is single-SID only); and the relocated/loader layouts whose pointer
+tables are *relative* (the player re-bases them at init, like ``SWP`` but with
+no ``SWP1`` offset-table to read) or whose bodies use a format the shared
+decoders reject — these cannot be resolved unambiguously without a
+per-version player map and are left rejected rather than mis-parsed.
 
 Two on-disk layouts are decoded; the byte-level decoding of patterns,
 instruments, sequences and chord/tempo tables is identical between them and
@@ -104,6 +112,7 @@ from .errors import SIDFormatError
 from .model import (
     Instrument,
     Pattern,
+    PlayPattern,
     SWMFile,
     decode_sequence,
     unpack_pattern,
@@ -148,6 +157,11 @@ _SEQUENCE_GUARD = 0x400
 
 _SEQUENCE_END = 0xFE
 _SEQUENCE_END_WITH_LOOP = 0xFF
+
+# A pattern note column holds a note (``<= 0x5F``) or a per-row effect
+# (vibrato/portamento/gate/...) up to ``0x7E``; anything above that in the note
+# column means a candidate relocated layout decoded non-pattern bytes.
+_PATTERN_NOTE_MAX = 0x7E
 
 
 class _LayoutError(SIDFormatError):
@@ -214,7 +228,19 @@ def parse_sid(data: bytes) -> SWMFile:
             return _build(data, load, base, swm_header, end)
         except _LayoutError as exc:
             last_error = exc
-    raise last_error or SIDFormatError("could not locate SID-Wizard tune data")
+    # The tail-anchored probe assumes the pointer tables sit at the very end of
+    # the tune data. Some exports relocate the player and/or append a loader so
+    # the tables are mid-image; recover those whose pointer tables remain
+    # absolute and contiguous (see :func:`_build_relocated`).
+    try:
+        return _build_relocated(data, load, base, swm_header)
+    except _LayoutError:
+        pass
+    raise SIDFormatError(
+        "SID-Wizard tune tables did not resolve: the player and tune data are "
+        "relocated/separated and the pointer tables are not absolute and "
+        "contiguous (relative-pointer or loader layouts are not supported)"
+    ) from last_error
 
 
 def read_sid(path: Union[str, os.PathLike[str]]) -> SWMFile:
@@ -267,6 +293,134 @@ def _build(
 
     # Chord/tempo tables sit immediately below the subtune table, with the
     # 8-byte RESTEMP gap the exporter inserts ahead of the tempo programs.
+    chord_base = subtune_base - _RESTEMP_SHIFT - tempo_len - chord_len
+    if chord_base <= min_pattern:
+        raise _LayoutError("chord table overlaps the pattern region")
+    chord_table = chunk(chord_base, chord_len) if chord_len else b""
+    tempo_table = chunk(chord_base + chord_len + _RESTEMP_SHIFT, tempo_len) if tempo_len else b""
+
+    return _assemble(
+        swm_header,
+        load,
+        sequences,
+        patterns,
+        instruments,
+        chord_table,
+        tempo_table,
+        subtune_tempos,
+    )
+
+
+def _build_relocated(data: bytes, load: int, base: int, swm_header: bytes) -> SWMFile:
+    """Recover a relocated tune whose pointer tables are mid-image.
+
+    Some SID-Wizard exports relocate the player (so ``init`` points at a stub
+    appended after the tune data) or otherwise separate the player from the
+    fully-expanded tune data. In these the four pointer tables (``inst_lo``,
+    ``inst_hi``, ``ptn_lo``, ``ptn_hi``) are still **absolute** and laid out
+    contiguously, but no longer at the end of the file, so the tail-anchored
+    probe in :func:`parse_sid` cannot find them.
+
+    This recovers exactly that subclass: the ``SWM1`` header supplies the
+    counts, and every plausible ``ptn_hi`` position is tried (with both
+    observed instrument-table spacings) until one yields a *fully* coherent,
+    content-sane tune — all instruments and patterns decode, no pattern row
+    references an out-of-range instrument or note, the subtune table resolves
+    and every sequence pattern-reference is in range. That joint constraint is
+    strong enough that a spurious match is not observed in the HVSC corpus.
+
+    Tunes whose tables are relative (or whose bodies use a format the shared
+    decoders reject) do not satisfy it and raise :class:`_LayoutError`, so
+    :func:`parse_sid` reports a clear error rather than mis-parsing them.
+    """
+    seq_amount = swm_header[SEQUENCE_AMOUNT_POS]
+    pat_amount = swm_header[PATTERN_AMOUNT_POS]
+    inst_amount = swm_header[INSTRUMENT_AMOUNT_POS]
+    chord_len = swm_header[CHORD_LENGTH_POS]
+    tempo_len = swm_header[TEMPO_LENGTH_POS]
+    subtunes = (seq_amount - 1) // SID_CHANNELS + 1 if seq_amount > 0 else 1
+
+    byte, chunk = _memory_accessors(data, load, base)
+    end = load + (len(data) - base)
+
+    last_error: Optional[_LayoutError] = _LayoutError("no relocated layout matched")
+    for ptn_hi in range(load + 1, end):
+        # The instrument block sits just below ``ptn_lo``; its two pointer
+        # tables are each (count) or (count+1) bytes, so try both spacings.
+        for gap in (inst_amount, inst_amount + 1):
+            try:
+                model = _try_relocated_layout(
+                    byte,
+                    chunk,
+                    swm_header,
+                    load,
+                    end,
+                    ptn_hi,
+                    gap,
+                    seq_amount,
+                    pat_amount,
+                    inst_amount,
+                    chord_len,
+                    tempo_len,
+                    subtunes,
+                )
+            except _LayoutError as exc:
+                last_error = exc
+                continue
+            return model
+    raise last_error
+
+
+def _try_relocated_layout(
+    byte,
+    chunk,
+    swm_header,
+    load,
+    end,
+    ptn_hi,
+    gap,
+    seq_amount,
+    pat_amount,
+    inst_amount,
+    chord_len,
+    tempo_len,
+    subtunes,
+) -> SWMFile:
+    """Decode one candidate relocated layout anchored at ``ptn_hi``.
+
+    Raises :class:`_LayoutError` (caught by :func:`_build_relocated`) unless the
+    layout decodes into a fully coherent, content-sane tune.
+    """
+    ptn_lo = ptn_hi - pat_amount
+    inst_hi = ptn_lo - gap
+    inst_lo = inst_hi - gap
+    if inst_lo <= load:
+        raise _LayoutError("relocated pointer tables underflow the load address")
+
+    instruments = _decode_instruments(byte, chunk, inst_lo, inst_hi, inst_amount, load, end)
+    patterns, min_pattern = _decode_patterns(byte, chunk, ptn_lo, ptn_hi, pat_amount, load, end)
+    # Reject mis-located tables whose "patterns" carry impossible columns.
+    for pattern in patterns:
+        for row in pattern.rows:
+            if row.instrument is not None and row.instrument > inst_amount:
+                raise _LayoutError("pattern references an out-of-range instrument")
+            if row.note is not None and row.note > _PATTERN_NOTE_MAX:
+                raise _LayoutError("pattern carries an out-of-range note column")
+
+    subtune_base = _locate_subtune_table(byte, inst_lo, subtunes, seq_amount, load, min_pattern)
+    sequences = _decode_sequences(byte, chunk, subtune_base, seq_amount, load, end)
+    for sequence in sequences:
+        for command in sequence:
+            if isinstance(command, PlayPattern) and command.pattern > pat_amount:
+                raise _LayoutError("sequence references an out-of-range pattern")
+    subtune_tempos = [
+        (
+            byte(subtune_base + _SUBTUNE_BLOCK * st + 2 * SID_CHANNELS),
+            byte(subtune_base + _SUBTUNE_BLOCK * st + 2 * SID_CHANNELS + 1),
+        )
+        for st in range(subtunes)
+    ]
+
     chord_base = subtune_base - _RESTEMP_SHIFT - tempo_len - chord_len
     if chord_base <= min_pattern:
         raise _LayoutError("chord table overlaps the pattern region")

@@ -181,6 +181,115 @@ def _build_reference_image():
     return _make_psid(LOAD, image, end), expected
 
 
+def _build_relocated_image():
+    """Build a *relocated* tune: absolute, contiguous pointer tables that are
+    **not** at end-of-data, plus a trailing loader stub.
+
+    Two things force the relocated recovery path (:func:`_build_relocated`):
+    the instrument-table spacing is symmetric (``ptn_lo - inst_hi`` is
+    ``inst+1`` rather than the ``inst`` the tail-anchored ``_build`` assumes),
+    and a junk stub follows ``ptn_hi`` so the tables no longer end the file.
+    Returns ``(sid_bytes, expected)``.
+    """
+    seq_amount, pat_amount, inst_amount = 3, 2, 2
+    chord_len, tempo_len = 4, 0
+    image: dict = {}
+
+    def put(addr, data):
+        for i, b in enumerate(data):
+            image[addr + i] = b & 0xFF
+
+    swm_pos = LOAD + 0x20
+    put(swm_pos, _swm_header(seq_amount, pat_amount, inst_amount, chord_len, tempo_len))
+
+    seq_addrs = []
+    cursor = LOAD + 0x100
+    seq_cmds = [
+        [PlayPattern(1), PlayPattern(2)],
+        [Transpose(2), PlayPattern(1)],
+        [PlayPattern(2)],
+    ]
+    for cmds in seq_cmds:
+        seq_addrs.append(cursor)
+        body = encode_sequence(cmds) + b"\xfe"
+        put(cursor, body)
+        cursor += len(body)
+
+    pat_rows = [
+        [Row(note=0x31, instrument=1), Row(note=0x33), Row(), Row(note=0x35, instrument=2)],
+        [Row(note=0x10)],
+    ]
+    pat_addrs = []
+    for rows in pat_rows:
+        pat_addrs.append(cursor)
+        unpacked = b"".join(r.encode() for r in rows)
+        packed = pack_pattern(unpacked)
+        put(cursor, packed + b"\xff" + bytes([len(unpacked) + 1]))
+        cursor += len(packed) + 2
+
+    insts = [
+        Instrument(
+            control=0x10,
+            attack=2,
+            decay=3,
+            sustain=10,
+            release=5,
+            wf_table=bytes([0x41, 0x42]),
+            pw_table=bytes([0x00, 0x08]),
+            filter_table=bytes([0xF0]),
+        ),
+        Instrument(control=0x40, attack=0, decay=15, first_waveform=0x11, wf_table=bytes([0x21])),
+    ]
+    inst_addrs = []
+    for inst in insts:
+        inst_addrs.append(cursor)
+        body = inst.encode() + b"\xff"
+        put(cursor, body)
+        cursor += len(body)
+
+    chord_base = cursor
+    chord_table = bytes([0x00, 0x03, 0x07, 0x7F])
+    put(chord_base, chord_table)
+    subtune_base = chord_base + chord_len + 8 + tempo_len  # 8-byte RESTEMP gap
+    inst_lo = subtune_base + 8
+
+    block = bytearray()
+    for sa in seq_addrs:
+        block += sa.to_bytes(2, "little")
+    block += bytes([0x86, 0x83])
+    put(subtune_base, block)
+
+    # Symmetric instrument-table spacing (inst+1 on BOTH sides) — this is what
+    # the tail-anchored ``_build`` mis-derives, sending parsing to the
+    # relocated path.
+    inst_hi = inst_lo + (inst_amount + 1)
+    ptn_lo = inst_hi + (inst_amount + 1)
+    ptn_hi = ptn_lo + pat_amount
+
+    for k in range(1, inst_amount + 1):
+        image[inst_lo + k] = inst_addrs[k - 1] & 0xFF
+        image[inst_hi + k] = (inst_addrs[k - 1] >> 8) & 0xFF
+    for k in range(1, pat_amount + 1):
+        image[ptn_lo + k] = pat_addrs[k - 1] & 0xFF
+        image[ptn_hi + k] = (pat_addrs[k - 1] >> 8) & 0xFF
+
+    # Trailing loader stub so the tables are no longer at end-of-data.
+    stub = LOAD + 0x400
+    put(stub, b"\x4c\x00\x10" + bytes(0x20))
+    end = stub + 0x23
+
+    expected = {
+        "seq_amount": seq_amount,
+        "pat_amount": pat_amount,
+        "inst_amount": inst_amount,
+        "chord_table": chord_table,
+        "subtune_tempos": [(0x86, 0x83)],
+        "pat_rows": pat_rows,
+        "insts": insts,
+    }
+    return _make_psid(LOAD, image, end), expected
+
+
 def _build_two_subtune_image():
     """Build a structurally complete two-subtune tune image.
 
@@ -545,6 +654,47 @@ def test_parse_sid_result_plays():
         player.play_frame()
 
 
+def test_parse_relocated_recovers_counts_and_content():
+    # Pointer tables sit mid-image (a loader stub follows) with symmetric
+    # instrument-table spacing: the tail-anchored probe fails and the relocated
+    # recovery path resolves the absolute, contiguous tables.
+    sid, exp = _build_relocated_image()
+    swm = parse_sid(sid)
+    assert len(swm.sequences) == exp["seq_amount"]
+    assert len(swm.patterns) == exp["pat_amount"]
+    assert len(swm.instruments) == exp["inst_amount"]
+    assert swm.load_address == LOAD
+    assert swm.chord_table == exp["chord_table"]
+    assert swm.subtune_tempos == exp["subtune_tempos"]
+    assert [r.note for r in swm.patterns[0].rows] == [0x31, 0x33, None, 0x35]
+    assert swm.patterns[0].rows[0].instrument == 1
+    i0 = swm.instruments[0]
+    assert i0.control == 0x10
+    assert (i0.attack, i0.decay, i0.sustain, i0.release) == (2, 3, 10, 5)
+    assert i0.wf_table == bytes([0x41, 0x42])
+    assert swm.sequences[0] == [PlayPattern(1), PlayPattern(2), End()]
+
+
+def test_parse_relocated_result_plays():
+    sid, _ = _build_relocated_image()
+    player = SWMPlayer(parse_sid(sid))
+    for _ in range(200):
+        player.play_frame()
+
+
+def test_parse_relocated_rejects_when_tables_corrupted():
+    # If the relocated tables are not coherent, the reader must raise a clear
+    # SIDFormatError rather than mis-parsing a relative/loader layout.
+    sid, _ = _build_relocated_image()
+    tampered = bytearray(sid)
+    # Zero the whole pointer-table + body region after the SWM1 header so no
+    # absolute, contiguous layout resolves.
+    for off in range(0x7E + 0x60, len(tampered)):
+        tampered[off] = 0
+    with pytest.raises(SIDFormatError):
+        parse_sid(bytes(tampered))
+
+
 def test_parse_sid_exposes_all_subtunes():
     sid, exp = _build_two_subtune_image()
     swm = parse_sid(sid)
@@ -877,3 +1027,41 @@ def test_known_swp_file_parses_and_plays(rel):
         player = SWMPlayer(swm.subtune(n))
         for _ in range(500):
             player.play_frame()
+
+
+# Real HVSC tunes whose player is relocated away from the tune data but whose
+# pointer tables remain absolute and contiguous, so the relocated recovery path
+# resolves them. (Verified against sidplayfp output; see PR notes.)
+_KNOWN_RELOCATED_FILES = [
+    "MUSICIANS/B/Batsman/Muterad.sid",
+]
+
+
+@pytest.mark.skipif(not _CORPUS_PRESENT, reason="local HVSC corpus not present")
+@pytest.mark.parametrize("rel", _KNOWN_RELOCATED_FILES)
+def test_known_relocated_file_parses_and_plays(rel):
+    path = os.path.join(_HVSC, rel)
+    try:
+        data = open(path, "rb").read()
+    except OSError:
+        pytest.skip("file not present on disk")
+    header = data[data.find(SWM_MAGIC) :][:TUNE_HEADER_SIZE]
+    swm = parse_sid(data)
+    # Counts come from the (intact) SWM1 header; the tables were relocated.
+    assert len(swm.instruments) == header[0x0E]
+    assert len(swm.patterns) == header[0x0D]
+    assert len(swm.sequences) == header[0x0C]
+    # Content sanity: every sequence pattern-reference resolves; pattern rows
+    # carry in-range instrument/note columns.
+    max_ref = max(
+        (c.pattern for s in swm.sequences for c in s if isinstance(c, PlayPattern)),
+        default=0,
+    )
+    assert max_ref <= len(swm.patterns)
+    for pat in swm.patterns:
+        for r_ in pat.rows:
+            assert r_.instrument is None or r_.instrument <= len(swm.instruments)
+            assert r_.note is None or r_.note <= 0x7E
+    player = SWMPlayer(swm)
+    for _ in range(500):
+        player.play_frame()
