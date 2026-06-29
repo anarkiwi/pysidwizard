@@ -67,7 +67,7 @@ jobs:
         # The tarball is ~9 MB; caching avoids hitting CSDB on every
         # test run. Keyed by the SHA-256 baked into sidwizard-driver's
         # fetch.py so a sidwizard-driver upgrade busts the cache.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/sidwizard-driver
           key: sidwizard-1.94-with-sources-544e36aff3fe14b7
