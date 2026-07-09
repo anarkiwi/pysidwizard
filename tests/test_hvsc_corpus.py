@@ -1,0 +1,149 @@
+"""Real-HVSC corpus tests for the SID-Wizard ``.sid`` reader.
+
+The tune list is enumerated deterministically with ``sidid`` (see
+:mod:`tests._hvsc_corpus` for the method) and baked in as **paths only** — no
+copyrighted tune bytes live in the repo. Every test here skips cleanly when the
+local HVSC tree is absent and runs for real against ``$HVSC`` (default
+``/scratch/preframr/hvsc/C64Music``) when present.
+
+The positive sample asserts, per tune, that :func:`parse_sid` / :func:`read_sid`
+succeed, that :meth:`SidWizardSidParser.detect` classifies the tune as
+``DIRECT`` (its ``SWM1``/``SWP1`` anchor is found statically, no init run), and
+that the recovered model plays. The ``EXCLUDED_*`` tests assert each
+out-of-scope class is rejected with a clear, specific error rather than a silent
+mis-parse.
+"""
+
+from __future__ import annotations
+
+import os
+
+import pysidtracker
+import pytest
+
+from pysidwizard import (
+    PlayPattern,
+    SIDFormatError,
+    SidWizardSidParser,
+    SWMPlayer,
+    is_sidwizard_sid,
+    parse_psid_header,
+    parse_sid,
+    read_sid,
+)
+from tests._hvsc_corpus import (
+    EXCLUDED_MULTI_SID,
+    EXCLUDED_NO_ANCHOR,
+    EXCLUDED_UNRESOLVED,
+    SAMPLE,
+)
+
+_HVSC = os.environ.get("HVSC", "/scratch/preframr/hvsc/C64Music")
+_HAVE_HVSC = os.path.isdir(_HVSC)
+
+_skip = pytest.mark.skipif(not _HAVE_HVSC, reason="local HVSC tree not present")
+
+
+def _read(rel: str) -> bytes:
+    path = os.path.join(_HVSC, rel)
+    try:
+        with open(path, "rb") as fh:
+            return fh.read()
+    except OSError:
+        pytest.skip(f"tune not present in this HVSC snapshot: {rel}")
+
+
+@_skip
+@pytest.mark.parametrize("rel", SAMPLE)
+def test_sample_parses_detects_direct_and_plays(rel):
+    data = _read(rel)
+    assert is_sidwizard_sid(data) is True
+
+    # detect() must classify the direct-load export as DIRECT without emulating
+    # init (its SWM1/SWP1 anchor is found statically in the loaded image).
+    detection = SidWizardSidParser().detect(data)
+    assert detection.kind is pysidtracker.PlayroutineKind.DIRECT
+    assert detection.ran_init is False
+    assert detection.anchor
+
+    swm = parse_sid(data)
+    # read_sid(path) is the same code path from disk.
+    assert read_sid(os.path.join(_HVSC, rel)).subtune_count == swm.subtune_count
+
+    # Structural sanity: every orderlist pattern reference resolves and every
+    # decoded row note is a legal pitch/effect byte.
+    max_ref = max(
+        (c.pattern for s in swm.sequences for c in s if isinstance(c, PlayPattern)),
+        default=0,
+    )
+    assert max_ref <= len(swm.patterns)
+    for pat in swm.patterns:
+        for row in pat.rows:
+            assert row.note is None or row.note <= 0x7F
+
+    player = SWMPlayer(swm)
+    for _ in range(300):
+        player.play_frame()
+
+    if swm.subtune_count > 1:
+        for n in range(swm.subtune_count):
+            sub_player = SWMPlayer(swm.subtune(n))
+            for _ in range(120):
+                sub_player.play_frame()
+
+
+@_skip
+def test_sample_is_representative():
+    # Guard against the deterministic sample silently degrading to a single
+    # trivial shape: it must still span RSID, packed (SWP) and multi-subtune.
+    rsid = swp = multisubtune = 0
+    for rel in SAMPLE:
+        data = _read(rel)
+        if data[:4] == b"RSID":
+            rsid += 1
+        if data.find(b"SWP1", parse_psid_header(data).data_start) >= 0:
+            swp += 1
+        if parse_sid(data).subtune_count > 1:
+            multisubtune += 1
+    assert rsid >= 1, "sample lost its RSID coverage"
+    assert swp >= 1, "sample lost its packed (SWP) coverage"
+    assert multisubtune >= 5, "sample lost its multi-subtune coverage"
+
+
+@_skip
+@pytest.mark.parametrize("rel", EXCLUDED_MULTI_SID)
+def test_excluded_multi_sid_rejected(rel):
+    # Multi-SID (2-SID/3-SID) is out of scope: the player and model are
+    # single-SID only, so it must reject rather than misrepresent one SID.
+    data = _read(rel)
+    assert is_sidwizard_sid(data) is False
+    with pytest.raises(SIDFormatError, match="multi-SID"):
+        parse_sid(data)
+
+
+@_skip
+@pytest.mark.parametrize("rel", EXCLUDED_NO_ANCHOR)
+def test_excluded_no_anchor_rejected(rel):
+    # Stripped / relocated exports carry no static SWM1/SWP1 anchor. They are
+    # out of the direct-load scope (docs/SID_READ_SCOPE.md §6): the gate rejects
+    # them, parse errors clearly, and detection is not DIRECT even without init.
+    data = _read(rel)
+    assert is_sidwizard_sid(data) is False
+    with pytest.raises(SIDFormatError):
+        parse_sid(data)
+    detection = SidWizardSidParser().detect(data, init=False)
+    assert detection.kind is not pysidtracker.PlayroutineKind.DIRECT
+
+
+@_skip
+@pytest.mark.parametrize("rel", EXCLUDED_UNRESOLVED)
+def test_excluded_unresolved_rejected(rel):
+    # An SWM1 magic is present (so the cheap static recogniser anchors on it and
+    # detect() reports DIRECT), but the embedded tune-header counts match no
+    # coherent in-place pointer-table geometry (stale/template header or a
+    # relocated export). parse_sid must reject with a clear error, not silently
+    # mis-parse.
+    data = _read(rel)
+    assert is_sidwizard_sid(data) is True
+    with pytest.raises(SIDFormatError, match="did not resolve"):
+        parse_sid(data)

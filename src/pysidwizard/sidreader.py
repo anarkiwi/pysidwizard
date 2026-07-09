@@ -106,6 +106,7 @@ from .errors import SIDFormatError
 from .model import (
     Instrument,
     Pattern,
+    PlayPattern,
     SWMFile,
     decode_sequence,
     unpack_pattern,
@@ -158,6 +159,25 @@ class _LayoutError(SIDFormatError):
     Raised while probing for the true ``expoendadd``; the prober catches it
     and tries the next candidate. The final failure re-raises the last one.
     """
+
+
+def _validate_pattern_refs(sequences, n_patterns: int) -> None:
+    """Reject a layout whose orderlists reference a non-existent pattern.
+
+    Every :class:`PlayPattern` in a coherent tune names a pattern in
+    ``1..n_patterns`` (``0`` is the reserved empty slot). A reference above
+    ``n_patterns`` means the subtune/sequence pointers were resolved against the
+    wrong region (e.g. a wrong end-of-data candidate), so the decoded sequences
+    are noise walked out of pattern/instrument bytes. Raising here lets the
+    :func:`parse_sid` end-probe reject this candidate and try another — turning
+    a silent mis-parse into either the correct layout or a clean failure.
+    """
+    for seq in sequences:
+        for cmd in seq:
+            if isinstance(cmd, PlayPattern) and cmd.pattern > n_patterns:
+                raise _LayoutError(
+                    f"orderlist references pattern {cmd.pattern} but only {n_patterns} exist"
+                )
 
 
 def parse_sid(data: bytes) -> SWMFile:
@@ -216,7 +236,17 @@ def parse_sid(data: bytes) -> SWMFile:
             return _build(data, load, base, swm_header, end)
         except _LayoutError as exc:
             last_error = exc
-    raise last_error or SIDFormatError("could not locate SID-Wizard tune data")
+    # An 'SWM1' magic was present but no end-of-data candidate yielded a coherent
+    # absolute-pointer layout. This is the stale/uninitialised player-template
+    # header or relocated-export tail: the counts in the embedded tune header do
+    # not correspond to any in-place pointer-table geometry (see the module
+    # docstring's scope note). Report it as such rather than surfacing the last,
+    # misleading per-candidate probe error ("pointer tables underflow ...").
+    raise SIDFormatError(
+        "'SWM1' tune header found but its pointer tables did not resolve to a "
+        "coherent in-place layout (stale/template header or relocated export); "
+        f"out of the single-SID direct-load scope. Last probe: {last_error}"
+    )
 
 
 def read_sid(path: Union[str, os.PathLike[str]]) -> SWMFile:
@@ -281,6 +311,7 @@ def _build(
 
     subtune_base = _locate_subtune_table(byte, inst_lo, subtunes, seq_amount, load, min_pattern)
     sequences = _decode_sequences(byte, chunk, subtune_base, seq_amount, load, end)
+    _validate_pattern_refs(sequences, len(patterns))
     subtune_tempos = [
         (
             byte(subtune_base + _SUBTUNE_BLOCK * st + 2 * SID_CHANNELS),
@@ -441,6 +472,7 @@ def _build_swp(data: bytes, load: int, base: int, swp_off: int) -> SWMFile:
     sequences = _decode_sequences(
         byte, chunk, subtune_base, seq_amount, load, end, ptr_base=swp_base
     )
+    _validate_pattern_refs(sequences, len(patterns))
     subtune_tempos = [
         (
             byte(subtune_base + _SUBTUNE_BLOCK * st + 2 * SID_CHANNELS),
