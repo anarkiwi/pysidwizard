@@ -220,3 +220,7 @@ __marimo__/
 # SID-Wizard binary artifacts — NOT tracked, fetched on demand by
 # tests/_swm_cache.py via sidwizard-driver's tarball cache.
 tests/data/
+
+# HVSC corpus tunes are copyright works — fetched on demand from the HVSC
+# mirror by tests/_hvsc_fetch.py, never committed.
+tests/.tunecache/

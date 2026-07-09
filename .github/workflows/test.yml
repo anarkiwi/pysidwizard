@@ -72,6 +72,15 @@ jobs:
           path: ~/.cache/sidwizard-driver
           key: sidwizard-1.94-with-sources-544e36aff3fe14b7
 
+      - name: Cache HVSC corpus tunes
+        # HVSC tunes are copyright and never committed; the corpus tests fetch
+        # them from the mirror into a gitignored cache. Cache that dir across
+        # runs, keyed on the corpus path list + the fetch helper.
+        uses: actions/cache@v4
+        with:
+          path: tests/.tunecache
+          key: hvsc-tunes-${{ hashFiles('tests/_hvsc_corpus.py', 'tests/_hvsc_fetch.py') }}
+
       - name: Run tests with coverage
         run: |
           python -m pytest --cov=pysidwizard --cov-report=term-missing --cov-report=xml

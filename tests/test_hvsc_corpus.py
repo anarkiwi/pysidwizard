@@ -16,8 +16,6 @@ mis-parse.
 
 from __future__ import annotations
 
-import os
-
 import pysidtracker
 import pytest
 
@@ -37,26 +35,27 @@ from tests._hvsc_corpus import (
     EXCLUDED_UNRESOLVED,
     SAMPLE,
 )
+from tests._hvsc_fetch import resolve
 
-_HVSC = os.environ.get("HVSC", "/scratch/preframr/hvsc/C64Music")
-_HAVE_HVSC = os.path.isdir(_HVSC)
 
-_skip = pytest.mark.skipif(not _HAVE_HVSC, reason="local HVSC tree not present")
+def _path(rel: str):
+    # Local $HVSC tree when present, else fetched from the HVSC mirror into the
+    # gitignored cache. Skips this one tune only if genuinely unreachable, so
+    # the corpus runs for real in CI (mirror reachable) instead of skipping.
+    path = resolve(rel)
+    if path is None:
+        pytest.skip(f"tune unavailable (local HVSC or mirror): {rel}")
+    return path
 
 
 def _read(rel: str) -> bytes:
-    path = os.path.join(_HVSC, rel)
-    try:
-        with open(path, "rb") as fh:
-            return fh.read()
-    except OSError:
-        pytest.skip(f"tune not present in this HVSC snapshot: {rel}")
+    return _path(rel).read_bytes()
 
 
-@_skip
 @pytest.mark.parametrize("rel", SAMPLE)
 def test_sample_parses_detects_direct_and_plays(rel):
-    data = _read(rel)
+    path = _path(rel)
+    data = path.read_bytes()
     assert is_sidwizard_sid(data) is True
 
     # detect() must classify the direct-load export as DIRECT without emulating
@@ -68,7 +67,7 @@ def test_sample_parses_detects_direct_and_plays(rel):
 
     swm = parse_sid(data)
     # read_sid(path) is the same code path from disk.
-    assert read_sid(os.path.join(_HVSC, rel)).subtune_count == swm.subtune_count
+    assert read_sid(str(path)).subtune_count == swm.subtune_count
 
     # Structural sanity: every orderlist pattern reference resolves and every
     # decoded row note is a legal pitch/effect byte.
@@ -92,7 +91,6 @@ def test_sample_parses_detects_direct_and_plays(rel):
                 sub_player.play_frame()
 
 
-@_skip
 def test_sample_is_representative():
     # Guard against the deterministic sample silently degrading to a single
     # trivial shape: it must still span RSID, packed (SWP) and multi-subtune.
@@ -110,7 +108,6 @@ def test_sample_is_representative():
     assert multisubtune >= 5, "sample lost its multi-subtune coverage"
 
 
-@_skip
 @pytest.mark.parametrize("rel", EXCLUDED_MULTI_SID)
 def test_excluded_multi_sid_rejected(rel):
     # Multi-SID (2-SID/3-SID) is out of scope: the player and model are
@@ -121,7 +118,6 @@ def test_excluded_multi_sid_rejected(rel):
         parse_sid(data)
 
 
-@_skip
 @pytest.mark.parametrize("rel", EXCLUDED_NO_ANCHOR)
 def test_excluded_no_anchor_rejected(rel):
     # Stripped / relocated exports carry no static SWM1/SWP1 anchor. They are
@@ -135,7 +131,6 @@ def test_excluded_no_anchor_rejected(rel):
     assert detection.kind is not pysidtracker.PlayroutineKind.DIRECT
 
 
-@_skip
 @pytest.mark.parametrize("rel", EXCLUDED_UNRESOLVED)
 def test_excluded_unresolved_rejected(rel):
     # An SWM1 magic is present (so the cheap static recogniser anchors on it and
