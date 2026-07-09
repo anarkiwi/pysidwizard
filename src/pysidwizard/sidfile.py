@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from pysidtracker import SidFormatError, parse_sid_header
+
 from .constants import SWM_MAGIC
 from .errors import SIDFormatError
 
@@ -26,23 +28,6 @@ RSID_MAGIC = b"RSID"
 # addition to) the ``SWM1`` tune header. Some packed tunes carry no ``SWM1``
 # header at all, so the predicate below accepts either magic.
 _SWP_MAGIC = b"SWP1"
-
-# Field offsets within the (big-endian) SID container header.
-_MAGIC_POS = 0x00
-_VERSION_POS = 0x04
-_DATA_OFFSET_POS = 0x06
-_LOAD_ADDRESS_POS = 0x08
-_INIT_ADDRESS_POS = 0x0A
-_PLAY_ADDRESS_POS = 0x0C
-_SONGS_POS = 0x0E
-_START_SONG_POS = 0x10
-_FLAGS_POS = 0x76
-_SECOND_SID_POS = 0x7A  # v3+: address byte of the 2nd SID (0 => single SID)
-_THIRD_SID_POS = 0x7C  # v4+: address byte of the 3rd SID
-
-
-def _u16be(data: bytes, pos: int) -> int:
-    return (data[pos] << 8) | data[pos + 1]
 
 
 @dataclass
@@ -91,49 +76,30 @@ def parse_psid_header(data: bytes) -> PsidHeader:
     Raises :class:`SIDFormatError` if the magic is neither ``PSID`` nor
     ``RSID`` or the header is truncated. The embedded load address (used when
     the header ``loadAddress`` field is ``0``) is read from the data area.
+
+    Delegates the byte-level decode (including the load-address-0 handling that
+    resolves :attr:`PsidHeader.real_load_address` / :attr:`PsidHeader.data_start`)
+    to :func:`pysidtracker.parse_sid_header`, re-raising its
+    :class:`pysidtracker.SidFormatError` as this package's :class:`SIDFormatError`.
     """
-    if len(data) < 0x7C:
-        raise SIDFormatError("input is too short to contain a SID header")
-    magic = bytes(data[_MAGIC_POS : _MAGIC_POS + 4])
-    if magic not in (PSID_MAGIC, RSID_MAGIC):
-        raise SIDFormatError(
-            "not a SID file (expected 'PSID' or 'RSID' magic at offset 0, " f"found {magic!r})"
-        )
-    version = _u16be(data, _VERSION_POS)
-    data_offset = _u16be(data, _DATA_OFFSET_POS)
-    load_address = _u16be(data, _LOAD_ADDRESS_POS)
-    init_address = _u16be(data, _INIT_ADDRESS_POS)
-    play_address = _u16be(data, _PLAY_ADDRESS_POS)
-    songs = _u16be(data, _SONGS_POS)
-    start_song = _u16be(data, _START_SONG_POS)
-    flags = _u16be(data, _FLAGS_POS) if len(data) >= _FLAGS_POS + 2 else 0
-    second_sid = data[_SECOND_SID_POS] if len(data) > _SECOND_SID_POS else 0
-    third_sid = data[_THIRD_SID_POS] if len(data) > _THIRD_SID_POS else 0
-
-    if data_offset + 2 > len(data):
-        raise SIDFormatError("SID dataOffset points past the end of the file")
-    if load_address == 0:
-        # Real load address is the first little-endian word of the data area.
-        real_load = data[data_offset] | (data[data_offset + 1] << 8)
-        data_start = data_offset + 2
-    else:
-        real_load = load_address
-        data_start = data_offset
-
+    try:
+        header = parse_sid_header(data)
+    except SidFormatError as exc:
+        raise SIDFormatError(str(exc)) from exc
     return PsidHeader(
-        magic=magic,
-        version=version,
-        data_offset=data_offset,
-        load_address=load_address,
-        init_address=init_address,
-        play_address=play_address,
-        songs=songs,
-        start_song=start_song,
-        flags=flags,
-        second_sid=second_sid,
-        third_sid=third_sid,
-        real_load_address=real_load,
-        data_start=data_start,
+        magic=header.magic,
+        version=header.version,
+        data_offset=header.data_offset,
+        load_address=header.load_address,
+        init_address=header.init_address,
+        play_address=header.play_address,
+        songs=header.songs,
+        start_song=header.start_song,
+        flags=header.flags,
+        second_sid=header.second_sid,
+        third_sid=header.third_sid,
+        real_load_address=header.real_load_address,
+        data_start=header.data_start,
     )
 
 

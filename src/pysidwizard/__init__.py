@@ -40,7 +40,7 @@ from .model import (
 from .player import SWMPlayer, iter_writes, render_wav, write_csv
 from .reader import parse_swm, read_swm
 from .sidfile import PsidHeader, is_sidwizard_sid, parse_psid_header
-from .sidreader import parse_sid, read_sid
+from .sidreader import SidWizardSidParser, parse_sid, read_sid
 from .writer import build_swm, write_swm
 
 __all__ = [
@@ -58,6 +58,7 @@ __all__ = [
     "SWMFormatError",
     "SWMPlayer",
     "SequenceCommand",
+    "SidWizardSidParser",
     "TempoOverride",
     "Transpose",
     "Waveform",
