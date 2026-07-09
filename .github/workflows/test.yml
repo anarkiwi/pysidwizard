@@ -29,6 +29,7 @@ jobs:
       - name: Install dev dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install "pysidtracker @ git+https://github.com/anarkiwi/pysidtracker@main"  # TODO: switch to PyPI once pysidtracker is published
           python -m pip install -e ".[dev]"
 
       - name: ruff check
@@ -61,6 +62,7 @@ jobs:
         # tests/_swm_cache.py).
         run: |
           python -m pip install --upgrade pip
+          pip install "pysidtracker @ git+https://github.com/anarkiwi/pysidtracker@main"  # TODO: switch to PyPI once pysidtracker is published
           python -m pip install -e ".[dev]"
 
       - name: Cache SID-Wizard tarball + extracted SWMs

@@ -71,7 +71,9 @@ driver/tuning, chord/tempo-table lengths); otherwise model defaults are used.
 from __future__ import annotations
 
 import os
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
+
+from pysidtracker import BaseSidParser, SidImage
 
 from .constants import (
     AUTHOR_LEN,
@@ -221,6 +223,28 @@ def read_sid(path: Union[str, os.PathLike[str]]) -> SWMFile:
     """Read a SID-Wizard ``.sid`` file from ``path`` and return a :class:`SWMFile`."""
     with open(path, "rb") as fh:
         return parse_sid(fh.read())
+
+
+class SidWizardSidParser(BaseSidParser):
+    """:class:`pysidtracker.BaseSidParser` adapter for SID-Wizard ``.sid`` tunes.
+
+    Gives SID-Wizard the shared ``read``/``parse``/``detect`` surface: parsing
+    delegates to :func:`parse_sid`, and :meth:`recognize` anchors on the
+    ``SWM1`` tune header (or the ``SWP1`` packed-export magic) so
+    :meth:`~pysidtracker.BaseSidParser.detect` classifies a direct-load tune as
+    :attr:`~pysidtracker.PlayroutineKind.DIRECT`.
+    """
+
+    error_class = SIDFormatError
+
+    def parse(self, data: bytes, **kwargs: Any) -> SWMFile:
+        return parse_sid(data, **kwargs)
+
+    def recognize(self, image: SidImage) -> object:
+        pos = image.find(SWM_MAGIC)
+        if pos < 0:
+            pos = image.find(SWP_MAGIC)
+        return pos if pos >= 0 else None
 
 
 def _build(

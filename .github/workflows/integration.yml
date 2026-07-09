@@ -40,6 +40,7 @@ jobs:
       - name: Install package and integration dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install "pysidtracker @ git+https://github.com/anarkiwi/pysidtracker@main"  # TODO: switch to PyPI once pysidtracker is published
           python -m pip install -e ".[integration]"
 
       - name: Cache SID-Wizard 1.94 source tarball

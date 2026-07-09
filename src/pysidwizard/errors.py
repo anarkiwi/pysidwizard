@@ -1,8 +1,14 @@
 """Exceptions raised by :mod:`pysidwizard`."""
 
+from pysidtracker import SidError
 
-class SWMError(Exception):
-    """Base class for SWM-related errors."""
+
+class SWMError(SidError):
+    """Base class for SWM-related errors.
+
+    Subclasses :class:`pysidtracker.SidError` so callers can catch every
+    ``py*`` SID parser's errors uniformly.
+    """
 
 
 class SWMFormatError(SWMError, ValueError):
