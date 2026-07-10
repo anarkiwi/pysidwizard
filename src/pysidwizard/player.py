@@ -27,9 +27,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-import wave
 from dataclasses import dataclass, field
-from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterator, List, Optional, Sequence, Tuple
 
@@ -37,6 +35,8 @@ from pysidtracker.registers import (
     PAL_CLOCK_HZ,
     PAL_CYCLES_PER_FRAME,
     SID_BASE,
+    SID_REG_COUNT,
+    SID_VOICE_OFFSET,
 )
 
 from .constants import (
@@ -2148,7 +2148,7 @@ class SWMPlayer:
             # note-FX, which counts as "triggered" via _apply_row.
             if not v.triggered:
                 continue
-            base = SID_REG_BASE + v_idx * 7
+            base = SID_BASE + SID_VOICE_OFFSET[v_idx]
             # When the voice has no instrument loaded, SID-Wizard's
             # TICK_2 / CNTPLAY takes the ``ldy CURINS,x; bne STRTINS;
             # jmp LEGATOO`` branch and LEGATOO ends at WRWFGHO — which
@@ -2244,10 +2244,12 @@ def iter_writes(
     if player is None:
         player = SWMPlayer(swm)
     if initial_state is None:
-        last_vals: List[int] = [0] * 25
+        last_vals: List[int] = [0] * SID_REG_COUNT
     else:
-        if len(initial_state) != 25:
-            raise ValueError(f"initial_state must be length 25, got {len(initial_state)}")
+        if len(initial_state) != SID_REG_COUNT:
+            raise ValueError(
+                f"initial_state must be length {SID_REG_COUNT}, got {len(initial_state)}"
+            )
         last_vals = list(initial_state)
     for frame_idx in range(n_frames):
         for reg, val in player.play_frame():
@@ -2295,71 +2297,46 @@ def render_wav(
     model_name: str = "MOS6581",
     dedupe_writes: bool = True,
 ) -> int:
-    """Drive an SWM through :class:`SWMPlayer` + ``pyresidfp`` into a WAV.
+    """Drive an SWM through :class:`SWMPlayer` and an emulated SID into a WAV.
 
-    Also writes a sibling ``<out_wav>.csv`` with the per-frame deduped
-    SID register writes — handy for offline diffs and for catching
-    cases where the player emits nothing.
+    The SID emulation and WAV encode are delegated to
+    :func:`pysidtracker.render_wav`, fed by this player's per-frame
+    ``(reg, val)`` iterator. Also writes a sibling ``<out_wav>.csv`` with the
+    per-frame register writes — handy for offline diffs and for catching cases
+    where the player emits nothing.
+
+    Raises :class:`pysidtracker.AudioUnavailable` if ``pyresidfp`` is missing.
     """
-
-    try:
-        from pyresidfp import SoundInterfaceDevice
-        from pyresidfp.sound_interface_device import ChipModel  # type: ignore
-    except ImportError as e:
-        raise SystemExit(f"pyresidfp required: {e}") from e
-
-    import numpy as np
+    from pysidtracker import render_wav as _render_wav
 
     swm = read_swm(str(swm_path))
     player = SWMPlayer(swm)
+    n_frames = seconds_to_frames(player, seconds)
 
-    sid = SoundInterfaceDevice(model=getattr(ChipModel, model_name))
-    sid.reset()
-    for r in range(25):
-        sid.write_register(r, 0)  # type: ignore[arg-type]
-    sid.clock(timedelta(seconds=0.05))
-
-    cycles_per_sec = sid.clock_frequency
-    seconds_per_frame = player.cycles_per_frame / cycles_per_sec
-    n_frames = int(seconds / seconds_per_frame)
-
-    # Pre-compute the (deduped or raw) write stream so the audio loop
-    # below only has to clock the emulator.
     grouped: List[List[Tuple[int, int]]] = [[] for _ in range(n_frames)]
-    total_writes_raw = n_frames * 25  # what an undeduped run would emit
-    for frame_idx, r, v in iter_writes(swm, n_frames, dedupe=dedupe_writes):
+    for frame_idx, r, v in iter_writes(swm, n_frames, dedupe=dedupe_writes, player=player):
         grouped[frame_idx].append((r, v))
-    write_log: List[Tuple[int, int, int]] = [
-        (f, r, v) for f, pairs in enumerate(grouped) for r, v in pairs
-    ]
-    skipped_writes = total_writes_raw - len(write_log)
+    model = {"MOS6581": "6581", "MOS8580": "8580"}[model_name]
+    _render_wav(
+        grouped,
+        out_wav,
+        model=model,
+        cycles_per_frame=player.cycles_per_frame,
+        clock_frequency=PAL_CLOCK_HZ,
+    )
 
-    chunks: list = []
-    for frame_idx in range(n_frames):
-        for r, v in grouped[frame_idx]:
-            sid.write_register(r, v)  # type: ignore[arg-type]
-        samples = sid.clock(timedelta(seconds=seconds_per_frame))
-        chunks.append(np.asarray(samples, dtype=np.int16))
-
-    audio = np.concatenate(chunks) if chunks else np.array([], dtype=np.int16)
-    sr = int(sid.sampling_frequency)
-    with wave.open(str(out_wav), "wb") as w:
-        # pylint: disable=no-member
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(sr)
-        w.writeframes(audio.tobytes())
     csv_path = out_wav.with_suffix(".csv")
+    n_rows = 0
     with open(csv_path, "w") as f:
         f.write("frame,reg,value\n")
-        for frame_idx, r, v in write_log:
-            f.write(f"{frame_idx},{r},{v}\n")
-    msg = f"wrote {out_wav}: {len(audio)} samples " f"({len(audio)/sr:.2f}s @ {sr}Hz, {model_name})"
-    if dedupe_writes:
-        pct = (skipped_writes / total_writes_raw * 100) if total_writes_raw else 0.0
-        msg += f"; suppressed {skipped_writes}/{total_writes_raw} duplicate " f"writes ({pct:.1f}%)"
-    msg += f"; wrote {csv_path}: {len(write_log)} write rows"
-    print(msg)
+        for frame_idx, pairs in enumerate(grouped):
+            for r, v in pairs:
+                f.write(f"{frame_idx},{r},{v}\n")
+                n_rows += 1
+    print(
+        f"wrote {out_wav} ({seconds:.2f}s @ PAL 50Hz, {model_name}); "
+        f"wrote {csv_path}: {n_rows} write rows"
+    )
     return 0
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pysidwizard"
-version = "0.2.1"
+version = "0.3.0"
 description = "Pure-Python reader, writer, and player for SID-Wizard SWM modules"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,10 +19,11 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio",
 ]
 dependencies = [
-    # ``[emu]`` pulls py65: the ``.sid`` reader runs a tune's own player
-    # (``run_init``) to recover exports whose runtime image only materialises
-    # once init has run (see pysidwizard.sidreader._build_via_player).
-    "pysidtracker[emu]>=0.4",
+    # py65 is a required pysidtracker dependency: the ``.sid`` reader runs a
+    # tune's own player (``run_init``) to recover exports whose runtime image
+    # only materialises once init has run (see
+    # pysidwizard.sidreader._build_via_player).
+    "pysidtracker>=0.5",
 ]
 
 [project.optional-dependencies]

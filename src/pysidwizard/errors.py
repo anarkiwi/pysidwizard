@@ -1,17 +1,19 @@
-"""Exceptions raised by :mod:`pysidwizard`."""
+"""Exceptions raised by :mod:`pysidwizard`.
 
-from pysidtracker import SidError
+The SWM error triple is built by :func:`pysidtracker.make_package_errors`, so
+``SWMError`` / ``SWMParseError`` / ``SWMFormatError`` subclass both the package
+root and the matching base :class:`pysidtracker.SidParseError` /
+:class:`pysidtracker.SidFormatError` -- a base ``except SidFormatError`` catches
+this package's own-named format errors. ``SWMFormatError`` additionally mixes in
+``ValueError`` for callers that catch that.
+"""
+
+from pysidtracker import make_package_errors
+
+SWMError, SWMParseError, _SWMFormatError = make_package_errors("SWM")
 
 
-class SWMError(SidError):
-    """Base class for SWM-related errors.
-
-    Subclasses :class:`pysidtracker.SidError` so callers can catch every
-    ``py*`` SID parser's errors uniformly.
-    """
-
-
-class SWMFormatError(SWMError, ValueError):
+class SWMFormatError(_SWMFormatError, ValueError):
     """Raised when SWM data is malformed or violates documented limits."""
 
 

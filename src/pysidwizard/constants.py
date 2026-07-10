@@ -130,28 +130,6 @@ class Waveform(IntFlag):
     NOISE = 0x08
 
 
-def attack_decay(attack: int, decay: int) -> int:
-    """Pack an Attack/Decay nibble pair into a single ADSR-register byte.
-
-    Both nibbles are in the SID's 0..15 range. Used to assemble the
-    :data:`INST_AD_POS` and :data:`INST_HR_AD_POS` instrument bytes.
-    """
-    if not (0 <= attack <= 0xF and 0 <= decay <= 0xF):
-        raise ValueError("attack and decay must each be 0..15")
-    return (attack << 4) | decay
-
-
-def sustain_release(sustain: int, release: int) -> int:
-    """Pack a Sustain/Release nibble pair into a single ADSR-register byte.
-
-    Both nibbles are in the SID's 0..15 range. Used to assemble the
-    :data:`INST_SR_POS` and :data:`INST_HR_SR_POS` instrument bytes.
-    """
-    if not (0 <= sustain <= 0xF and 0 <= release <= 0xF):
-        raise ValueError("sustain and release must each be 0..15")
-    return (sustain << 4) | release
-
-
 def straight_tempo(frames_per_row: int) -> int:
     """Encode a "straight" (non-funky) subtune-tempo byte.
 
