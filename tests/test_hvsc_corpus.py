@@ -9,9 +9,10 @@ local HVSC tree is absent and runs for real against ``$HVSC`` (default
 The positive sample asserts, per tune, that :func:`parse_sid` / :func:`read_sid`
 succeed, that :meth:`SidWizardSidParser.detect` classifies the tune as
 ``DIRECT`` (its ``SWM1``/``SWP1`` anchor is found statically, no init run), and
-that the recovered model plays. The ``EXCLUDED_*`` tests assert each
-out-of-scope class is rejected with a clear, specific error rather than a silent
-mis-parse.
+that the recovered model plays. :data:`PLAYER_RECOVERED` asserts the same for
+the tunes that only resolve once the player's own init has materialised the
+runtime image, and :data:`EXCLUDED_MULTI_SID` asserts each out-of-scope multi-SID
+tune is rejected with a clear, specific error rather than a silent mis-parse.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from pysidwizard import (
 )
 from tests._hvsc_corpus import (
     EXCLUDED_MULTI_SID,
-    EXCLUDED_UNRESOLVED,
+    PLAYER_RECOVERED,
     SAMPLE,
 )
 from tests._hvsc_fetch import resolve
@@ -117,17 +118,33 @@ def test_excluded_multi_sid_rejected(rel):
         parse_sid(data)
 
 
-@pytest.mark.parametrize("rel", EXCLUDED_UNRESOLVED)
-def test_excluded_unresolved_rejected(rel):
-    # Recognised as SID-Wizard (an SWM1 magic or the player-code signature is
-    # present, so the static recogniser anchors and detect() reports DIRECT),
-    # but no coherent, playable layout resolves — a stale/template header or an
-    # export whose tune data is not materialised statically. Neither the in-place
-    # end-probe nor the relocation-invariant code scan resolves it, so parse_sid
-    # must reject with a clear error rather than silently mis-parse.
+@pytest.mark.parametrize("rel", PLAYER_RECOVERED)
+def test_player_recovered_parses_and_plays(rel):
+    # No coherent layout in the static image: recovered by running the tune's own
+    # player (run_init materialises the runtime image; table bases are read from
+    # the player's instruction operands). It still recognises statically (the
+    # SWM1 magic or player-code signature is present, so detect() is DIRECT
+    # without emulating), then parses, and every subtune plays.
     data = _read(rel)
     assert is_sidwizard_sid(data) is True
     detection = SidWizardSidParser().detect(data)
     assert detection.kind is pysidtracker.PlayroutineKind.DIRECT
-    with pytest.raises(SIDFormatError):
-        parse_sid(data)
+    assert detection.ran_init is False
+
+    swm = parse_sid(data)
+    assert read_sid(str(_path(rel))).subtune_count == swm.subtune_count
+
+    # Every orderlist pattern reference resolves and rows are legal.
+    max_ref = max(
+        (c.pattern for s in swm.sequences for c in s if isinstance(c, PlayPattern)),
+        default=0,
+    )
+    assert max_ref <= len(swm.patterns)
+    for pat in swm.patterns:
+        for row in pat.rows:
+            assert row.note is None or row.note <= 0x7F
+
+    for n in range(swm.subtune_count):
+        player = SWMPlayer(swm.subtune(n))
+        for _ in range(200):
+            player.play_frame()

@@ -57,10 +57,12 @@ compression is the player's native NOP-RLE inside patterns, `$70..$77`).
 
 Scope is **single-SID** `PSID`/`RSID` tunes (plain or `SWP`) — the large majority
 of SID-Wizard tunes in HVSC. Of the 1126 tunes `sidid` labels
-`Hermit/SidWizard_V1.x`, 1062 parse and play; 50 are multi-SID (out of scope) and
-14 resolve to no coherent layout (stale/template header, or tune data absent from
-the image and not materialised even by emulating the player's init). All raise
-`SIDFormatError` (a subclass of `SWMFormatError`).
+`Hermit/SidWizard_V1.x`, **1076 parse and play** and the remaining 50 are
+multi-SID (out of scope; they raise `SIDFormatError`, a subclass of
+`SWMFormatError`). Of the 1076: most are in-place exports read statically, ~100
+are relocated / magic-less exports read from the player-code operands (below),
+and the last 14 only resolve once the tune's own init has run — recovered by
+[running the player](#player-code-recovery).
 
 ### Relocation-invariant code-scan reader
 
@@ -98,16 +100,51 @@ the header when present, else the geometry (or is searched `8..1`). A
 **partially-relocated** export leaves some pointer-table entries at their
 original (pre-relocation) address. The relocation delta is **read from the
 player code**: the same table is referenced from two code sites, one operand
-relocated and one still pre-relocation, and their difference is the delta (no
-guessed constant). SID-Wizard's fixed assembly origin `$1000` is a final
-cross-check candidate for the few exports lacking such a duplicate — it equals
-the code-derived delta in every case where both exist. A layout is accepted only
+relocated and one still pre-relocation, and their difference is the delta — never
+a guessed constant. Any export the code-derived delta can't repair falls through
+to the [player-code recovery](#player-code-recovery). A layout is accepted only
 when every orderlist pattern reference resolves; otherwise the reader rejects it
 cleanly.
 
 Magic-less exports are still detected as `DIRECT` (statically, no init) by
 anchoring on the SID-Wizard 1.x player-code signature `F0 04 C0 60 90 03 4C ?? ??
 BC` — the same fragment `sidid` matches for `Hermit/SidWizard_V1.x`.
+
+### Player-code recovery
+
+A minority of exports have **no coherent layout in the static image**: the tune
+data is only materialised when the player's own init runs (packed/relocating
+drivers, or a CIA/IRQ multispeed starter that unpacks on the first interrupt),
+the export is an alternate-driver layout (driver types 0/2/5, versions V1.0–V1.5
+with idioms the static readers don't match — inline instrument names, the V1.0
+contiguous pointer-table idiom, the driver-5 direct orderlist), or the file is
+partly truncated in HVSC. These are recovered by **running the tune's own
+player**: `pysidtracker.run_init` (a py65 6502 emulator, pulled in via
+`pysidtracker[emu]`) executes the tune's init so the runtime image lands in
+memory exactly as on a C64, then every table base is read **straight from the
+player's instruction operands** — no scanning, no guessed relocation:
+
+- **Pattern / instrument tables** from the shared `p_ptnl1` / `p_insl3` skeleton
+  (`ldy CURx,x; lda LO,y; sta zp; lda HI,y; sta zp`); the instrument pair sits
+  below the pattern pair, with counts from the table extents. Dead decoy copies
+  the driver leaves in unreached code read all-zero and are rejected by decoding.
+  When a version interposes a `jsr` in the instrument idiom (V1.0), the
+  instrument tables are derived from the exporter's contiguous
+  `[inst_lo][inst_hi][ptn_lo][ptn_hi]` layout and validated by decoding.
+- **Orderlists** from one of two exact forms — the direct `p_seqtN lda
+  SEQUENCES,y; rts` operands (self-modified by init to each channel's packed
+  base) or the `SUBTUNES` pointer table (`p_subt1`) for subtune-indirect drivers
+  — choosing whichever references only patterns a candidate table resolves. Each
+  subtune re-runs init so the direct operands point at that subtune's bases.
+
+The only tolerance is that pointer-table slots the tune never plays — unused
+patterns/instruments, or ones truncated away in a corrupt file's secondary
+subtunes — decode to empty (an unused pattern becomes an empty pattern of the
+tune's default length, the C64's own "empty but lengthy" slot). The correctness
+gate is strict where it matters: every pattern the primary subtune plays, and
+every instrument a played pattern selects, must decode from real in-image data,
+or the layout is rejected. The recovered module's SID-register output tracks the
+original `.sid` player's frame by frame.
 
 ### Detection and relocation
 
