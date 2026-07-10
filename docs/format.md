@@ -56,10 +56,54 @@ embedded tune data is always stored fully expanded (the only surviving
 compression is the player's native NOP-RLE inside patterns, `$70..$77`).
 
 Scope is **single-SID** `PSID`/`RSID` tunes (plain or `SWP`) — the large majority
-of SID-Wizard tunes in HVSC (the single common shape, PSID + 1-SID + `SWM1`
-present, is ~90% of the corpus). Multi-SID files, and a small tail of files
-exported by unusual/relocated player variants, raise `SIDFormatError` (a subclass
-of `SWMFormatError`).
+of SID-Wizard tunes in HVSC. Of the 1126 tunes `sidid` labels
+`Hermit/SidWizard_V1.x`, 1058 parse and play; 50 are multi-SID (out of scope) and
+18 resolve to no coherent layout (stale/template header, or tune data only
+materialised by running the player's init). All raise `SIDFormatError` (a
+subclass of `SWMFormatError`).
+
+### Relocation-invariant code-scan reader
+
+The header/end-probe layout above assumes an in-place absolute-pointer layout at
+a known end-of-data. Relocated / alternate-layout exports (varied load addresses
+`$0800`/`$8000`/`$a000`/`$e000`…) and **magic-less** exports (no `SWM1`/`SWP1` at
+all) break that assumption. Both are recovered by reading the table base
+addresses **straight from the player-code operands**, which is relocation
+invariant: the player relocates as one block, so the absolute addresses baked
+into its indexed-load instructions move with it.
+
+Using [`pysidtracker`](https://github.com/anarkiwi/pysidtracker)'s masked 6502
+`CodePattern` / `find_code_all` (opcode skeleton fixed, per-tune operand captured
+as a little-endian word), each table's access idiom is matched and its operand
+read (mapped from the vendored player source `include/player.asm`):
+
+| Table | Player instruction idiom | Operand read |
+|---|---|---|
+| pattern LO/HI | `ldy CURPTN,x; lda PPTRLO,y; sta zp; lda PPTRHI,y; sta zp` | `ptn_lo`, `ptn_hi` |
+| instrument LO/HI | `ldy CURINS,x; lda INSPTLO,y; …; lda INSPTHI,y; …` | `inst_lo`, `inst_hi` |
+| subtunes | `adc #imm; tay; lda SUBTUNES,y` | `subtune_base` |
+| chord table | `lda CHORDS,y; cmp #$7E` | `chord_base` |
+| chord ptr | `tay; lda CHDPTRLO,y; sta CHORDPOS,x` | (upper bound) |
+| tempo table | `sec; sbc TEMPOTBL-1,y` | `tempo_base` |
+| tempo ptr | `tay; lda TEMPTRLO,y; jmp` | (upper bound) |
+
+The pattern and instrument pointer tables share the same opcode skeleton; they
+are told apart by address order (the instrument tables sit below the pattern
+tables) and each candidate pairing is validated by decoding. **Counts come from
+the table extents** baked into the code (`pat_amount = ptn_hi − ptn_lo`,
+`inst_amount = inst_hi − inst_lo − 1`), not the header, so a stale/relocated
+header is not trusted. The subtune-table base is taken from `p_subt1` when
+present, else located by scanning below `inst_lo`; the sequence count comes from
+the header when present, else the geometry (or is searched `8..1`). A
+**partially-relocated** export leaves some pointer-table entries at their
+original (pre-relocation) address — any entry that does not land inside the
+loaded image is repaired with the `load − $1000` delta (SID-Wizard's canonical
+assembly origin). A layout is accepted only when every orderlist pattern
+reference resolves; otherwise the reader rejects it cleanly.
+
+Magic-less exports are still detected as `DIRECT` (statically, no init) by
+anchoring on the SID-Wizard 1.x player-code signature `F0 04 C0 60 90 03 4C ?? ??
+BC` — the same fragment `sidid` matches for `Hermit/SidWizard_V1.x`.
 
 ### Detection and relocation
 

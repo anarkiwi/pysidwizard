@@ -8,28 +8,30 @@ is present.
 
 Enumeration method (deterministic, reproducible): every ``.sid`` under HVSC was
 classified with ``sidid`` (``SIDIDCFG=.../sidid.cfg sidid <HVSC>``) and the
-``Hermit/SidWizard_V1.x`` matches taken. That group label also covers the
-``(SidWizard_2SID)`` / ``(SidWizard_3SID)`` signatures, which are split out here
-via the PSID/RSID header (multi-SID) because pysidwizard is single-SID only by
-design. Of the 1100 SID-Wizard tunes found on the reference tree:
+``Hermit/SidWizard_V1.x`` matches taken (``1126`` tunes). That group label also
+covers the ``(SidWizard_2SID)`` / ``(SidWizard_3SID)`` signatures, which are
+split out here via the PSID/RSID header (multi-SID) because pysidwizard is
+single-SID only by design. Of the ``1126`` SID-Wizard tunes found:
 
-* ``941`` are single-SID and parse as direct-load exports
-  (including ``7`` RSID, ``26`` packed ``SWP`` exports and
-  ``64`` multi-subtune tunes), each satisfying the invariant that
-  every orderlist pattern reference resolves. :data:`SAMPLE` is a deterministic,
-  stratified subset (covering every driver type, every subtune-count bucket,
-  RSID and SWP) capped so the corpus test stays fast under ``-n auto``.
-* ``48`` are multi-SID (2-SID/3-SID) — rejected by design; the
+* ``1058`` single-SID tunes parse and play. Most are direct-load exports read
+  in place; ``96`` are recovered by the relocation-invariant **code-scan**
+  reader, which reads each table's base address straight from the player's own
+  indexed-load instruction operands (the player relocates as one block, so the
+  operands move with it). This covers both magic-less exports (no
+  ``SWM1``/``SWP1`` — anchored on the SID-Wizard 1.x player-code signature) and
+  relocated / alternate-layout ``SWM1`` exports at varied load addresses
+  (``$0800``/``$8000``/``$a000``/``$e000``…), including partially-relocated
+  pointer tables (repaired with the ``load - $1000`` delta). :data:`SAMPLE` is a
+  deterministic, stratified subset (RSID, packed ``SWP``, multi-subtune, every
+  driver type, and code-scan recoveries across the load-address spread) capped
+  so the corpus test stays fast under ``-n auto``.
+* ``50`` are multi-SID (2-SID/3-SID) — rejected by design; the
   player and model are single-SID only (:data:`EXCLUDED_MULTI_SID`).
-* ``68`` carry no static ``SWM1``/``SWP1`` anchor — the stripped /
-  relocated player exports documented out of scope in
-  ``docs/SID_READ_SCOPE.md`` §6; they stay ``UNKNOWN`` even after emulating init
-  (:data:`EXCLUDED_NO_ANCHOR`).
-* ``43`` carry an ``SWM1``/``SWP1`` magic whose embedded counts
-  match no coherent in-place pointer-table geometry — a stale player-template
-  header, a relocated export, or an orderlist that resolves to a pattern that
-  does not exist. No absolute/relative/reloc-offset interpretation resolves
-  them and the reader rejects them cleanly (:data:`EXCLUDED_UNRESOLVED`).
+* ``18`` are recognised as SID-Wizard (an ``SWM1`` magic or the player
+  signature is present, so they detect as ``DIRECT``) but resolve to no
+  coherent, playable layout — a stale/uninitialised player-template header, or
+  an export whose tune data is materialised only by running the player's init.
+  The reader rejects them cleanly (:data:`EXCLUDED_UNRESOLVED`).
 
 The ``EXCLUDED_*`` lists are deterministic subsets used to assert the reader
 rejects each out-of-scope class with a clear, specific error (never a silent
@@ -171,6 +173,40 @@ SAMPLE = [
     "MUSICIANS/S/Spider_Jerusalem/Gruseldideldido.sid",
     "MUSICIANS/S/Spider_Jerusalem/Testballon.sid",
     "MUSICIANS/S/Stone_James/Death_in_Rome.sid",
+    # Recovered by the relocation-invariant code-scan reader (read the table
+    # bases from the player-code operands). Magic-less exports (no SWM1/SWP1,
+    # anchored on the player signature) across the corpus's varied load
+    # addresses, plus relocated/alternate-layout SWM1 exports (some needing the
+    # partial-relocation pointer repair). Multi-subtune spread included.
+    "DEMOS/0-9/3_Days.sid",
+    "GAMES/G-L/Isosokoban.sid",
+    "GAMES/S-Z/Star_Storm.sid",
+    "GAMES/S-Z/Santas_Troubles.sid",
+    "GAMES/S-Z/Your_Fathers_Nightmare.sid",
+    "MUSICIANS/A/Ant1/My_Rules.sid",
+    "MUSICIANS/A/Arturo_Dente/Spider_Climber.sid",
+    "MUSICIANS/B/Batsman/Crapman.sid",
+    "MUSICIANS/B/Bayliss_Richard/Sheepoid_DX.sid",
+    "MUSICIANS/B/Bod/Coprolalia.sid",
+    "MUSICIANS/C/C0zmo/Autumn_Skies.sid",
+    "MUSICIANS/C/C0zmo/Concert_tune_5.sid",
+    "MUSICIANS/C/Chiummo_Gaetano/Dreamworld.sid",
+    "MUSICIANS/C/Chiummo_Gaetano/Memory_Invaders.sid",
+    "MUSICIANS/C/Comu/Leet_it_3.sid",
+    "MUSICIANS/D/DAM/Cadence.sid",
+    "MUSICIANS/D/Da_Blondie/Resource_Remixed.sid",
+    "MUSICIANS/D/Deetsay/Poesoe.sid",
+    "MUSICIANS/E/Emarti/Turn_Me_On.sid",
+    "MUSICIANS/E/Enzoottobit/Disco_China.sid",
+    "MUSICIANS/F/Flipside/Witchcraft.sid",
+    "MUSICIANS/H/Hermit/RastArok.sid",
+    "MUSICIANS/K/Kompositkrut/Mid_of_Ages.sid",
+    "MUSICIANS/K/Kompositkrut/Out_of_Range.sid",
+    "MUSICIANS/L/LukHash/Cyberiad_Theory.sid",
+    "MUSICIANS/L/LukHash/Perpetual_Motion.sid",
+    "MUSICIANS/N/NecroPolo/Deeper_Underground.sid",
+    "MUSICIANS/N/NecroPolo/Excess_Intro.sid",
+    "MUSICIANS/N/NecroPolo/Time_Paradox_tune_3.sid",
 ]
 
 # Multi-SID (2-SID/3-SID): rejected with a "multi-SID" error (out of scope).
@@ -189,36 +225,31 @@ EXCLUDED_MULTI_SID = [
     "MUSICIANS/V/Vincenzo/Quad_Core_bottom_part_2SID.sid",
 ]
 
-# No static SWM1/SWP1 anchor: stripped/relocated exports (scope doc §6).
-EXCLUDED_NO_ANCHOR = [
-    "DEMOS/0-9/3_Days.sid",
-    "MUSICIANS/B/Batsman/Crapman.sid",
-    "MUSICIANS/C/C0zmo/Autumn_Skies.sid",
-    "MUSICIANS/C/C0zmo/Concert_tune_5.sid",
-    "MUSICIANS/C/C0zmo/Transforming.sid",
-    "MUSICIANS/C/Comu/Leet_it_3.sid",
-    "MUSICIANS/D/Deetsay/Poesoe.sid",
-    "MUSICIANS/E/Enzoottobit/Disco_China.sid",
-    "MUSICIANS/H/Hermit/RastArok.sid",
-    "MUSICIANS/L/LukHash/Cyberiad_Theory.sid",
-    "MUSICIANS/L/LukHash/Perpetual_Motion.sid",
-    "MUSICIANS/N/NecroPolo/Deeper_Underground.sid",
-]
-
-# Magic present but the pointer tables / orderlist do not resolve in place
-# (stale/template header, relocated export, or dangling pattern reference):
-# rejected with a clear SIDFormatError.
+# SID-Wizard is recognised (an ``SWM1`` magic or the player-code signature is
+# present, so the tune detects as ``DIRECT``) but no coherent, playable layout
+# resolves — a stale/uninitialised player-template header (placeholder counts),
+# or an export whose tune data is not materialised in the static image (needs
+# the player's own init to unpack/relocate). Rejected with a clear
+# ``SIDFormatError`` rather than a silent mis-parse. Every corpus tune that a
+# real code-scan CAN resolve has been moved into :data:`SAMPLE`; these are the
+# genuine non-format residue.
 EXCLUDED_UNRESOLVED = [
     "DEMOS/M-R/Przepis_na_kopytka.sid",
-    "GAMES/S-Z/Your_Fathers_Nightmare.sid",
+    "GAMES/G-L/Gravitrix.sid",
+    "MUSICIANS/A/AMB/Kd0s.sid",
     "MUSICIANS/A/Ant1/Techno_2.sid",
-    "MUSICIANS/A/Arturo_Dente/Spider_Climber.sid",
-    "MUSICIANS/B/Bod/Coprolalia.sid",
-    "MUSICIANS/C/Chiummo_Gaetano/Dreamworld.sid",
-    "MUSICIANS/D/DAM/Cadence.sid",
-    "MUSICIANS/E/Emarti/Turn_Me_On.sid",
-    "MUSICIANS/K/Kompositkrut/Out_of_Range.sid",
+    "MUSICIANS/B/Batsman/Muterad.sid",
+    "MUSICIANS/C/C0zmo/Blissed_Out.sid",
+    "MUSICIANS/C/C0zmo/Transforming.sid",
+    "MUSICIANS/D/DAM/In_Your_Room.sid",
+    "MUSICIANS/D/Deetsay/Asmlook.sid",
+    "MUSICIANS/M/Mario64/Endstation.sid",
+    "MUSICIANS/M/Mario64/Messy_Messi.sid",
     "MUSICIANS/M/Moellpauk/Frantic4BHF_tune_2.sid",
-    "MUSICIANS/N/NecroPolo/Excess_Intro.sid",
+    "MUSICIANS/M/Moellpauk/Groms.sid",
+    "MUSICIANS/M/Moellpauk/Too_Long_on_Disk.sid",
+    "MUSICIANS/R/Ray_Manta/Elara.sid",
     "MUSICIANS/R/Razy/OHGJ_Anthology_2023_menu.sid",
+    "MUSICIANS/S/Skuggemannen/Moofistication.sid",
+    "MUSICIANS/V/Vincenzo/Switchback_Remake.sid",
 ]
