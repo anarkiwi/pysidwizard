@@ -13,25 +13,27 @@ covers the ``(SidWizard_2SID)`` / ``(SidWizard_3SID)`` signatures, which are
 split out here via the PSID/RSID header (multi-SID) because pysidwizard is
 single-SID only by design. Of the ``1126`` SID-Wizard tunes found:
 
-* ``1058`` single-SID tunes parse and play. Most are direct-load exports read
-  in place; ``96`` are recovered by the relocation-invariant **code-scan**
+* ``1062`` single-SID tunes parse and play. Most are direct-load exports read
+  in place; ``100`` are recovered by the relocation-invariant **code-scan**
   reader, which reads each table's base address straight from the player's own
   indexed-load instruction operands (the player relocates as one block, so the
   operands move with it). This covers both magic-less exports (no
   ``SWM1``/``SWP1`` — anchored on the SID-Wizard 1.x player-code signature) and
   relocated / alternate-layout ``SWM1`` exports at varied load addresses
   (``$0800``/``$8000``/``$a000``/``$e000``…), including partially-relocated
-  pointer tables (repaired with the ``load - $1000`` delta). :data:`SAMPLE` is a
+  pointer tables whose relocation delta is read from the code (two operands
+  reference the same table, one relocated and one not). :data:`SAMPLE` is a
   deterministic, stratified subset (RSID, packed ``SWP``, multi-subtune, every
   driver type, and code-scan recoveries across the load-address spread) capped
   so the corpus test stays fast under ``-n auto``.
 * ``50`` are multi-SID (2-SID/3-SID) — rejected by design; the
   player and model are single-SID only (:data:`EXCLUDED_MULTI_SID`).
-* ``18`` are recognised as SID-Wizard (an ``SWM1`` magic or the player
+* ``14`` are recognised as SID-Wizard (an ``SWM1`` magic or the player
   signature is present, so they detect as ``DIRECT``) but resolve to no
-  coherent, playable layout — a stale/uninitialised player-template header, or
-  an export whose tune data is materialised only by running the player's init.
-  The reader rejects them cleanly (:data:`EXCLUDED_UNRESOLVED`).
+  coherent, playable layout — a stale/uninitialised player-template header
+  (placeholder counts) or an export whose tune data is not present in the image
+  and is not materialised even by emulating the player's init. The reader
+  rejects them cleanly (:data:`EXCLUDED_UNRESOLVED`).
 
 The ``EXCLUDED_*`` lists are deterministic subsets used to assert the reader
 rejects each out-of-scope class with a clear, specific error (never a silent
@@ -207,6 +209,14 @@ SAMPLE = [
     "MUSICIANS/N/NecroPolo/Deeper_Underground.sid",
     "MUSICIANS/N/NecroPolo/Excess_Intro.sid",
     "MUSICIANS/N/NecroPolo/Time_Paradox_tune_3.sid",
+    # Partially-relocated exports recovered once the relocation delta is read
+    # from the player code itself (two operands reference the same table, one
+    # relocated and one pre-relocation; their difference is the delta). Pattern/
+    # instrument counts match the SWM1 header exactly.
+    "GAMES/G-L/Gravitrix.sid",
+    "MUSICIANS/D/DAM/In_Your_Room.sid",
+    "MUSICIANS/M/Mario64/Messy_Messi.sid",
+    "MUSICIANS/S/Skuggemannen/Moofistication.sid",
 ]
 
 # Multi-SID (2-SID/3-SID): rejected with a "multi-SID" error (out of scope).
@@ -235,21 +245,17 @@ EXCLUDED_MULTI_SID = [
 # genuine non-format residue.
 EXCLUDED_UNRESOLVED = [
     "DEMOS/M-R/Przepis_na_kopytka.sid",
-    "GAMES/G-L/Gravitrix.sid",
     "MUSICIANS/A/AMB/Kd0s.sid",
     "MUSICIANS/A/Ant1/Techno_2.sid",
     "MUSICIANS/B/Batsman/Muterad.sid",
     "MUSICIANS/C/C0zmo/Blissed_Out.sid",
     "MUSICIANS/C/C0zmo/Transforming.sid",
-    "MUSICIANS/D/DAM/In_Your_Room.sid",
     "MUSICIANS/D/Deetsay/Asmlook.sid",
     "MUSICIANS/M/Mario64/Endstation.sid",
-    "MUSICIANS/M/Mario64/Messy_Messi.sid",
     "MUSICIANS/M/Moellpauk/Frantic4BHF_tune_2.sid",
     "MUSICIANS/M/Moellpauk/Groms.sid",
     "MUSICIANS/M/Moellpauk/Too_Long_on_Disk.sid",
     "MUSICIANS/R/Ray_Manta/Elara.sid",
     "MUSICIANS/R/Razy/OHGJ_Anthology_2023_menu.sid",
-    "MUSICIANS/S/Skuggemannen/Moofistication.sid",
     "MUSICIANS/V/Vincenzo/Switchback_Remake.sid",
 ]

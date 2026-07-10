@@ -57,10 +57,10 @@ compression is the player's native NOP-RLE inside patterns, `$70..$77`).
 
 Scope is **single-SID** `PSID`/`RSID` tunes (plain or `SWP`) — the large majority
 of SID-Wizard tunes in HVSC. Of the 1126 tunes `sidid` labels
-`Hermit/SidWizard_V1.x`, 1058 parse and play; 50 are multi-SID (out of scope) and
-18 resolve to no coherent layout (stale/template header, or tune data only
-materialised by running the player's init). All raise `SIDFormatError` (a
-subclass of `SWMFormatError`).
+`Hermit/SidWizard_V1.x`, 1062 parse and play; 50 are multi-SID (out of scope) and
+14 resolve to no coherent layout (stale/template header, or tune data absent from
+the image and not materialised even by emulating the player's init). All raise
+`SIDFormatError` (a subclass of `SWMFormatError`).
 
 ### Relocation-invariant code-scan reader
 
@@ -96,10 +96,14 @@ header is not trusted. The subtune-table base is taken from `p_subt1` when
 present, else located by scanning below `inst_lo`; the sequence count comes from
 the header when present, else the geometry (or is searched `8..1`). A
 **partially-relocated** export leaves some pointer-table entries at their
-original (pre-relocation) address — any entry that does not land inside the
-loaded image is repaired with the `load − $1000` delta (SID-Wizard's canonical
-assembly origin). A layout is accepted only when every orderlist pattern
-reference resolves; otherwise the reader rejects it cleanly.
+original (pre-relocation) address. The relocation delta is **read from the
+player code**: the same table is referenced from two code sites, one operand
+relocated and one still pre-relocation, and their difference is the delta (no
+guessed constant). SID-Wizard's fixed assembly origin `$1000` is a final
+cross-check candidate for the few exports lacking such a duplicate — it equals
+the code-derived delta in every case where both exist. A layout is accepted only
+when every orderlist pattern reference resolves; otherwise the reader rejects it
+cleanly.
 
 Magic-less exports are still detected as `DIRECT` (statically, no init) by
 anchoring on the SID-Wizard 1.x player-code signature `F0 04 C0 60 90 03 4C ?? ??
