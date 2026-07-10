@@ -707,24 +707,29 @@ def test_real_corpus_row_parses_and_plays(row):
         swm = parse_sid(data)
     except SIDFormatError:
         pytest.skip("relocated tail is allowed to fail cleanly")
-    is_swp = data.find(b"SWP1", 0x7E) >= 0
-    if is_swp:
-        # Packed exports derive their counts from the SWP table extents (the
-        # SWM1 header, if any, is a stale player template), so cross-check
-        # content sanity instead: every pattern reference must resolve.
-        max_ref = max(
-            (c.pattern for s in swm.sequences for c in s if isinstance(c, PlayPattern)),
-            default=0,
-        )
-        assert max_ref <= len(swm.patterns)
-        for pat in swm.patterns:
-            for r_ in pat.rows:
-                assert r_.note is None or r_.note <= 0x7F
-    else:
-        header = data[data.find(SWM_MAGIC) :][:TUNE_HEADER_SIZE]
-        assert len(swm.instruments) == header[0x0E]
-        assert len(swm.patterns) == header[0x0D]
-        assert len(swm.sequences) == header[0x0C]
+    # The reader resolves a tune three ways: in-place from the SWM1 header,
+    # from the SWP table extents, or from the player-code operands (code scan).
+    # Only the first makes the header counts authoritative; SWP and code-scan
+    # derive counts from the table geometry (and may repair a stale header or a
+    # partially-relocated pointer table). So the universal invariant checked
+    # here is content sanity: every orderlist reference resolves to a real
+    # pattern and every decoded note is a legal byte.
+    max_ref = max(
+        (c.pattern for s in swm.sequences for c in s if isinstance(c, PlayPattern)),
+        default=0,
+    )
+    assert max_ref <= len(swm.patterns)
+    for pat in swm.patterns:
+        for r_ in pat.rows:
+            assert r_.note is None or r_.note <= 0x7F
+    # When the tune is a classic in-place export (an SWM1 header is present and
+    # its counts match the decoded model), the header must agree exactly.
+    swm_pos = data.find(SWM_MAGIC)
+    if swm_pos >= 0 and data.find(b"SWP1", 0x7E) < 0:
+        header = data[swm_pos:][:TUNE_HEADER_SIZE]
+        if len(swm.patterns) == header[0x0D]:
+            assert len(swm.instruments) == header[0x0E]
+            assert len(swm.sequences) == header[0x0C]
     # Drive the player for a bounded sample.
     player = SWMPlayer(swm)
     for _ in range(300):

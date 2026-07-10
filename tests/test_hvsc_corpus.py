@@ -31,7 +31,6 @@ from pysidwizard import (
 )
 from tests._hvsc_corpus import (
     EXCLUDED_MULTI_SID,
-    EXCLUDED_NO_ANCHOR,
     EXCLUDED_UNRESOLVED,
     SAMPLE,
 )
@@ -118,27 +117,17 @@ def test_excluded_multi_sid_rejected(rel):
         parse_sid(data)
 
 
-@pytest.mark.parametrize("rel", EXCLUDED_NO_ANCHOR)
-def test_excluded_no_anchor_rejected(rel):
-    # Stripped / relocated exports carry no static SWM1/SWP1 anchor. They are
-    # out of the direct-load scope (docs/SID_READ_SCOPE.md §6): the gate rejects
-    # them, parse errors clearly, and detection is not DIRECT even without init.
-    data = _read(rel)
-    assert is_sidwizard_sid(data) is False
-    with pytest.raises(SIDFormatError):
-        parse_sid(data)
-    detection = SidWizardSidParser().detect(data, init=False)
-    assert detection.kind is not pysidtracker.PlayroutineKind.DIRECT
-
-
 @pytest.mark.parametrize("rel", EXCLUDED_UNRESOLVED)
 def test_excluded_unresolved_rejected(rel):
-    # An SWM1 magic is present (so the cheap static recogniser anchors on it and
-    # detect() reports DIRECT), but the embedded tune-header counts match no
-    # coherent in-place pointer-table geometry (stale/template header or a
-    # relocated export). parse_sid must reject with a clear error, not silently
-    # mis-parse.
+    # Recognised as SID-Wizard (an SWM1 magic or the player-code signature is
+    # present, so the static recogniser anchors and detect() reports DIRECT),
+    # but no coherent, playable layout resolves — a stale/template header or an
+    # export whose tune data is not materialised statically. Neither the in-place
+    # end-probe nor the relocation-invariant code scan resolves it, so parse_sid
+    # must reject with a clear error rather than silently mis-parse.
     data = _read(rel)
     assert is_sidwizard_sid(data) is True
-    with pytest.raises(SIDFormatError, match="did not resolve"):
+    detection = SidWizardSidParser().detect(data)
+    assert detection.kind is pysidtracker.PlayroutineKind.DIRECT
+    with pytest.raises(SIDFormatError):
         parse_sid(data)

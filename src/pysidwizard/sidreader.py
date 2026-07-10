@@ -73,7 +73,7 @@ from __future__ import annotations
 import os
 from typing import Any, List, Optional, Union
 
-from pysidtracker import BaseSidParser, SidImage
+from pysidtracker import BaseSidParser, CodePattern, SidImage, find_code_all
 
 from .constants import (
     AUTHOR_LEN,
@@ -111,7 +111,7 @@ from .model import (
     decode_sequence,
     unpack_pattern,
 )
-from .sidfile import PSID_MAGIC, RSID_MAGIC, parse_psid_header
+from .sidfile import PSID_MAGIC, RSID_MAGIC, find_player_signature, parse_psid_header
 
 # SID-Wizard's "packed" (``SWP``) export keeps an ``SWP1`` magic (the ``SWM1``
 # header with its ``M`` turned into ``P``). Despite the name the tune data is
@@ -151,6 +151,34 @@ _SEQUENCE_GUARD = 0x400
 
 _SEQUENCE_END = 0xFE
 _SEQUENCE_END_WITH_LOOP = 0xFF
+
+# --- Code-scan (relocation-invariant) table location ---------------------------
+# SID-Wizard's player relocates as one block with its table base addresses baked
+# into instruction operands. These masked 6502 patterns locate each table-access
+# instruction and capture the absolute operand, so the tables are found without
+# trusting the ``SWM1`` header, the end-of-data placement, or the load address.
+# This is what recovers relocated ``SWM1`` exports (varied load addrs) and the
+# magic-less exports (no ``SWM1``/``SWP1``), which the header/end-probe path in
+# :func:`_build` cannot resolve. Idioms are mapped from the vendored SID-Wizard
+# player source (``native/sources/include/player.asm``): ``p_ptnl1``/``p_ptnh1``
+# and ``p_insl3``/``p_insh3`` (``ldy CURx,x; lda PTRLO,y; sta zp; lda PTRHI,y;
+# sta zp``), ``p_subt1`` (``adc #imm; tay; lda SUBTUNES,y``), ``p_chdt1``
+# (``lda CHORDS,y; cmp #$7E``), ``p_chdp1``/``p_tmpp1`` (``tay; lda TBL,y``),
+# ``p_tmpt1`` (``sec; sbc TEMPOTBL-1,y``). The magic-less player-code signature
+# that anchors detection lives in :mod:`pysidwizard.sidfile`.
+# Pattern-LO/HI and instrument-LO/HI pointer tables share this skeleton; the two
+# real matches are told apart by address order (the instrument tables sit below
+# the pattern tables) and validated by decoding.
+_CODE_PTRTAB = CodePattern("BC ?? ?? B9 {lo:w} 85 ?? B9 {hi:w} 85 ??")
+_CODE_SUBTUNES = CodePattern("69 ?? A8 B9 {subt:w}")
+_CODE_CHORDTAB = CodePattern("BC ?? ?? B9 {chdt:w} C9 7E D0")
+_CODE_CHORDPTR = CodePattern("A8 B9 {chdp:w} 9D")
+_CODE_TEMPOPTR = CodePattern("A8 B9 {tmpp:w} 4C")
+_CODE_TEMPOTAB = CodePattern("38 F9 {tmpt:w} F0")
+# SID-Wizard's canonical player/assembly origin. A partially-relocated export
+# leaves some pointer-table entries at their original (pre-relocation) address;
+# ``load - _ORIG_LOAD`` shifts such an entry onto the physically relocated data.
+_ORIG_LOAD = 0x1000
 
 
 class _LayoutError(SIDFormatError):
@@ -218,10 +246,16 @@ def parse_sid(data: bytes) -> SWMFile:
             raise SIDFormatError(f"SID-Wizard packed (SWP) tables did not resolve: {exc}") from exc
     swm_pos = data.find(SWM_MAGIC, base)
     if swm_pos < 0:
-        raise SIDFormatError(
-            "no 'SWM1' tune header found in the SID image (the file may be a "
-            "packed or relocated SID-Wizard tune, which is not supported)"
-        )
+        # No ``SWM1`` / ``SWP1`` magic: a magic-less (stripped / relocated)
+        # export. Recover it by reading the table bases straight from the
+        # player-code operands, anchored on the SID-Wizard 1.x player signature.
+        try:
+            return _build_codescan(data, load, base)
+        except _LayoutError as exc:
+            raise SIDFormatError(
+                "no 'SWM1' tune header found and the SID-Wizard player tables "
+                f"could not be located from the player code: {exc}"
+            ) from exc
     if swm_pos + TUNE_HEADER_SIZE > len(data):
         raise SIDFormatError("'SWM1' tune header is truncated")
     swm_header = data[swm_pos : swm_pos + TUNE_HEADER_SIZE]
@@ -236,16 +270,21 @@ def parse_sid(data: bytes) -> SWMFile:
             return _build(data, load, base, swm_header, end)
         except _LayoutError as exc:
             last_error = exc
-    # An 'SWM1' magic was present but no end-of-data candidate yielded a coherent
-    # absolute-pointer layout. This is the stale/uninitialised player-template
-    # header or relocated-export tail: the counts in the embedded tune header do
-    # not correspond to any in-place pointer-table geometry (see the module
-    # docstring's scope note). Report it as such rather than surfacing the last,
-    # misleading per-candidate probe error ("pointer tables underflow ...").
+    # The header end-probe assumes an in-place absolute-pointer layout. When it
+    # fails the export is relocated / alternate-layout: fall back to reading the
+    # table bases from the player-code operands (relocation-invariant), which
+    # also repairs partially-relocated pointer tables.
+    try:
+        return _build_codescan(data, load, base)
+    except _LayoutError:
+        pass
+    # Neither the in-place end-probe nor the code scan resolved a coherent
+    # layout: a stale/uninitialised player-template header (placeholder counts)
+    # or an export whose tune data is not materialised statically.
     raise SIDFormatError(
         "'SWM1' tune header found but its pointer tables did not resolve to a "
-        "coherent in-place layout (stale/template header or relocated export); "
-        f"out of the single-SID direct-load scope. Last probe: {last_error}"
+        "coherent layout (stale/template header or unmaterialised relocated "
+        f"export); out of the single-SID direct-load scope. Last probe: {last_error}"
     )
 
 
@@ -260,7 +299,8 @@ class SidWizardSidParser(BaseSidParser):
 
     Gives SID-Wizard the shared ``read``/``parse``/``detect`` surface: parsing
     delegates to :func:`parse_sid`, and :meth:`recognize` anchors on the
-    ``SWM1`` tune header (or the ``SWP1`` packed-export magic) so
+    ``SWM1`` tune header, the ``SWP1`` packed-export magic, or — for magic-less
+    exports — the SID-Wizard 1.x player-code signature, so
     :meth:`~pysidtracker.BaseSidParser.detect` classifies a direct-load tune as
     :attr:`~pysidtracker.PlayroutineKind.DIRECT`.
     """
@@ -274,7 +314,9 @@ class SidWizardSidParser(BaseSidParser):
         pos = image.find(SWM_MAGIC)
         if pos < 0:
             pos = image.find(SWP_MAGIC)
-        return pos if pos >= 0 else None
+        if pos >= 0:
+            return pos
+        return find_player_signature(image)
 
 
 def _build(
@@ -496,7 +538,24 @@ def _build_swp(data: bytes, load: int, base: int, swp_off: int) -> SWMFile:
     )
 
 
-def _decode_instruments(byte, chunk, inst_lo, inst_hi, inst_amount, load, end, ptr_base=0):
+def _resolve_ptr(raw, ptr_base, load, end, reloc_delta):
+    """Map a raw 16-bit table pointer to a physical C64 address.
+
+    ``ptr_base`` is added first (the ``SWP`` relative-pointer base, ``0`` for
+    absolute layouts). ``reloc_delta`` repairs a partially-relocated export: a
+    pointer that does not land inside the loaded image is re-interpreted as an
+    original (pre-relocation) address and shifted by ``reloc_delta`` so it maps
+    onto the physically relocated data. ``reloc_delta == 0`` is a no-op.
+    """
+    addr = ptr_base + raw
+    if reloc_delta and not (load <= addr < end):
+        addr = ptr_base + raw + reloc_delta
+    return addr
+
+
+def _decode_instruments(
+    byte, chunk, inst_lo, inst_hi, inst_amount, load, end, ptr_base=0, reloc_delta=0
+):
     """Decode the ``inst_amount`` instruments (1-based; index 0 is the dummy).
 
     Each instrument is a 16-byte header followed by three inline ``$FF``-
@@ -506,7 +565,8 @@ def _decode_instruments(byte, chunk, inst_lo, inst_hi, inst_amount, load, end, p
     """
     instruments: List[Instrument] = []
     for k in range(1, inst_amount + 1):
-        addr = ptr_base + (byte(inst_lo + k) | (byte(inst_hi + k) << 8))
+        raw = byte(inst_lo + k) | (byte(inst_hi + k) << 8)
+        addr = _resolve_ptr(raw, ptr_base, load, end, reloc_delta)
         if not (load <= addr < end):
             raise _LayoutError(f"instrument {k} pointer {addr:#06x} out of range")
         # The filter-table pointer is relative to the instrument base; walk to
@@ -559,12 +619,13 @@ def _scan_pattern_end(byte, start: int) -> int:
                     addr += 1
 
 
-def _decode_patterns(byte, chunk, ptn_lo, ptn_hi, pat_amount, load, end, ptr_base=0):
+def _decode_patterns(byte, chunk, ptn_lo, ptn_hi, pat_amount, load, end, ptr_base=0, reloc_delta=0):
     """Decode the ``pat_amount`` patterns (1-based; index 0 is the reserved slot)."""
     patterns: List[Pattern] = []
     min_pattern = end
     for k in range(1, pat_amount + 1):
-        addr = ptr_base + (byte(ptn_lo + k) | (byte(ptn_hi + k) << 8))
+        raw = byte(ptn_lo + k) | (byte(ptn_hi + k) << 8)
+        addr = _resolve_ptr(raw, ptr_base, load, end, reloc_delta)
         if not (load <= addr < end):
             raise _LayoutError(f"pattern {k} pointer {addr:#06x} out of range")
         min_pattern = min(min_pattern, addr)
@@ -603,19 +664,23 @@ def _subtune_block_addr(base: int, seq_index: int) -> int:
     return base + _SUBTUNE_BLOCK * subtune + 2 * channel
 
 
-def _subtune_pointers_valid(byte, base, seq_amount, load, min_pattern) -> bool:
+def _subtune_pointers_valid(
+    byte, base, seq_amount, load, min_pattern, end=None, reloc_delta=0
+) -> bool:
+    scan_end = end if end is not None else min_pattern
     for k in range(seq_amount):
         blk = _subtune_block_addr(base, k)
         try:
-            ptr = byte(blk) | (byte(blk + 1) << 8)
+            raw = byte(blk) | (byte(blk + 1) << 8)
         except _LayoutError:
             return False
+        ptr = _resolve_ptr(raw, 0, load, scan_end, reloc_delta)
         if not (load <= ptr < min_pattern):
             return False
     return True
 
 
-def _decode_sequences(byte, chunk, subtune_base, seq_amount, load, end, ptr_base=0):
+def _decode_sequences(byte, chunk, subtune_base, seq_amount, load, end, ptr_base=0, reloc_delta=0):
     """Decode the ``seq_amount`` channel sequences via the subtune table.
 
     Sequence ``k`` lives in subtune ``k // 3`` channel ``k % 3``; each runs
@@ -625,7 +690,8 @@ def _decode_sequences(byte, chunk, subtune_base, seq_amount, load, end, ptr_base
     sequences: List[List] = []
     for k in range(seq_amount):
         blk = _subtune_block_addr(subtune_base, k)
-        start = ptr_base + (byte(blk) | (byte(blk + 1) << 8))
+        raw = byte(blk) | (byte(blk + 1) << 8)
+        start = _resolve_ptr(raw, ptr_base, load, end, reloc_delta)
         if not (load <= start < end):
             raise _LayoutError(f"sequence {k} pointer {start:#06x} out of range")
         addr = start
@@ -643,3 +709,225 @@ def _decode_sequences(byte, chunk, subtune_base, seq_amount, load, end, ptr_base
                 break
         sequences.append(decode_sequence(chunk(start, addr - start)))
     return sequences
+
+
+def _code_operands(image: SidImage, pattern: CodePattern, key: str) -> list:
+    """Sorted unique captured operands of ``pattern`` in ``image``."""
+    return sorted({m.captures[key] for m in find_code_all(image, pattern)})
+
+
+def _iter_subtune_bases(byte, image, inst_lo, min_pattern, load, end, seq_hint, chdp, tmpp, reloc):
+    """Yield ``(subtune_base, subtunes)`` candidates for the sequence-pointer table.
+
+    A code-located base (``p_subt1``) is offered first; then every position in
+    the scan window below ``inst_lo`` whose sequence pointers land in the
+    sequences region. The caller decodes each and keeps the first whose
+    orderlist pattern references all resolve, so a false-positive block is
+    skipped rather than mis-parsed.
+    """
+    seen = set()
+    for sb in _code_operands(image, _CODE_SUBTUNES, "subt"):
+        uppers = [x for x in ([inst_lo] + chdp + tmpp) if x > sb]
+        if not uppers:
+            continue
+        n = seq_hint or ((min(uppers) - sb) // _SUBTUNE_BLOCK)
+        if n >= 1 and (sb, n) not in seen:
+            seen.add((sb, n))
+            yield sb, n
+    counts = [seq_hint] if seq_hint else list(range(8, 0, -1))
+    for n in counts:
+        if not n or n < 1:
+            continue
+        seq_amount = n * SID_CHANNELS
+        top = inst_lo - _SUBTUNE_BLOCK * n
+        floor = max(load, top - _SUBTUNE_SCAN_WINDOW)
+        for sb in range(top, floor - 1, -1):
+            if (sb, n) in seen:
+                continue
+            if _subtune_pointers_valid(byte, sb, seq_amount, load, min_pattern, end, reloc):
+                seen.add((sb, n))
+                yield sb, n
+
+
+def _codescan_chord_tempo(image, chunk, subtune_base, min_pattern, chord_len, tempo_len):
+    """Return ``(chord_table, tempo_table)`` bytes for a code-scanned layout.
+
+    Prefers the code-located table bases (``p_chdt1`` / ``p_tmpt1``); falls back
+    to the geometry below the subtune table (as :func:`_build` does) for either
+    table the code scan did not pin uniquely.
+    """
+    chord_table = tempo_table = b""
+    chdt = _code_operands(image, _CODE_CHORDTAB, "chdt")
+    tmpt = _code_operands(image, _CODE_TEMPOTAB, "tmpt")
+    if chord_len > 0 and len(chdt) == 1:
+        try:
+            chord_table = chunk(chdt[0], chord_len)
+        except _LayoutError:
+            chord_table = b""
+    if tempo_len > 0 and len(tmpt) == 1:
+        try:
+            tempo_table = chunk(tmpt[0] + 1, tempo_len)
+        except _LayoutError:
+            tempo_table = b""
+    if (chord_len > 0 and not chord_table) or (tempo_len > 0 and not tempo_table):
+        chord_base = subtune_base - _RESTEMP_SHIFT - tempo_len - chord_len
+        if chord_base > min_pattern:
+            if chord_len > 0 and not chord_table:
+                try:
+                    chord_table = chunk(chord_base, chord_len)
+                except _LayoutError:
+                    pass
+            if tempo_len > 0 and not tempo_table:
+                try:
+                    tempo_table = chunk(chord_base + chord_len + _RESTEMP_SHIFT, tempo_len)
+                except _LayoutError:
+                    pass
+    return chord_table, tempo_table
+
+
+def _try_codescan_layout(
+    image,
+    byte,
+    chunk,
+    load,
+    end,
+    ins_pair,
+    pat_pair,
+    seq_hint,
+    chord_len,
+    tempo_len,
+    swm_header,
+    chdp,
+    tmpp,
+    reloc,
+):
+    """Decode one candidate ``(instrument, pattern)`` table pairing.
+
+    Counts come from the table extents baked into the player code
+    (``pat_amount = ptn_hi - ptn_lo``, ``inst_amount = inst_hi - inst_lo - 1``),
+    so no header count is trusted. Raises :class:`_LayoutError` if the pairing
+    is not coherent.
+    """
+    inst_lo, inst_hi = ins_pair
+    ptn_lo, ptn_hi = pat_pair
+    inst_amount = inst_hi - inst_lo - 1
+    pat_amount = ptn_hi - ptn_lo
+    if inst_amount < 0 or pat_amount < 0 or inst_lo <= load or ptn_lo <= load:
+        raise _LayoutError("code-scan: implausible table geometry")
+    instruments = _decode_instruments(
+        byte, chunk, inst_lo, inst_hi, inst_amount, load, end, reloc_delta=reloc
+    )
+    patterns, min_pattern = _decode_patterns(
+        byte, chunk, ptn_lo, ptn_hi, pat_amount, load, end, reloc_delta=reloc
+    )
+    last: Optional[_LayoutError] = None
+    for subtune_base, subtunes in _iter_subtune_bases(
+        byte, image, inst_lo, min_pattern, load, end, seq_hint, chdp, tmpp, reloc
+    ):
+        seq_amount = subtunes * SID_CHANNELS
+        try:
+            sequences = _decode_sequences(
+                byte, chunk, subtune_base, seq_amount, load, end, reloc_delta=reloc
+            )
+            _validate_pattern_refs(sequences, len(patterns))
+        except _LayoutError as exc:
+            last = exc
+            continue
+        subtune_tempos = [
+            (
+                byte(subtune_base + _SUBTUNE_BLOCK * st + 2 * SID_CHANNELS),
+                byte(subtune_base + _SUBTUNE_BLOCK * st + 2 * SID_CHANNELS + 1),
+            )
+            for st in range(subtunes)
+        ]
+        chord_table, tempo_table = _codescan_chord_tempo(
+            image, chunk, subtune_base, min_pattern, chord_len, tempo_len
+        )
+        return _assemble(
+            swm_header,
+            load,
+            sequences,
+            patterns,
+            instruments,
+            chord_table,
+            tempo_table,
+            subtune_tempos,
+        )
+    raise last or _LayoutError("code-scan: no coherent subtune table")
+
+
+def _build_codescan(data: bytes, load: int, base: int) -> SWMFile:
+    """Decode a tune by reading the table bases from the player code operands.
+
+    Relocation-invariant fallback used when the ``SWM1`` header end-probe cannot
+    resolve the layout (relocated / alternate-layout exports) and for magic-less
+    exports that carry no ``SWM1`` / ``SWP1`` at all. The pattern- and
+    instrument-pointer table bases (and their entry counts) come from the
+    player's own indexed-load instructions; the subtune table, chord/tempo
+    tables follow. A partially-relocated export whose table entries still hold
+    original (pre-relocation) addresses is repaired with the ``load - 0x1000``
+    delta. Raises :class:`_LayoutError` if no coherent, playable layout is found.
+    """
+    image = SidImage.from_sid(data)
+    byte, chunk = _memory_accessors(data, load, base)
+    end = load + (len(data) - base)
+    pairs = sorted(
+        {(m.captures["lo"], m.captures["hi"]) for m in find_code_all(image, _CODE_PTRTAB)}
+    )
+    if len(pairs) < 2:
+        raise _LayoutError(f"code-scan: found {len(pairs)} pointer-table access sites, need 2")
+    chdp = _code_operands(image, _CODE_CHORDPTR, "chdp")
+    tmpp = _code_operands(image, _CODE_TEMPOPTR, "tmpp")
+
+    swm_pos = data.find(SWM_MAGIC, base)
+    swm_header: Optional[bytes] = None
+    seq_hint = None
+    chord_len = tempo_len = 0
+    if 0 <= swm_pos and swm_pos + TUNE_HEADER_SIZE <= len(data):
+        swm_header = data[swm_pos : swm_pos + TUNE_HEADER_SIZE]
+        seq_amount = swm_header[SEQUENCE_AMOUNT_POS]
+        seq_hint = (seq_amount - 1) // SID_CHANNELS + 1 if seq_amount > 0 else 1
+        chord_len = swm_header[CHORD_LENGTH_POS]
+        tempo_len = swm_header[TEMPO_LENGTH_POS]
+    else:
+        # Magic-less export: derive chord/tempo lengths from the code-located
+        # table bases (chord/tempo are contiguous ahead of the subtune table).
+        chdt = _code_operands(image, _CODE_CHORDTAB, "chdt")
+        tmpt = _code_operands(image, _CODE_TEMPOTAB, "tmpt")
+        subt = _code_operands(image, _CODE_SUBTUNES, "subt")
+        if len(tmpt) == 1:
+            tempo_base = tmpt[0] + 1
+            if len(subt) == 1:
+                tempo_len = max(0, subt[0] - _RESTEMP_SHIFT - tempo_base)
+            if len(chdt) == 1:
+                chord_len = max(0, tempo_base - chdt[0])
+        elif len(chdt) == 1 and len(subt) == 1:
+            chord_len = max(0, (subt[0] - _RESTEMP_SHIFT) - chdt[0])
+
+    ordered = sorted(pairs, key=lambda pair: pair[1], reverse=True)
+    last: Optional[_LayoutError] = None
+    for reloc in (0, load - _ORIG_LOAD):
+        for pat_pair in ordered:
+            for ins_pair in ordered:
+                if ins_pair[0] >= pat_pair[0]:
+                    continue
+                try:
+                    return _try_codescan_layout(
+                        image,
+                        byte,
+                        chunk,
+                        load,
+                        end,
+                        ins_pair,
+                        pat_pair,
+                        seq_hint,
+                        chord_len,
+                        tempo_len,
+                        swm_header,
+                        chdp,
+                        tmpp,
+                        reloc,
+                    )
+                except _LayoutError as exc:
+                    last = exc
+    raise last or _LayoutError("code-scan: no coherent layout")
