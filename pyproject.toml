@@ -7,20 +7,19 @@ name = "pysidwizard"
 version = "0.2.1"
 description = "Pure-Python reader, writer, and player for SID-Wizard SWM modules"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "Josh Bailey" }]
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Sound/Audio",
 ]
 dependencies = [
-    "pysidtracker>=0.3",
+    "pysidtracker>=0.4",
 ]
 
 [project.optional-dependencies]
@@ -76,15 +75,15 @@ fail_under = 85
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 extend-exclude = ["tests/fixtures", "tools/__pycache__"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "B", "I", "UP"]
 ignore = [
     "E501",  # line length — black manages this; we set 100 to be lenient
-    "UP007", # we still support 3.9, so keep Optional[T] / Union forms
-    "UP035", # same — typing.List / typing.Tuple are fine
+    "UP007", # keep Optional[T] / Union forms
+    "UP035", # keep typing.List / typing.Tuple forms
     "UP006", # same
     "UP045",
     "B007",  # loop var not used in body — common in test stubs
@@ -97,5 +96,5 @@ ignore = [
 
 [tool.black]
 line-length = 100
-target-version = ["py310"]
+target-version = ["py311"]
 extend-exclude = "tests/fixtures"

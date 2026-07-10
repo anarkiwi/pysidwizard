@@ -49,7 +49,9 @@ from .constants import (
     PATTERN_NEXT_COLUMN_FLAG,
     SEQUENCE_END,
     SEQUENCE_END_WITH_LOOP,
+    SEQUENCE_MAINVOL_BASE,
     SEQUENCE_TEMPO_BASE,
+    SEQUENCE_TEMPO_MAX,
     SEQUENCE_TRANSPOSE_BASE,
     TABLE_END,
 )
@@ -158,18 +160,37 @@ class Transpose(SequenceCommand):
 
 
 @dataclass
+class MainVolume(SequenceCommand):
+    """Set the master volume nibble of ``$D418`` (encoded 0xA0..0xAF).
+
+    ``level`` is the low nibble 0..15. The player applies it with a
+    one-frame delay (``SEQVOLU`` -> ``MAINVOL`` in player.asm ``chVolFx``).
+    """
+
+    level: int
+
+    def encode(self) -> bytes:
+        if not (0 <= self.level <= 0x0F):
+            raise SWMFormatError(f"main volume {self.level} out of range 0..15")
+        return bytes([SEQUENCE_MAINVOL_BASE | self.level])
+
+
+@dataclass
 class TempoOverride(SequenceCommand):
-    """Override the current row-delay tempo (encoded 0xB0..0xFD).
+    """Override the current row-delay tempo (encoded 0xB0..0xEF).
 
     ``frames_per_row`` is the value the player will use until the next
-    override, measured in PAL frames per pattern row.
+    override, measured in PAL frames per pattern row. The player's tempo
+    band is ``0xB0..0xEF``; ``0xF0..0xFD`` are no-ops (see player.asm
+    ``chTmpFx``) and decode to :class:`RawSequenceByte`.
     """
 
     frames_per_row: int
 
     def encode(self) -> bytes:
-        if not (0 <= self.frames_per_row <= 0x4D):
-            raise SWMFormatError(f"tempo override {self.frames_per_row} out of range 0..77")
+        top = SEQUENCE_TEMPO_MAX - SEQUENCE_TEMPO_BASE
+        if not (0 <= self.frames_per_row <= top):
+            raise SWMFormatError(f"tempo override {self.frames_per_row} out of range 0..{top}")
         return bytes([SEQUENCE_TEMPO_BASE + self.frames_per_row])
 
 
@@ -202,8 +223,8 @@ class Loop(SequenceCommand):
 class RawSequenceByte(SequenceCommand):
     """A single sequence byte preserved verbatim.
 
-    Used for the documented-but-unhandled ``0xA0..0xAF`` range and for
-    any trailing bytes after a terminator so files round-trip exactly.
+    Used for the player's no-op ``0xF0..0xFD`` band and for any trailing
+    bytes after a terminator so files round-trip exactly.
     """
 
     byte: int
@@ -234,10 +255,12 @@ def decode_sequence(data: bytes) -> List[SequenceCommand]:
             cmds.append(PlayPattern(b))
         elif 0x80 <= b <= 0x9F:
             cmds.append(Transpose(b - SEQUENCE_TRANSPOSE_BASE))
-        elif 0xA0 <= b <= 0xAF:
-            cmds.append(RawSequenceByte(b))
-        elif 0xB0 <= b <= 0xFD:
+        elif SEQUENCE_MAINVOL_BASE <= b <= 0xAF:
+            cmds.append(MainVolume(b & 0x0F))
+        elif SEQUENCE_TEMPO_BASE <= b <= SEQUENCE_TEMPO_MAX:
             cmds.append(TempoOverride(b - SEQUENCE_TEMPO_BASE))
+        elif 0xF0 <= b <= 0xFD:
+            cmds.append(RawSequenceByte(b))
         elif b == SEQUENCE_END:
             cmds.append(End())
         else:  # b == SEQUENCE_END_WITH_LOOP (0xFF)
