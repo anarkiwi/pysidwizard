@@ -51,6 +51,7 @@ from .model import (
     End,
     Instrument,
     Loop,
+    MainVolume,
     Pattern,
     PlayPattern,
     SWMFile,
@@ -432,6 +433,11 @@ class SWMPlayer:
             # write.
             v.speed_counter = 2
             self.voices.append(v)
+        # $D418 and its pending SEQVOLU nibble must exist before the
+        # pre-stash _advance_row loop, which performs the SEQVOLU->MAINVOL
+        # copy on the low nibble of filter_mode_vol.
+        self.filter_mode_vol = 0x0F  # $D418
+        self.seqvolu = 0x0F  # SEQVOLU_var: pending master-volume nibble
         # Pre-stash row 0 for each voice. Done after voice list is
         # populated so _advance_sequence can read the sequence.
         for v in self.voices:
@@ -450,7 +456,6 @@ class SWMPlayer:
         self.filter_cutoff_hi = 0x00
         self.filter_cutoff_lo = 0x00
         self.filter_resonance = 0x00  # high nibble of $D417
-        self.filter_mode_vol = 0x0F  # $D418
         # SID-Wizard's FilterProgram is shared across voices: only the
         # one voice currently marked as filter-controller (FLTCTRL+1
         # operand byte at $1xxx) actually walks its filter table.
@@ -787,6 +792,10 @@ class SWMPlayer:
                 # ptn_gate here would release a still-sustaining note.
                 v.pending_row = None
                 return
+        # READROW/SEQVOLU (player.asm): copy the pending SEQVOLU nibble into
+        # MAINVOL (the low nibble of $D418) at the row read, one row after
+        # the orderlist MainVolume seq-fx stashed it.
+        self.filter_mode_vol = (self.filter_mode_vol & 0xF0) | (self.seqvolu & 0x0F)
         row = v.pattern.rows[v.pattern_row]
         v.pattern_row += 1
         v.pending_row = row
@@ -831,6 +840,11 @@ class SWMPlayer:
             if isinstance(cmd, TempoOverride):
                 v.tempo_left = cmd.frames_per_row
                 v.tempo_right = cmd.frames_per_row
+                continue
+            if isinstance(cmd, MainVolume):
+                # chVolFx: stash into SEQVOLU; _advance_row's READROW copy
+                # promotes it to MAINVOL (one-frame-delayed $D418 nibble).
+                self.seqvolu = cmd.level & 0x0F
                 continue
             if isinstance(cmd, End):
                 v.pattern = None
@@ -1058,8 +1072,10 @@ class SWMPlayer:
                 # same dispatch the inst-column small-fx uses.
                 self._apply_small_fx(v, fx)
             elif 0xA0 <= fx <= 0xAF:
-                # Set main volume (only the volume nibble of $D418).
+                # SMALFXA: set main volume (low nibble of $D418) immediately
+                # and mirror into SEQVOLU so the next row read preserves it.
                 self.filter_mode_vol = (self.filter_mode_vol & 0xF0) | (fx & 0x0F)
+                self.seqvolu = fx & 0x0F
             elif fx == 0x01 and fx_value is not None:
                 # BIGFX01 (player.asm line 2834): pitch slide UP.
                 # ``ldy #$81 ; bne SETSLID`` -> SLIDEVIB=$81, then

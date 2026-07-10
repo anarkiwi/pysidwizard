@@ -83,7 +83,9 @@ SWM_C5_NOTE = 49
 SEQUENCE_END = 0xFE  # exit subtune without looping
 SEQUENCE_END_WITH_LOOP = 0xFF  # exit, followed by a 1-byte loop position
 SEQUENCE_TRANSPOSE_BASE = 0x90  # 0x90..0x9F sets a -16..+15 semitone shift
-SEQUENCE_TEMPO_BASE = 0xB0  # 0xB0..0xFD overrides the subtune tempo
+SEQUENCE_MAINVOL_BASE = 0xA0  # 0xA0..0xAF sets master volume 0..15 (delayed)
+SEQUENCE_TEMPO_BASE = 0xB0  # 0xB0..0xEF overrides the subtune tempo
+SEQUENCE_TEMPO_MAX = 0xEF  # player's chTmpFx band ends here; 0xF0.. are no-ops
 
 # Subtune funktempo: bit 7 of a tempo byte means "use the low seven bits
 # straight, do not average with the partner byte".

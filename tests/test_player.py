@@ -7,6 +7,7 @@ import pytest
 from pysidwizard import (
     End,
     Instrument,
+    MainVolume,
     Pattern,
     PlayPattern,
     Row,
@@ -571,6 +572,63 @@ def test_player_handles_loop_command_without_infinite_advance():
     # The loop variant never sets ``finished``; the player must still
     # have produced steady writes.
     assert not p.finished
+
+
+def test_orderlist_main_volume_applies_delayed_at_pattern_boundary():
+    """The orderlist MainVolume seq-fx ($A0..$AF) sets the low nibble of
+    $D418 with the SEQVOLU->MAINVOL one-frame delay: the change lands when
+    the following pattern's first row is read, not while the previous
+    pattern is still playing."""
+    inst = Instrument(name=b"VOL     ", sustain=0xF, first_waveform=0x41)
+    pat1 = Pattern(rows=[Row(note=49, instrument=1), Row()], length=2)
+    pat2 = Pattern(rows=[Row(note=53, instrument=1), Row()], length=2)
+    swm = SWMFile(
+        sequences=[
+            [PlayPattern(1), MainVolume(5), PlayPattern(2), End()],
+            [PlayPattern(1), PlayPattern(2), End()],
+            [PlayPattern(1), PlayPattern(2), End()],
+        ],
+        patterns=[pat1, pat2],
+        instruments=[inst],
+        subtune_tempos=[(straight_tempo(2), straight_tempo(2))],
+    )
+    p = SWMPlayer(swm)
+    v0 = p.voices[0]
+    d418 = 0x0F
+    change_frame = None
+    boundary_frame = None
+    for frame in range(12):
+        was_pat1 = v0.pattern is pat1
+        writes = p.play_frame()
+        if was_pat1 and v0.pattern is pat2 and boundary_frame is None:
+            boundary_frame = frame
+        for reg, val in writes:
+            if reg - SID_REG_BASE == 0x18:
+                if change_frame is None and (val & 0x0F) == 5:
+                    change_frame = frame
+                d418 = val
+    # Volume reached 5 exactly at the pattern-1 -> pattern-2 boundary read,
+    # never leaking into pattern 1, and stayed there.
+    assert boundary_frame is not None
+    assert change_frame == boundary_frame
+    assert d418 & 0x0F == 5
+
+
+def test_orderlist_main_volume_absent_keeps_default_volume():
+    """Without a MainVolume seq-fx the master volume stays at $F."""
+    inst = Instrument(name=b"VOL     ", sustain=0xF, first_waveform=0x41)
+    pat = Pattern(rows=[Row(note=49, instrument=1), Row()], length=2)
+    swm = SWMFile(
+        sequences=[[PlayPattern(1), End()]] * 3,
+        patterns=[pat],
+        instruments=[inst],
+        subtune_tempos=[(straight_tempo(2), straight_tempo(2))],
+    )
+    p = SWMPlayer(swm)
+    for _ in range(8):
+        for reg, val in p.play_frame():
+            if reg - SID_REG_BASE == 0x18:
+                assert val & 0x0F == 0x0F
 
 
 @pytest.mark.parametrize("model", ["MOS6581", "MOS8580"])

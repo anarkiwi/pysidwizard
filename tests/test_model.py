@@ -7,6 +7,7 @@ from pysidwizard import (
     End,
     Instrument,
     Loop,
+    MainVolume,
     Pattern,
     PlayPattern,
     RawSequenceByte,
@@ -289,9 +290,36 @@ def test_loop_consumes_position_byte_on_round_trip():
     assert decode_sequence(raw) == cmds
 
 
-def test_decode_sequence_preserves_unhandled_a0_range_as_raw():
+def test_decode_sequence_a0_range_is_main_volume():
     raw = bytes([0x01, 0xA5, 0xFE])
-    assert decode_sequence(raw) == [PlayPattern(1), RawSequenceByte(0xA5), End()]
+    assert decode_sequence(raw) == [PlayPattern(1), MainVolume(5), End()]
+
+
+def test_main_volume_round_trips_all_levels():
+    cmds = [MainVolume(level) for level in range(16)]
+    raw = encode_sequence(cmds)
+    assert raw == bytes(0xA0 | level for level in range(16))
+    assert decode_sequence(raw) == cmds
+
+
+def test_main_volume_rejects_out_of_range_level():
+    with pytest.raises(SWMFormatError, match="main volume"):
+        MainVolume(16).encode()
+
+
+def test_tempo_band_ends_at_0xef_and_f0_range_is_raw():
+    # 0xB0..0xEF decode to TempoOverride; 0xF0..0xFD are player no-ops
+    # preserved verbatim as RawSequenceByte (round-trip byte-exact).
+    assert decode_sequence(bytes([0xB0])) == [TempoOverride(0)]
+    assert decode_sequence(bytes([0xEF])) == [TempoOverride(0x3F)]
+    for b in (0xF0, 0xF9, 0xFD):
+        decoded = decode_sequence(bytes([b]))
+        assert decoded == [RawSequenceByte(b)]
+        assert encode_sequence(decoded) == bytes([b])
+
+
+def test_tempo_override_encodes_top_of_band():
+    assert TempoOverride(0x3F).encode() == bytes([0xEF])
 
 
 def test_decode_sequence_preserves_trailing_ff_without_position():
