@@ -18,7 +18,9 @@ Three public surfaces:
   every PR.
 """
 
-from .constants import Waveform, attack_decay, straight_tempo, sustain_release
+from pysidtracker import attack_decay, sustain_release
+
+from .constants import Waveform, straight_tempo
 from .errors import SIDFormatError, SWMError, SWMFormatError
 from .model import (
     End,

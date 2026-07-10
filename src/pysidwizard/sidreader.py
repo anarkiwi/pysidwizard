@@ -77,6 +77,8 @@ from typing import Any, List, Optional, Union
 
 from pysidtracker import (
     MEM_SIZE,
+    PSID_MAGIC,
+    RSID_MAGIC,
     BaseSidParser,
     CodePattern,
     SidImage,
@@ -122,7 +124,7 @@ from .model import (
     decode_sequence,
     unpack_pattern,
 )
-from .sidfile import PSID_MAGIC, RSID_MAGIC, find_player_signature, parse_psid_header
+from .sidfile import find_player_signature, parse_psid_header
 
 # SID-Wizard's "packed" (``SWP``) export keeps an ``SWP1`` magic (the ``SWM1``
 # header with its ``M`` turned into ``P``). Despite the name the tune data is

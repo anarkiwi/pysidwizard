@@ -14,16 +14,25 @@ errors rather than mis-parsing.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Optional
 
-from pysidtracker import CodePattern, SidFormatError, SidImage, find_code_first, parse_sid_header
+from pysidtracker import (
+    CodePattern,
+    SidFormatError,
+    SidHeader,
+    SidImage,
+    find_code_first,
+    parse_sid_header,
+)
 
 from .constants import SWM_MAGIC
 from .errors import SIDFormatError
 
-PSID_MAGIC = b"PSID"
-RSID_MAGIC = b"RSID"
+# The decoded SID-container header is the shared :class:`pysidtracker.SidHeader`
+# (``magic`` / ``version`` / ``real_load_address`` / ``data_start`` /
+# ``is_psid`` / ``is_rsid`` / ``is_multi_sid`` etc.); re-exported under the
+# historical name for callers importing it from this module.
+PsidHeader = SidHeader
 
 # SID-Wizard's "packed" (SWP) export keeps an ``SWP1`` magic instead of (or in
 # addition to) the ``SWM1`` tune header. Some packed tunes carry no ``SWM1``
@@ -43,77 +52,18 @@ def find_player_signature(image: SidImage) -> Optional[int]:
     return match.addr if match is not None else None
 
 
-@dataclass
-class PsidHeader:
-    """Decoded SID-container header fields.
-
-    Attributes mirror the on-disk header. :attr:`load_address` is the raw
-    header field (``0`` for the common "load address lives in the data" case);
-    :attr:`real_load_address` is the resolved C64 address the memory image
-    loads at, and :attr:`data_start` is the file offset of the first byte of
-    that memory image (i.e. ``data_offset`` plus the optional 2-byte embedded
-    load address).
-    """
-
-    magic: bytes
-    version: int
-    data_offset: int
-    load_address: int
-    init_address: int
-    play_address: int
-    songs: int
-    start_song: int
-    flags: int
-    second_sid: int
-    third_sid: int
-    real_load_address: int
-    data_start: int
-
-    @property
-    def is_psid(self) -> bool:
-        return self.magic == PSID_MAGIC
-
-    @property
-    def is_rsid(self) -> bool:
-        return self.magic == RSID_MAGIC
-
-    @property
-    def is_multi_sid(self) -> bool:
-        """True if the header advertises a 2nd/3rd/4th SID chip."""
-        return self.version >= 3 and (self.second_sid != 0 or self.third_sid != 0)
-
-
-def parse_psid_header(data: bytes) -> PsidHeader:
+def parse_psid_header(data: bytes) -> SidHeader:
     """Decode the SID-container header at the start of ``data``.
 
-    Raises :class:`SIDFormatError` if the magic is neither ``PSID`` nor
-    ``RSID`` or the header is truncated. The embedded load address (used when
-    the header ``loadAddress`` field is ``0``) is read from the data area.
-
-    Delegates the byte-level decode (including the load-address-0 handling that
-    resolves :attr:`PsidHeader.real_load_address` / :attr:`PsidHeader.data_start`)
-    to :func:`pysidtracker.parse_sid_header`, re-raising its
+    Thin wrapper over :func:`pysidtracker.parse_sid_header` that re-raises its
     :class:`pysidtracker.SidFormatError` as this package's :class:`SIDFormatError`.
+    The returned :class:`pysidtracker.SidHeader` resolves ``real_load_address`` /
+    ``data_start`` (handling the ``loadAddress == 0`` embedded-address case).
     """
     try:
-        header = parse_sid_header(data)
+        return parse_sid_header(data)
     except SidFormatError as exc:
         raise SIDFormatError(str(exc)) from exc
-    return PsidHeader(
-        magic=header.magic,
-        version=header.version,
-        data_offset=header.data_offset,
-        load_address=header.load_address,
-        init_address=header.init_address,
-        play_address=header.play_address,
-        songs=header.songs,
-        start_song=header.start_song,
-        flags=header.flags,
-        second_sid=header.second_sid,
-        third_sid=header.third_sid,
-        real_load_address=header.real_load_address,
-        data_start=header.data_start,
-    )
 
 
 def is_sidwizard_sid(data: bytes) -> bool:
