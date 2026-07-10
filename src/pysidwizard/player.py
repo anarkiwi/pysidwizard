@@ -33,6 +33,12 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterator, List, Optional, Sequence, Tuple
 
+from pysidtracker.registers import (
+    PAL_CLOCK_HZ,
+    PAL_CYCLES_PER_FRAME,
+    SID_BASE,
+)
+
 from .constants import (
     INST_WF_TABLE_POS,
     PORTAMENTO_FX,
@@ -57,10 +63,9 @@ from .reader import read_swm
 # Constants extracted from SID-Wizard's player.asm.
 # --------------------------------------------------------------------------
 
-SID_REG_BASE = 0xD400
-PAL_CYCLES_PER_FRAME = 19656  # 50 Hz at 982,800 Hz PAL clock
-PAL_CLOCK_HZ = 985248  # PAL C64 system clock (Hz). Used to convert seconds
-# <-> player frames when no SID emulator is present (CSV-only path).
+# SID register file base ($D400); re-exported from pysidtracker.registers for
+# local callers (tests, tools) that import it from this module.
+SID_REG_BASE = SID_BASE
 
 # FREQTBL / FREQTBH from native/sources/include/player.asm. 96 notes;
 # note 49 (SWM C-5) maps to ~261.6 Hz on a 985,248 Hz PAL SID.
