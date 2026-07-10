@@ -14,10 +14,12 @@ round-trip.
 
 Scope: single-SID ``PSID`` and ``RSID`` tunes, including SID-Wizard's
 *packed* (``SWP``) exports. Multi-subtune tunes are fully decoded (each
-subtune is reachable via :meth:`SWMFile.subtune`). Out of scope, rejected
-with a clear, specific error: multi-SID files (the player is single-SID
-only), and the occasional relocated/loader layout that hides the tune
-tables entirely.
+subtune is reachable via :meth:`SWMFile.subtune`). Exports whose runtime
+image only materialises once the player's init has run -- packed/relocating
+drivers, alternate-driver layouts, or CIA/IRQ multispeed starters -- are
+recovered by running the tune's own player (:func:`_build_via_player`). Only
+multi-SID files are out of scope, rejected with a clear, specific error (the
+player and model are single-SID only).
 
 Two on-disk layouts are decoded; the byte-level decoding of patterns,
 instruments, sequences and chord/tempo tables is identical between them and
@@ -73,7 +75,14 @@ from __future__ import annotations
 import os
 from typing import Any, List, Optional, Union
 
-from pysidtracker import BaseSidParser, CodePattern, SidImage, find_code_all
+from pysidtracker import (
+    MEM_SIZE,
+    BaseSidParser,
+    CodePattern,
+    SidImage,
+    find_code_all,
+    run_init,
+)
 
 from .constants import (
     AUTHOR_LEN,
@@ -104,9 +113,11 @@ from .constants import (
 )
 from .errors import SIDFormatError
 from .model import (
+    End,
     Instrument,
     Pattern,
     PlayPattern,
+    Row,
     SWMFile,
     decode_sequence,
     unpack_pattern,
@@ -170,20 +181,20 @@ _SEQUENCE_END_WITH_LOOP = 0xFF
 # real matches are told apart by address order (the instrument tables sit below
 # the pattern tables) and validated by decoding.
 _CODE_PTRTAB = CodePattern("BC ?? ?? B9 {lo:w} 85 ?? B9 {hi:w} 85 ??")
+# ``p_seqtN lda SEQUENCES+n*seqbound,y ; rts`` -- the per-channel orderlist
+# reader in the RAM (non-subtune-indirect) player. Each operand is self-modified
+# at init to that channel's packed sequence base (:func:`_build_via_player`).
+_CODE_SEQ_DIRECT = CodePattern("B9 {seq:w} 60")
 _CODE_SUBTUNES = CodePattern("69 ?? A8 B9 {subt:w}")
 _CODE_CHORDTAB = CodePattern("BC ?? ?? B9 {chdt:w} C9 7E D0")
 _CODE_CHORDPTR = CodePattern("A8 B9 {chdp:w} 9D")
 _CODE_TEMPOPTR = CodePattern("A8 B9 {tmpp:w} 4C")
 _CODE_TEMPOTAB = CodePattern("38 F9 {tmpt:w} F0")
-# SID-Wizard's fixed player/assembly origin. A partially-relocated export
-# leaves some pointer-table entries at their original (pre-relocation) address;
-# the relocation delta is read from the player code where two operands reference
-# the same table (:func:`_reloc_delta_candidates`). ``load - _ORIG_LOAD`` is a
-# final cross-check candidate for the few exports without such a duplicate — it
-# is proven equal to the code-derived delta in every case where both exist, so
-# it confirms $1000 as the real origin rather than guessing one. Every candidate
-# is validated by decoding before acceptance.
-_ORIG_LOAD = 0x1000
+# A partially-relocated export leaves some pointer-table entries at their
+# original (pre-relocation) address; the relocation delta is read from the player
+# code, where two operands reference the same table (:func:`_reloc_delta_candidates`),
+# never from a guessed origin. Any export the code-derived delta can't repair
+# falls through to :func:`_build_via_player`, which runs the tune's own init.
 
 
 class _LayoutError(SIDFormatError):
@@ -253,9 +264,14 @@ def parse_sid(data: bytes) -> SWMFile:
     if swm_pos < 0:
         # No ``SWM1`` / ``SWP1`` magic: a magic-less (stripped / relocated)
         # export. Recover it by reading the table bases straight from the
-        # player-code operands, anchored on the SID-Wizard 1.x player signature.
+        # player-code operands, anchored on the SID-Wizard 1.x player signature;
+        # if the static image alone doesn't resolve, run the player's init.
         try:
             return _build_codescan(data, load, base)
+        except _LayoutError:
+            pass
+        try:
+            return _build_via_player(data, load, base)
         except _LayoutError as exc:
             raise SIDFormatError(
                 "no 'SWM1' tune header found and the SID-Wizard player tables "
@@ -283,9 +299,13 @@ def parse_sid(data: bytes) -> SWMFile:
         return _build_codescan(data, load, base)
     except _LayoutError:
         pass
-    # Neither the in-place end-probe nor the code scan resolved a coherent
-    # layout: a stale/uninitialised player-template header (placeholder counts)
-    # or an export whose tune data is not materialised statically.
+    # The static image doesn't hold a coherent layout (stale/template header, or
+    # tune data only materialised by the player's init/relocation). Run the
+    # tune's own player and read its runtime tables.
+    try:
+        return _build_via_player(data, load, base)
+    except _LayoutError:
+        pass
     raise SIDFormatError(
         "'SWM1' tune header found but its pointer tables did not resolve to a "
         "coherent layout (stale/template header or unmaterialised relocated "
@@ -918,10 +938,9 @@ def _codescan_resolve(image, byte, chunk, load, end, data, base):
     Shared by the static and init-materialised paths. Reads the pattern- and
     instrument-pointer table bases (and counts) from the player's own
     indexed-load instructions, then the subtune / chord / tempo tables. Relocation
-    deltas are read from the code (:func:`_reloc_delta_candidates`); SID-Wizard's
-    fixed assembly origin ``$1000`` is a final cross-check candidate (proven equal
-    to the code-derived delta wherever both exist). Every candidate is accepted
-    only if it yields a validated, pattern-ref-coherent layout.
+    deltas are read from the code (:func:`_reloc_delta_candidates`), not guessed.
+    Every candidate is accepted only if it yields a validated, pattern-ref-coherent
+    layout.
     """
     pairs = sorted(
         {(m.captures["lo"], m.captures["hi"]) for m in find_code_all(image, _CODE_PTRTAB)}
@@ -933,7 +952,7 @@ def _codescan_resolve(image, byte, chunk, load, end, data, base):
     swm_header, seq_hint, chord_len, tempo_len = _codescan_meta(data, base, image)
 
     ordered = sorted(pairs, key=lambda pair: pair[1], reverse=True)
-    relocs = [0, *_reloc_delta_candidates(pairs, load, end), load - _ORIG_LOAD]
+    relocs = [0, *_reloc_delta_candidates(pairs, load, end)]
     tried: set = set()
     last: Optional[_LayoutError] = None
     for reloc in relocs:
@@ -980,3 +999,347 @@ def _build_codescan(data: bytes, load: int, base: int) -> SWMFile:
     byte, chunk = _memory_accessors(data, load, base)
     end = load + (len(data) - base)
     return _codescan_resolve(image, byte, chunk, load, end, data, base)
+
+
+# --- Player-code recovery (run the tune's own init, read its tables) -----------
+# When the static readers above cannot resolve a layout -- the tune data is only
+# materialised by the player's init (packed/relocating drivers), or the version's
+# export is an alternate layout -- the tune is recovered by *running its player*.
+# ``run_init`` (py65) executes the tune's init so the runtime image lands in
+# memory exactly as on a C64; every table base is then read straight from the
+# player's own instruction operands (never scanned or guessed). The only
+# tolerance is that pointer-table slots the tune never plays -- unused, or
+# truncated away in a corrupt file's secondary subtunes -- decode to empty; the
+# C64 reads the same nothing there. See docs/format.md.
+
+
+def _image_accessors(image: SidImage):
+    """``(byte, chunk)`` reading the materialised 64 KiB image by absolute addr."""
+    mem = image.mem
+
+    def byte(addr: int) -> int:
+        if not 0 <= addr < MEM_SIZE:
+            raise _LayoutError(f"address {addr:#06x} out of range")
+        return mem[addr]
+
+    def chunk(addr: int, length: int) -> bytes:
+        if addr < 0 or addr + length > MEM_SIZE:
+            raise _LayoutError(f"slice at {addr:#06x}+{length} out of range")
+        return bytes(mem[addr : addr + length])
+
+    return byte, chunk
+
+
+def _scan_sequence_end(byte, start: int) -> int:
+    """Address one past a sequence's ``$FE`` / ``$FF``+loop-byte terminator."""
+    addr = start
+    guard = 0
+    while True:
+        cmd = byte(addr)
+        addr += 1
+        guard += 1
+        if guard > _SEQUENCE_GUARD:
+            raise _LayoutError("sequence not terminated")
+        if cmd == _SEQUENCE_END:
+            return addr
+        if cmd == _SEQUENCE_END_WITH_LOOP:
+            return addr + 1
+
+
+def _bounded_pattern_end(byte, start: int, ceil: int) -> Optional[int]:
+    """Address of a pattern's ``$FF`` row-terminator below ``ceil``, else None.
+
+    Row-aware (an ``$FF`` inside a row's effect data is not the terminator),
+    mirroring :func:`_scan_pattern_end` but bounded so an unused/absent slot
+    fails softly instead of running away.
+    """
+    addr = start
+    while addr < ceil:
+        b = byte(addr)
+        if b == TABLE_END:
+            return addr
+        addr += 1
+        if b == 0x00:
+            while PACKED_MIN <= byte(addr) <= PACKED_MAX:
+                addr += 1
+            continue
+        if b & 0x80:
+            inst_byte = byte(addr)
+            addr += 1
+            if inst_byte & 0x80:
+                fx = byte(addr)
+                addr += 1
+                if fx < 0x20:
+                    addr += 1
+    return None
+
+
+def _direct_channel_bases(image: SidImage, _byte, _subtune: int):
+    """Three channel bases from the ``p_seqtN lda SEQUENCES,y; rts`` operands.
+
+    Self-modified by init to the current subtune's packed per-channel bases (RAM,
+    non-subtune-indirect player); the caller re-runs init to select the subtune,
+    so this reads the live operands directly.
+    """
+    direct = [m.captures["seq"] for m in find_code_all(image, _CODE_SEQ_DIRECT)]
+    return direct[:SID_CHANNELS] if len(direct) >= SID_CHANNELS else None
+
+
+def _subtune_channel_bases(image: SidImage, byte, subtune: int):
+    """Three channel bases from the ``SUBTUNES`` pointer table (``p_subt1``).
+
+    Each 8-byte block holds the subtune's three LO/HI sequence pointers
+    (subtune-support driver: ``p_seqt`` is the indirect ``lda (zp),y`` form).
+    """
+    subt = _code_operands(image, _CODE_SUBTUNES, "subt")
+    if not subt:
+        return None
+    blk = subt[0] + _SUBTUNE_BLOCK * subtune
+    return [byte(blk + 2 * c) | (byte(blk + 2 * c + 1) << 8) for c in range(SID_CHANNELS)]
+
+
+_ORDERLIST_FORMS = (_direct_channel_bases, _subtune_channel_bases)
+
+
+def _refs(sequences) -> set:
+    return {c.pattern for seq in sequences for c in seq if isinstance(c, PlayPattern)}
+
+
+def _build_via_player(data: bytes, load: int, base: int) -> SWMFile:
+    """Recover a tune by running its player and reading its own table operands.
+
+    Final fallback for tunes the static readers cannot resolve. Raises
+    :class:`SIDFormatError` if the player yields no coherent, orderlist-coherent
+    layout.
+    """
+    image = SidImage.from_sid(data)
+    try:
+        run_init(image, 0)
+    except Exception as exc:  # EmulatorUnavailable / SidParseError
+        raise _LayoutError(f"could not run the tune's init: {exc}") from exc
+    byte, chunk = _image_accessors(image)
+
+    pairs = sorted(
+        {(m.captures["lo"], m.captures["hi"]) for m in find_code_all(image, _CODE_PTRTAB)}
+    )
+    if not pairs:
+        raise _LayoutError("no pointer-table access sites in the player code")
+    data_hi = min(b for pair in pairs for b in pair)
+    ordered = sorted(pairs, key=lambda p: p[1], reverse=True)
+
+    swm_pos = data.find(SWM_MAGIC, base)
+    swm_header = (
+        data[swm_pos : swm_pos + TUNE_HEADER_SIZE]
+        if 0 <= swm_pos and swm_pos + TUNE_HEADER_SIZE <= len(data)
+        else None
+    )
+    if swm_header is not None:
+        seq_amount = swm_header[SEQUENCE_AMOUNT_POS]
+        subtunes = (seq_amount - 1) // SID_CHANNELS + 1 if seq_amount else 1
+    else:
+        seq_amount = SID_CHANNELS
+        subtunes = 1
+
+    # Pick the orderlist form (direct or subtune-table) and the pattern table
+    # together: the combination whose primary-subtune orderlists reference only
+    # patterns the table resolves. This fixes the data floor and rejects the
+    # stale default ``p_seqt`` operands some drivers leave alongside the real
+    # subtune table.
+    form = ptn_lo = ptn_hi = pat_amount = None
+    data_lo = data_hi
+    for candidate in _ORDERLIST_FORMS:
+        bases0 = candidate(image, byte, 0)
+        if not bases0:
+            continue
+        floor = min(bases0)
+
+        def inrange0(addr: int, floor=floor) -> bool:
+            return floor <= addr < data_hi
+
+        try:
+            seqs0 = [decode_sequence(chunk(b, _scan_sequence_end(byte, b) - b)) for b in bases0]
+        except _LayoutError:
+            continue
+        refs0 = _refs(seqs0)
+        for pl, ph in ordered:
+            n = ph - pl
+            if (
+                0 < n < 256
+                and refs0
+                and max(refs0) <= n
+                and all(inrange0(byte(pl + p) | (byte(ph + p) << 8)) for p in refs0 if p)
+            ):
+                form, ptn_lo, ptn_hi, pat_amount, data_lo = candidate, pl, ph, n, floor
+                break
+        if form is not None:
+            break
+    if form is None:
+        raise _LayoutError("no orderlist form resolves against a pattern table")
+
+    def inrange(addr: int) -> bool:
+        return data_lo <= addr < data_hi
+
+    # Collect every subtune's sequences; only the header's seq_amount slots are
+    # real orderlists, the rest are unused (empty). Re-init per subtune so the
+    # direct-form p_seqt operands point at each subtune's bases.
+    seq_slots = []
+    for st in range(subtunes):
+        run_init(image, st)
+        seq_slots.extend(form(image, byte, st) or [None] * SID_CHANNELS)
+    real = [
+        b if i < seq_amount and b is not None and inrange(b) else None
+        for i, b in enumerate(seq_slots)
+    ]
+    materialised = [b for b in real if b is not None]
+    data_lo = min(materialised) if materialised else data_lo
+    run_init(image, 0)
+
+    # Emit exactly seq_amount orderlists (the header's count); the final subtune
+    # may hold fewer than SID_CHANNELS. A slot with no materialised base is an
+    # empty End (unused, or truncated in a corrupt file's secondary subtune).
+    sequences, ref_all, ref_primary = [], set(), set()
+    for i, b in enumerate(real[:seq_amount]):
+        if b is None:
+            sequences.append([End()])
+            continue
+        seq = decode_sequence(chunk(b, _scan_sequence_end(byte, b) - b))
+        sequences.append(seq)
+        this = {c.pattern for c in seq if isinstance(c, PlayPattern)}
+        ref_all |= this
+        if i < SID_CHANNELS:
+            ref_primary |= this
+
+    default_len = swm_header[DEFAULT_PATTERN_LEN_POS] if swm_header is not None else 0
+    patterns, ref_inst = _player_patterns(
+        byte, chunk, ptn_lo, ptn_hi, pat_amount, data_hi, inrange, ref_all, ref_primary, default_len
+    )
+    instruments = _player_instruments(
+        byte, chunk, data, swm_pos, ordered, ptn_lo, data_hi, inrange, ref_inst
+    )
+    chord_table, tempo_table = _player_chord_tempo(image, chunk, swm_header, data_lo)
+    subtune_tempos = _player_subtune_tempos(image, byte, subtunes)
+
+    _validate_pattern_refs(sequences, len(patterns))
+    return _assemble(
+        swm_header,
+        load,
+        sequences,
+        patterns,
+        instruments,
+        chord_table,
+        tempo_table,
+        subtune_tempos,
+    )
+
+
+def _player_patterns(
+    byte, chunk, ptn_lo, ptn_hi, pat_amount, ceil, inrange, ref_all, ref_primary, default_len
+):
+    """Decode patterns; a primary-subtune pattern MUST decode, others may be empty.
+
+    An absent slot becomes an empty pattern of the tune's default length -- SID-
+    Wizard's own "empty but lengthy" unused pattern -- so it stays playable.
+    """
+    empty_len = default_len or 32
+    patterns: List[Pattern] = []
+    ref_inst: set = set()
+    for k in range(1, pat_amount + 1):
+        addr = byte(ptn_lo + k) | (byte(ptn_hi + k) << 8)
+        term = _bounded_pattern_end(byte, addr, ceil) if inrange(addr) else None
+        if term is None:
+            if k in ref_primary:
+                raise _LayoutError(f"primary-subtune pattern {k} is absent from the image")
+            patterns.append(Pattern(rows=[Row() for _ in range(empty_len)]))
+            continue
+        unpacked = unpack_pattern(chunk(addr, term - addr))
+        length = byte(term + 1)
+        if not 0 < length <= 0xFF:
+            length = len(unpacked)
+        pat = Pattern.decode(unpacked, length=length)
+        patterns.append(pat)
+        if k in ref_all:
+            for row in pat.rows:
+                if row.instrument is not None and row.instrument < 0x40:
+                    ref_inst.add(row.instrument)
+    return patterns, ref_inst
+
+
+def _player_instruments(byte, chunk, data, swm_pos, ordered, ptn_lo, ceil, inrange, ref_inst):
+    """Decode instruments from the table below the pattern table.
+
+    The instrument LO/HI pair is the highest matched table below the pattern
+    table; when the version's instrument idiom isn't the shared skeleton (V1.0
+    interposes a ``jsr``) the tables are derived from the exporter's contiguous
+    ``[inst_lo][inst_hi][ptn_lo][ptn_hi]`` layout, trying both plausible widths.
+    A referenced instrument must decode; unused/absent slots are empty.
+    """
+    candidates = []
+    below = [(pl, ph) for pl, ph in ordered if pl < ptn_lo]
+    if below:
+        pl, ph = below[0]
+        candidates.append((pl, ph, ph - pl - 1))
+    elif 0 <= swm_pos:
+        amount = data[swm_pos + INSTRUMENT_AMOUNT_POS]
+        for width in (amount + 1, amount):
+            candidates.append((ptn_lo - 2 * width, ptn_lo - width, amount))
+    if not candidates:
+        raise _LayoutError("no instrument table below the pattern table")
+
+    last: Optional[_LayoutError] = None
+    for inst_lo, inst_hi, amount in candidates:
+        try:
+            return _decode_player_instruments(
+                byte, chunk, inst_lo, inst_hi, amount, ceil, inrange, ref_inst
+            )
+        except _LayoutError as exc:
+            last = exc
+    raise last
+
+
+def _decode_player_instruments(byte, chunk, inst_lo, inst_hi, amount, ceil, inrange, ref_inst):
+    instruments: List[Instrument] = []
+    for k in range(1, amount + 1):
+        name = b"INST %02d" % k
+        addr = byte(inst_lo + k) | (byte(inst_hi + k) << 8)
+        if not inrange(addr):
+            if k in ref_inst:
+                raise _LayoutError(f"referenced instrument {k} is absent from the image")
+            instruments.append(Instrument(name=name))
+            continue
+        cursor = addr + byte(addr + INST_FILTER_TABLE_PTR_POS)
+        while cursor < ceil and byte(cursor) != TABLE_END:
+            cursor += 1
+        try:
+            instruments.append(Instrument.decode(chunk(addr, cursor - addr), name=name))
+        except _LayoutError:
+            raise
+        except Exception as exc:  # malformed body
+            if k in ref_inst:
+                raise _LayoutError(f"referenced instrument {k} did not decode: {exc}") from exc
+            instruments.append(Instrument(name=name))
+    return instruments
+
+
+def _player_chord_tempo(image, chunk, swm_header, min_data):
+    """Chord/tempo table bytes from the player's own table-base operands."""
+    chord_len = swm_header[CHORD_LENGTH_POS] if swm_header is not None else 0
+    tempo_len = swm_header[TEMPO_LENGTH_POS] if swm_header is not None else 0
+    return _codescan_chord_tempo(
+        image, chunk, min_data + _SUBTUNE_SCAN_WINDOW, min_data, chord_len, tempo_len
+    )
+
+
+def _player_subtune_tempos(image, byte, subtunes):
+    """Per-subtune funktempo ``(left, right)`` from the ``SUBTUNES`` table, when present."""
+    subt = _code_operands(image, _CODE_SUBTUNES, "subt")
+    if not subt:
+        return [(0, 0)] * subtunes
+    base = subt[0]
+    out = []
+    for st in range(subtunes):
+        blk = base + _SUBTUNE_BLOCK * st + 2 * SID_CHANNELS
+        try:
+            out.append((byte(blk), byte(blk + 1)))
+        except _LayoutError:
+            out.append((0, 0))
+    return out

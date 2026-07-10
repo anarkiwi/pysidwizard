@@ -13,7 +13,7 @@ covers the ``(SidWizard_2SID)`` / ``(SidWizard_3SID)`` signatures, which are
 split out here via the PSID/RSID header (multi-SID) because pysidwizard is
 single-SID only by design. Of the ``1126`` SID-Wizard tunes found:
 
-* ``1062`` single-SID tunes parse and play. Most are direct-load exports read
+* ``1076`` single-SID tunes parse and play. Most are direct-load exports read
   in place; ``100`` are recovered by the relocation-invariant **code-scan**
   reader, which reads each table's base address straight from the player's own
   indexed-load instruction operands (the player relocates as one block, so the
@@ -26,18 +26,20 @@ single-SID only by design. Of the ``1126`` SID-Wizard tunes found:
   deterministic, stratified subset (RSID, packed ``SWP``, multi-subtune, every
   driver type, and code-scan recoveries across the load-address spread) capped
   so the corpus test stays fast under ``-n auto``.
+* The last ``14`` (:data:`PLAYER_RECOVERED`) hold no coherent layout in the
+  *static* image — the tune data is only materialised by the player's own
+  init/relocation, the export is an alternate-driver layout (drivers 0/2/5,
+  V1.0–V1.5), or the file is partly truncated. They are recovered by **running
+  the tune's own player** (``pysidtracker.run_init``, py65) and reading every
+  table base straight from the player's instruction operands — no scanning, no
+  guessed relocation. Spans direct and subtune-indirect orderlists, inline
+  instrument names, the V1.0 contiguous-table idiom, and multi-subtune tunes.
 * ``50`` are multi-SID (2-SID/3-SID) — rejected by design; the
   player and model are single-SID only (:data:`EXCLUDED_MULTI_SID`).
-* ``14`` are recognised as SID-Wizard (an ``SWM1`` magic or the player
-  signature is present, so they detect as ``DIRECT``) but resolve to no
-  coherent, playable layout — a stale/uninitialised player-template header
-  (placeholder counts) or an export whose tune data is not present in the image
-  and is not materialised even by emulating the player's init. The reader
-  rejects them cleanly (:data:`EXCLUDED_UNRESOLVED`).
 
-The ``EXCLUDED_*`` lists are deterministic subsets used to assert the reader
-rejects each out-of-scope class with a clear, specific error (never a silent
-mis-parse).
+:data:`EXCLUDED_MULTI_SID` is a deterministic subset used to assert the reader
+rejects each out-of-scope multi-SID tune with a clear, specific error (never a
+silent mis-parse).
 """
 
 from __future__ import annotations
@@ -235,15 +237,17 @@ EXCLUDED_MULTI_SID = [
     "MUSICIANS/V/Vincenzo/Quad_Core_bottom_part_2SID.sid",
 ]
 
-# SID-Wizard is recognised (an ``SWM1`` magic or the player-code signature is
-# present, so the tune detects as ``DIRECT``) but no coherent, playable layout
-# resolves — a stale/uninitialised player-template header (placeholder counts),
-# or an export whose tune data is not materialised in the static image (needs
-# the player's own init to unpack/relocate). Rejected with a clear
-# ``SIDFormatError`` rather than a silent mis-parse. Every corpus tune that a
-# real code-scan CAN resolve has been moved into :data:`SAMPLE`; these are the
-# genuine non-format residue.
-EXCLUDED_UNRESOLVED = [
+# Recovered by running the tune's own player (:func:`pysidwizard.sidreader.
+# _build_via_player`): the static image has no coherent layout, so ``run_init``
+# materialises the runtime image and each table base is read from the player's
+# own instruction operands. This set deliberately spans every hard shape --
+# init-materialised data behind a CIA/IRQ starter (Blissed_Out, Transforming,
+# Asmlook drv2 play=0), uniformly/partly-relocated pointers (Groms, Kd0s),
+# inline instrument names (Elara, V1.4), the V1.0 contiguous-table idiom
+# (Techno_2), the drv5 direct orderlist (Moellpauk tunes), and multi-subtune /
+# partly-truncated files (OHGJ 4 subtunes, Switchback 2). Each must parse, play,
+# and (statically) still detect as ``DIRECT``.
+PLAYER_RECOVERED = [
     "DEMOS/M-R/Przepis_na_kopytka.sid",
     "MUSICIANS/A/AMB/Kd0s.sid",
     "MUSICIANS/A/Ant1/Techno_2.sid",
