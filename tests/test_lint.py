@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-LINT_TARGETS = ["src", "tools", "tests"]
+LINT_TARGETS = ["src", "tests"]
 
 
 def _have(tool: str) -> bool:
@@ -22,7 +22,7 @@ def _have(tool: str) -> bool:
 
 @pytest.mark.skipif(not _have("ruff"), reason="ruff not installed")
 def test_ruff_check_clean():
-    """``ruff check`` must report zero findings on src + tools + tests."""
+    """``ruff check`` must report zero findings on src + tests."""
     result = subprocess.run(
         ["ruff", "check", *LINT_TARGETS],
         cwd=REPO_ROOT,

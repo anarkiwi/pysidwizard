@@ -110,29 +110,26 @@ for _ in range(100):
 
 ### Render to WAV
 
-```python
-from pysidwizard import render_wav
-
-render_wav("tune.swm", "tune.wav", seconds=60.0, model_name="MOS8580")
-```
-
-Or from the command line:
+Use the shared `pysidtracker` CLI (registered for `.sid` files via the
+`SidFormat` entry point):
 
 ```bash
-python -m pysidwizard.player tune.swm tune.wav --seconds 60 --model MOS8580
+pysidtracker wav tune.sid out.wav --seconds 60 --model 8580
 ```
 
-`render_wav` drives [`pyresidfp`](https://pypi.org/project/pyresidfp/) (install
-with `pip install pyresidfp`).
+The CLI operates on `.sid` files (not `.swm`) and drives
+[`pyresidfp`](https://pypi.org/project/pyresidfp/) (install with
+`pip install pyresidfp`).
 
-### Iterate raw writes
+### Iterate register writes
 
 ```python
-from pysidwizard import iter_writes
+from pysidwizard import iter_register_writes
 
-for frame, reg, value in iter_writes(swm, n_frames=1500):
-    ...
+for clock, reg, value in iter_register_writes(swm, max_frames=1500):
+    ...  # reg is a 0..0x18 register offset
 ```
 
-`iter_writes` deduplicates consecutive identical writes to the same register by
-default.
+`iter_register_writes` yields `RegWrite(clock, reg, val)` for the registers that
+change each frame. For a full per-frame 25-register grid, use
+`SWMPlayer(swm).render_grid(n)`, which returns `n` forward-filled rows.

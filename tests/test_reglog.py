@@ -18,7 +18,7 @@ from pysidwizard import (
     Waveform,
     straight_tempo,
 )
-from pysidwizard.player import PAL_CYCLES_PER_FRAME, SID_REG_BASE, SWMPlayer
+from pysidwizard.player import PAL_CYCLES_PER_FRAME, SWMPlayer
 from pysidwizard.reglog import (
     RegWrite,
     iter_register_writes,
@@ -68,20 +68,19 @@ def test_clock_layout():
     assert all(0 <= w.val <= 0xFF for w in writes)
     clocks = [w.clock for w in writes]
     assert clocks == sorted(clocks)
+    # The shared framer emits the post-init baseline at frame 0, then the
+    # three requested play frames at frames 1..3.
     frame_starts = {w.clock - (w.clock % PAL_CYCLES_PER_FRAME) for w in writes}
-    assert frame_starts <= {0, PAL_CYCLES_PER_FRAME, 2 * PAL_CYCLES_PER_FRAME}
+    assert frame_starts <= {i * PAL_CYCLES_PER_FRAME for i in range(4)}
 
 
 def test_matches_play_frame():
-    """``iter_register_writes`` yields exactly the player's per-frame writes
-    (SID base subtracted, undeduped, in emit order)."""
-    expected = []
+    """``iter_register_writes`` yields the shared MemPlayer register stream:
+    the post-init baseline, then each frame's changed ``0..0x18`` writes."""
     player = SWMPlayer(_toy_swm())
+    expected = list(enumerate(player.regs))  # frame-0 baseline
     for _frame in range(5):
-        for reg, val in player.play_frame():
-            r = reg - SID_REG_BASE
-            if 0 <= r <= 0x18:
-                expected.append((r, val & 0xFF))
+        expected.extend(player.play_frame())
     got = [(w.reg, w.val) for w in iter_register_writes(_toy_swm(), max_frames=5)]
     assert got == expected
 

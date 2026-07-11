@@ -280,25 +280,24 @@ Every column of a `Row` is `None` by default and contributes nothing.
 
 ## Player and playback notes
 
-`SWMPlayer(swm).play_frame()` returns the SID register writes the real
-SID-Wizard player would emit on the C64 this frame, in the same order (channel
-3 → 2 → 1, then global filter + volume). `iter_writes` yields `(frame, reg,
-value)` and deduplicates consecutive identical writes to the same register by
-default (matching the schema `sidwizard-driver` produces for ground-truth
-captures). `render_wav` drives [`pyresidfp`](https://pypi.org/project/pyresidfp/).
+`SWMPlayer(swm).play_frame()` returns the per-frame `(offset, value)` writes for
+the SID registers that changed this frame, in the same order the real SID-Wizard
+player emits them (channel 3 → 2 → 1, then global filter + volume). Offsets are
+`0..0x18` register offsets, not absolute `$D4xx` addresses. `iter_register_writes`
+wraps this into `RegWrite(clock, reg, val)`; `SWMPlayer(swm).render_grid(n)`
+returns `n` forward-filled 25-register rows.
 
 ### Player correctness
 
-The four reference tunes in `tests/fixtures/` (flashitback, bronkosaurus,
-euphoria, rain8580) collectively exercise the full 1-SID feature surface: pitched
-notes, gate-off note-FX, chord tables, multispeed (`frame_speed=2`), funktempo,
-BIGFX portamento, vibrato, filter walking, instrument inheritance across F1, the
-WRPITCH detune-with-carry chain. For each tune, every frame's full SID-register
-state agrees byte-for-byte with the reference captured from real SID-Wizard
-running inside [`asid-vice`](https://github.com/anarkiwi/asid-vice) via
-[`sidwizard-driver`](https://github.com/anarkiwi/sidwizard-driver). The
-integration suite re-derives a fresh reference from the real SID-Wizard binary on
-every PR.
+The per-frame SID register output is validated byte-for-byte against the
+[`anarkiwi/sidtrace`](https://github.com/anarkiwi/sidtrace) sidplayfp oracle:
+`tests/test_oracle.py` renders the native `SWMPlayer` over a curated set of real
+HVSC SID-Wizard `.sid` exports and compares each frame against the oracle. These
+tunes collectively exercise the full 1-SID feature surface: pitched notes,
+gate-off note-FX, chord tables, multispeed (`frame_speed=2`), funktempo, BIGFX
+portamento, vibrato, filter walking, instrument inheritance across F1, the
+WRPITCH detune-with-carry chain. Run it with `pytest -m oracle` (requires
+Docker).
 
 ### Out of scope
 
@@ -307,9 +306,8 @@ Multi-SID, SFX, slowdown, and non-440 Hz tuning tables.
 ## References
 
 - [SID-Wizard](https://csdb.dk/release/?id=258573) (Hermit / Mihaly Horvath).
-- [`asid-vice`](https://github.com/anarkiwi/asid-vice) /
-  [`sidwizard-driver`](https://github.com/anarkiwi/sidwizard-driver) — the
-  bit-exact capture oracle.
+- [`anarkiwi/sidtrace`](https://github.com/anarkiwi/sidtrace) — sidplayfp
+  register-trace oracle the player is validated against.
 - [pyresidfp](https://pypi.org/project/pyresidfp/) — reSIDfp SID emulation.
 - `hvsc-tracker-catalog` — HVSC `Hermit/SidWizard_V1.x` corpus identification.
 - [`pysidtracker`](https://github.com/anarkiwi/pysidtracker) — shared

@@ -19,12 +19,12 @@ from __future__ import annotations
 
 from typing import Iterator, Optional
 
-from pysidtracker.registers import PAL_CYCLES_PER_FRAME, SID_BASE, SID_REG_COUNT
+from pysidtracker.registers import PAL_CYCLES_PER_FRAME
 from pysidtracker.reglog import (
     DEFAULT_WRITE_SPACING,
     RegWrite,
-    frame_writes,
     read_reglog,
+    register_writes_from_player,
     write_reglog,
 )
 
@@ -34,7 +34,6 @@ from .player import SWMPlayer
 __all__ = [
     "DEFAULT_WRITE_SPACING",
     "RegWrite",
-    "frame_writes",
     "iter_register_writes",
     "read_reglog",
     "write_reglog",
@@ -54,21 +53,21 @@ def iter_register_writes(
     :class:`SWMPlayer` is built from it unless ``player`` is supplied.
     SID-Wizard's player loops forever, so ``max_frames`` bounds the log
     (default one minute at 50 Hz). ``cycles_per_frame`` defaults to the song's
-    PAL play period (``PAL_CYCLES_PER_FRAME // frame_speed``). The per-frame
-    ``(reg, val)`` writes -- absolute ``$D400..$D418`` addresses in
-    :meth:`SWMPlayer.play_frame` emit order -- are framed by
-    :func:`frame_writes`, which rebases each to a ``0..0x18`` offset, masks the
-    value, and spaces writes ``write_spacing`` cycles apart within the frame.
+    PAL play period (``PAL_CYCLES_PER_FRAME // frame_speed``).
+
+    :class:`SWMPlayer` is a :class:`~pysidtracker.player.MemPlayer`, so this is
+    a thin wrapper over the shared
+    :func:`~pysidtracker.reglog.register_writes_from_player`: it emits the
+    post-init register baseline at clock 0, then each frame's changed
+    ``0..0x18`` register writes ``write_spacing`` cycles apart.
     """
     if player is None:
         player = SWMPlayer(song)
     if cycles_per_frame is None:
         cycles_per_frame = PAL_CYCLES_PER_FRAME // max(1, song.frame_speed)
-    per_frame = (player.play_frame() for _ in range(max_frames))
-    return frame_writes(
-        per_frame,
+    return register_writes_from_player(
+        player,
+        max_frames=max_frames,
         cycles_per_frame=cycles_per_frame,
         write_spacing=write_spacing,
-        sid_reg_base=SID_BASE,
-        reg_count=SID_REG_COUNT,
     )

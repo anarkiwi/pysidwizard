@@ -2,10 +2,10 @@
 
 SWM test tunes are NOT tracked in the repo — they're SID-Wizard binary
 artifacts redistributed as part of the SID-Wizard 1.94 source release.
-``tests._swm_cache.swm_path`` fetches + verifies them on demand
-(delegating the download to ``sidwizard-driver``). Tests should never
-hard-code ``tests/data/*.swm`` paths; use the ``sample_path`` or
-``swm_paths`` fixtures below.
+``tests._swm_cache.swm_path`` downloads the four SWM tunes directly from
+the SID-Wizard 1.94 tarball and SHA-256-verifies each on demand. Tests
+should never hard-code ``tests/data/*.swm`` paths; use the ``sample_path``
+or ``swm_paths`` fixtures below.
 """
 
 from __future__ import annotations

@@ -4,7 +4,7 @@ This is a **read-only, lossy** companion to :mod:`pysidwizard.reader`. Where
 ``parse_swm`` reads SID-Wizard's editor workfile (``.swm``), :func:`parse_sid`
 recovers a playable :class:`~pysidwizard.model.SWMFile` from the *runtime*
 tune image that SID-Wizard's exporter bakes into a ``.sid`` file. The result
-drives :class:`~pysidwizard.player.SWMPlayer` / ``render_wav`` unchanged.
+drives :class:`~pysidwizard.player.SWMPlayer` unchanged.
 
 It is lossy on purpose: the exporter discards instrument names and the
 editor's per-pattern row-length is not authoritatively recoverable, so this

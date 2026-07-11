@@ -19,38 +19,33 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio",
 ]
 dependencies = [
-    # py65 is a required pysidtracker dependency: the ``.sid`` reader runs a
-    # tune's own player (``run_init``) to recover exports whose runtime image
-    # only materialises once init has run (see
-    # pysidwizard.sidreader._build_via_player).
-    "pysidtracker>=0.5",
+    # 0.9 provides the shared surfaces this package builds on: the ``MemPlayer``
+    # player base (``SWMPlayer`` subclasses it), the ``SidFormat`` registry +
+    # generic CLI, and the sidtrace oracle test factory. py65 (a transitive
+    # pysidtracker dependency) also backs the ``.sid`` reader, which runs a
+    # tune's own player to recover exports whose runtime image only materialises
+    # once init has run (see pysidwizard.sidreader._build_via_player).
+    "pysidtracker>=0.9",
 ]
 
 [project.optional-dependencies]
-# Tools used in CI's lint + unit-test gates. The test suite fetches
-# the four SWM test tunes from the SID-Wizard 1.94 source tarball
-# via ``sidwizard-driver``'s download cache — that's why it's pulled
-# in even for unit tests.
+# Tools used in CI's lint + unit-test gates. ``zstandard`` decompresses the
+# sidtrace oracle's ``.csv.zst`` traces (the ``-m oracle`` job); the unit suite
+# fetches the four SWM test tunes directly from the SID-Wizard 1.94 source
+# tarball (tests/_swm_cache.py), no external driver needed.
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.0",
     "pytest-xdist>=3.0",
-    "filelock>=3.12",
     "ruff>=0.4",
     "black>=24.0",
-    "sidwizard-driver>=0.4.2",
+    "zstandard>=0.21",
 ]
-# Integration tests additionally need Docker + the headlessvice image
-# to drive a real SID-Wizard inside asid-vice. CI installs ``[integration]``
-# on the dedicated integration runner only. pytest-xdist/filelock are
-# pulled in too: the suite runs ``-n0`` here, but the shared SWM cache
-# (tests/_swm_cache.py) uses filelock unconditionally.
-integration = [
-    "pytest>=7.4",
-    "pytest-xdist>=3.0",
-    "filelock>=3.12",
-    "sidwizard-driver>=0.4.2",
-]
+
+# The generic ``pysidtracker`` CLI (info / reglog / wav) discovers SID-Wizard
+# through this entry point, so no bespoke console script is shipped.
+[project.entry-points."pysidtracker.formats"]
+sidwizard = "pysidwizard.formats:FORMAT"
 
 [project.urls]
 Homepage = "https://github.com/anarkiwi/pysidwizard"
@@ -60,12 +55,12 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# ``-n auto`` parallelises the unit suite across CPUs via pytest-xdist.
-# Integration tests override this with ``-n0`` (see integration.yml) since
-# each spins its own VICE container and must run serially.
-addopts = "-ra -n auto"
+# ``-n auto`` parallelises the unit suite across CPUs via pytest-xdist. The
+# sidtrace oracle comparison (``-m oracle``) needs Docker + network, so it is
+# excluded from the default run and driven by its own CI job.
+addopts = "-ra -n auto -m 'not oracle'"
 markers = [
-    "integration: tests that drive sidwizard-driver + a VICE container (slow, opt-in via ``-m integration``)",
+    "oracle: byte-exact comparison against the sidtrace Docker oracle (opt-in via ``-m oracle``)",
 ]
 
 [tool.coverage.run]
@@ -80,7 +75,6 @@ fail_under = 85
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-exclude = ["tests/fixtures", "tools/__pycache__"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "B", "I", "UP"]
@@ -101,4 +95,3 @@ ignore = [
 [tool.black]
 line-length = 100
 target-version = ["py311"]
-extend-exclude = "tests/fixtures"
