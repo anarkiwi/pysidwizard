@@ -18,9 +18,7 @@ from pysidwizard import (
 from pysidwizard.player import (
     NOTE_FREQ_HI,
     NOTE_FREQ_LO,
-    SID_REG_BASE,
     SWMPlayer,
-    main,
 )
 
 
@@ -64,28 +62,26 @@ def test_freq_table_has_96_entries_and_matches_middle_c():
     assert 260 < hz < 263
 
 
-def test_player_play_frame_returns_expected_register_window():
+def test_play_frame_returns_offset_diffed_writes():
+    # SWMPlayer is a pysidtracker MemPlayer, so play_frame() yields
+    # (reg_offset, value) pairs — offsets $00..$18, not absolute $D4xx
+    # addresses — and only the registers whose value changed this frame.
     swm = _toy_swm()
     p = SWMPlayer(swm)
-    # Skip past the HR test-bit frame; on that frame only AD/SR/CTRL/
-    # FREQ_HI are written (mirrors SID-Wizard's STRTSND which leaves
-    # PWLOGHO/PWHIGHO/FREQ_LO untouched until CNTPLY2 walks tables).
-    p.play_frame()
-    writes = p.play_frame()
-    # Steady-state emit (= post-HR, no new STRTSND): SID-Wizard's
-    # CNTPLY2 -> WRPULS + WRWFGHO writes FREQ_LO/HI + PW_LO/HI + CTRL
-    # per voice (5 regs × 3 voices = 15) plus the 4 global filter +
-    # volume registers ($D415..$D418) = 19. AD/SR are NOT in the
-    # steady-state path; they only emit on STRTSND-equivalent /
-    # HRGTOFF / SMALFX2-3/5-6 frames (gated on
-    # ``v.adsr_emit_required``).
-    assert len(writes) == 19
-    regs = {w[0] - SID_REG_BASE for w in writes}
-    expected = {0, 1, 2, 3, 4}  # voice 0: FREQ_LO, FREQ_HI, PW_LO, PW_HI, CTRL
-    expected |= {7, 8, 9, 10, 11}  # voice 1
-    expected |= {14, 15, 16, 17, 18}  # voice 2
-    expected |= {0x15, 0x16, 0x17, 0x18}  # globals
-    assert expected == regs
+    frame0 = p.play_frame()
+    # The first frame reports all 25 registers as offset/value pairs.
+    assert [r for r, _ in frame0] == list(range(25))
+    # Later frames report only changed registers, still as $00..$18 offsets.
+    later = p.play_frame()
+    assert later and all(0 <= r <= 0x18 for r, _ in later)
+    assert len(later) <= 25
+    # The full forward-filled register state is always live as ``p.regs``:
+    # all three voices play the pitched instrument row, so each voice CTRL
+    # ($D404/$D40B/$D412) carries pulse+gate and the global volume is max.
+    assert len(p.regs) == 25
+    for base in (0, 7, 14):
+        assert p.regs[base + 4] & 0x41, "voice CTRL has pulse+gate"
+    assert p.regs[0x18] & 0x0F == 0x0F
 
 
 def test_player_advances_notes_over_time():
@@ -93,10 +89,8 @@ def test_player_advances_notes_over_time():
     p = SWMPlayer(swm)
     freq_hi_values = set()
     for _ in range(64):
-        writes = p.play_frame()
-        for reg, val in writes:
-            if reg - SID_REG_BASE == 1:  # voice 0 freq hi
-                freq_hi_values.add(val)
+        p.play_frame()
+        freq_hi_values.add(p.regs[1])  # voice 0 freq hi
     assert len(freq_hi_values) > 1, "expected more than one pitch over time"
 
 
@@ -191,8 +185,6 @@ def test_filter_set_byte_unpacks_band_resonance_cutoff():
     unfiltered instrument. With SET byte $94 (LP filter, resonance 4)
     and cutoff_hi $20, we expect $D416=$20, $D417=$41 (res=$4 + only
     voice 0 routing), $D418=$1F (LP + max vol)."""
-    from pysidwizard.player import SID_REG_BASE
-
     filtered = Instrument(
         name=b"FLTTEST ",
         sustain=0xF,
@@ -226,8 +218,8 @@ def test_filter_set_byte_unpacks_band_resonance_cutoff():
     # test-bit playback come first.
     for _ in range(HR_FRAMES):
         p.play_frame()
-    writes = p.play_frame()
-    reg = {r - SID_REG_BASE: v for r, v in writes}
+    p.play_frame()
+    reg = p.regs
     assert reg[0x15] == 0x00, f"cutoff_lo should reset to 0, got ${reg[0x15]:02X}"
     assert reg[0x16] == 0x20, f"cutoff_hi should be $20, got ${reg[0x16]:02X}"
     assert reg[0x17] == 0x41, f"$D417 should be $41 (res=$4, route=v0), got ${reg[0x17]:02X}"
@@ -500,23 +492,19 @@ def test_untriggered_voice_emits_no_register_writes():
         subtune_tempos=[(straight_tempo(2), straight_tempo(2))],
     )
     p = SWMPlayer(swm)
-    # Step past the HR test-bit frame — SID-Wizard's STRTSND only
-    # writes AD/SR/CTRL/FREQ_HI on the HR tick; the other 3 voice-
-    # block registers (FREQ_LO, PW_LO, PW_HI) emit from the first
-    # post-HR frame onward when CNTPLY2 starts walking the tables.
-    # AD/SR are NOT in the steady-state path — they only emit at
-    # STRTSND / pre-HR / SMALFX2-3/5-6, gated on
-    # ``v.adsr_emit_required``.
+    # Step past the HR test-bit frame into a steady CNTPLY2 frame. A
+    # voice that never triggered leaves its register block at the reset
+    # baseline (the memory model forward-fills untouched registers).
     p.play_frame()
-    writes = p.play_frame()
-    # Steady-state voice 0 emits FREQ_LO/HI + PW_LO/HI + CTRL.
-    voice0_steady = {SID_REG_BASE + r for r in (0, 1, 2, 3, 4)}
-    voice1_regs = {SID_REG_BASE + r for r in range(7, 14)}
-    voice2_regs = {SID_REG_BASE + r for r in range(14, 21)}
-    written = {reg for reg, _ in writes}
-    assert voice0_steady <= written, "voice 0 (triggered) must emit its 5-reg block"
-    assert not (voice1_regs & written), "voice 1 (empty row) must emit no writes"
-    assert not (voice2_regs & written), "voice 2 (empty row) must emit no writes"
+    p.play_frame()
+    regs = p.regs
+    # Voice 0 (triggered) is programmed: pulse+gate CTRL and a nonzero pitch.
+    assert regs[4] & 0x41, "voice 0 CTRL must carry pulse+gate"
+    assert regs[0] or regs[1], "voice 0 FREQ must be programmed"
+    # Voices 1 and 2 sit on empty rows and were never triggered, so their
+    # register blocks ($D407.., $D40E..) stay silent.
+    assert regs[7:14] == [0] * 7, "voice 1 (empty row) must stay silent"
+    assert regs[14:21] == [0] * 7, "voice 2 (empty row) must stay silent"
 
 
 def test_voice_starts_emitting_once_triggered():
@@ -543,12 +531,11 @@ def test_voice_starts_emitting_once_triggered():
     p = SWMPlayer(swm)
     frames_with_v0 = []
     for _ in range(4):
-        writes = p.play_frame()
-        v0_wrote = any(reg - SID_REG_BASE < 7 for reg, _ in writes)
-        frames_with_v0.append(v0_wrote)
-    # Frame 0: row 0 is empty -> no write. Frame 1+: triggered -> writes.
+        p.play_frame()
+        frames_with_v0.append(p.voices[0].triggered)
+    # Frame 0: row 0 is empty -> not triggered. Frame 1+: note triggers.
     assert frames_with_v0[0] is False
-    assert all(frames_with_v0[1:]), f"expected v0 writes from frame 1 on: {frames_with_v0}"
+    assert all(frames_with_v0[1:]), f"expected v0 active from frame 1 on: {frames_with_v0}"
 
 
 def test_player_handles_loop_command_without_infinite_advance():
@@ -594,24 +581,20 @@ def test_orderlist_main_volume_applies_delayed_at_pattern_boundary():
     )
     p = SWMPlayer(swm)
     v0 = p.voices[0]
-    d418 = 0x0F
     change_frame = None
     boundary_frame = None
     for frame in range(12):
         was_pat1 = v0.pattern is pat1
-        writes = p.play_frame()
+        p.play_frame()
         if was_pat1 and v0.pattern is pat2 and boundary_frame is None:
             boundary_frame = frame
-        for reg, val in writes:
-            if reg - SID_REG_BASE == 0x18:
-                if change_frame is None and (val & 0x0F) == 5:
-                    change_frame = frame
-                d418 = val
+        if change_frame is None and (p.regs[0x18] & 0x0F) == 5:
+            change_frame = frame
     # Volume reached 5 exactly at the pattern-1 -> pattern-2 boundary read,
     # never leaking into pattern 1, and stayed there.
     assert boundary_frame is not None
     assert change_frame == boundary_frame
-    assert d418 & 0x0F == 5
+    assert p.regs[0x18] & 0x0F == 5
 
 
 def test_orderlist_main_volume_absent_keeps_default_volume():
@@ -626,34 +609,5 @@ def test_orderlist_main_volume_absent_keeps_default_volume():
     )
     p = SWMPlayer(swm)
     for _ in range(8):
-        for reg, val in p.play_frame():
-            if reg - SID_REG_BASE == 0x18:
-                assert val & 0x0F == 0x0F
-
-
-@pytest.mark.parametrize("model", ["MOS6581", "MOS8580"])
-def test_render_wav_main_entry_point(tmp_path, model):
-    """End-to-end: drive the package's CLI to render a tiny WAV."""
-    pytest.importorskip("pyresidfp")
-    pytest.importorskip("numpy")
-    from tests._swm_cache import swm_path
-
-    sample = swm_path("flashitback")
-    out_wav = tmp_path / "out.wav"
-    rc = main(
-        [
-            str(sample),
-            str(out_wav),
-            "--seconds",
-            "0.5",
-            "--model",
-            model,
-            "--no-dedupe-writes",
-        ]
-    )
-    assert rc == 0
-    assert out_wav.exists()
-    assert out_wav.stat().st_size > 1000  # at least a few hundred ms of audio
-    csv_path = out_wav.with_suffix(".csv")
-    assert csv_path.exists()
-    assert csv_path.read_text().startswith("frame,reg,value\n")
+        p.play_frame()
+        assert p.regs[0x18] & 0x0F == 0x0F

@@ -2,10 +2,10 @@
 
 Consumes a :class:`pysidwizard.SWMFile` and emits the SID-register
 writes that SID-Wizard's own 6502 player would produce on a real C64,
-in per-frame order. The match is exact: every frame × every SID
-register, for the four reference tunes in ``tests/fixtures/``, is
-verified against a live capture from SID-Wizard running inside
-``asid-vice`` (see ``tests/integration/`` — runs on every PR).
+in per-frame order. The per-frame SID register output is validated
+byte-for-byte against the ``anarkiwi/sidtrace`` sidplayfp oracle over
+curated HVSC SID-Wizard exports (see ``tests/test_oracle.py`` — run
+with ``pytest -m oracle``).
 
 The 1-SID feature surface is fully modelled: pattern playback with
 note + instrument + small-FX + big-FX columns; note-column effects
@@ -18,24 +18,21 @@ detune-with-carry chain.
 Multi-SID / SFX / slowdown / non-440 Hz tuning tables are out of
 scope by intent.
 
-CLI: ``python3 -m pysidwizard.player INPUT.swm OUTPUT.wav
-[--seconds 60] [--model MOS8580|MOS6581]`` (renders a WAV via
-``pyresidfp``).
+A tune plays via the generic ``pysidtracker`` CLI (``pysidtracker
+info|reglog|wav <tune.sid>``), which pysidwizard registers for ``.sid``
+files through the ``pysidtracker.formats`` entry point.
 """
 
 from __future__ import annotations
 
-import argparse
-import sys
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, List, Optional
 
+from pysidtracker.player import MemPlayer
 from pysidtracker.registers import (
-    PAL_CLOCK_HZ,
     PAL_CYCLES_PER_FRAME,
+    PW_HI_REGS,
     SID_BASE,
-    SID_REG_COUNT,
     SID_VOICE_OFFSET,
 )
 
@@ -58,7 +55,6 @@ from .model import (
     TempoOverride,
     Transpose,
 )
-from .reader import read_swm
 
 # --------------------------------------------------------------------------
 # Constants extracted from SID-Wizard's player.asm.
@@ -367,17 +363,27 @@ class VoiceState:
 # --------------------------------------------------------------------------
 
 
-class SWMPlayer:
-    """Per-frame model of SID-Wizard's player IRQ.
+class SWMPlayer(MemPlayer):
+    """Per-frame SID-Wizard player, as a :class:`~pysidtracker.player.MemPlayer`.
 
-    Construct from a :class:`pysidwizard.SWMFile`. Call :meth:`play_frame`
-    once per frame and feed the returned ``(reg, value)`` writes into a
-    SID emulator. The companion :func:`render_wav` does this end-to-end
-    with ``pyresidfp``.
+    Construct from a :class:`pysidwizard.SWMFile`. The inherited
+    :meth:`~pysidtracker.player.MemPlayer.play_frame` returns the
+    ``(reg_offset, value)`` writes that changed this frame, and
+    :meth:`~pysidtracker.player.MemPlayer.render_grid` yields the
+    forward-filled per-frame register grid the shared sidtrace oracle
+    compares against.
+
+    This is a pure-Python transcription of SID-Wizard's 6502 player: the
+    inherited 64 KiB memory image is used only as the ``$D400`` SID register
+    file that :meth:`_frame` writes into and :meth:`snapshot` reads back.
     """
 
     def __init__(self, swm: SWMFile) -> None:
         self.swm = swm
+        super().__init__(b"", 0)
+
+    def _init(self, subtune: int = 0) -> None:
+        swm = self.swm
 
         # Frame rate. SID-Wizard's frame speed is the value at offset 4
         # of the header (``FSPEEDPOS`` / 1..8). Each frame the player
@@ -385,7 +391,7 @@ class SWMPlayer:
         # tables that many times per "frame" but emits a single SID
         # update at the end. For our purposes we model 1× speed and
         # let the CIA timer in pyresidfp pace the audio. ``cycles_per_frame``
-        # is exposed so render_wav can size the per-frame sample chunk.
+        # is exposed so the reglog/oracle framing can size each frame.
         self.cycles_per_frame = PAL_CYCLES_PER_FRAME // max(1, swm.frame_speed)
 
         # In-memory CHORDS table — the on-disk chord_table prefixed
@@ -484,12 +490,10 @@ class SWMPlayer:
         # phase 0 -> PLAYER tick, phase >= 1 -> MULPLY tick.
         self._multispeed_phase = 0
 
-    # ---- public API ---------------------------------------------------
+    # ---- per-frame tick ----------------------------------------------
 
-    def play_frame(self) -> List[Tuple[int, int]]:
-        """Run one player tick. Returns the ``(reg, value)`` SID register
-        writes for this frame, in the same order SID-Wizard's player
-        emits them.
+    def _frame(self) -> None:
+        """Advance one player tick, writing this frame's SID registers to memory.
 
         For ``frame_speed > 1`` tunes (e.g. euphoria's frame_speed=2),
         consecutive calls alternate between full PLAYER ticks and
@@ -512,10 +516,9 @@ class SWMPlayer:
             else:
                 self._tick_voice(voice)
         self.finished = all(v.sequence_ended for v in self.voices)
-        writes = self._emit_writes()
+        self._write_regs()
         self.frame_idx += 1
         self._multispeed_phase = (self._multispeed_phase + 1) % max(1, self.swm.frame_speed)
-        return writes
 
     # ---- voice tick ---------------------------------------------------
 
@@ -2030,8 +2033,9 @@ class SWMPlayer:
             # test bit and load the real note's release" transition.
             #
             # Freq and PW are left at whatever the SID was holding; the
-            # dedup in iter_writes suppresses repeats so those regs
-            # effectively retain their pre-HR values.
+            # register is written every frame and the MemPlayer diff /
+            # forward-fill handles repeats, so those regs effectively
+            # retain their pre-HR values.
             attack = v.attack_override if v.attack_override is not None else ins.attack
             decay = v.decay_override if v.decay_override is not None else ins.decay
             sustain = v.sustain_override if v.sustain_override is not None else ins.sustain
@@ -2137,15 +2141,19 @@ class SWMPlayer:
 
     # ---- frame emit ---------------------------------------------------
 
-    def _emit_writes(self) -> List[Tuple[int, int]]:
-        writes: List[Tuple[int, int]] = []
+    def _write_regs(self) -> None:
+        """Write this frame's SID registers into the inherited memory image.
+
+        A register a voice does not write this frame is left at its
+        previous-frame value -- SID-Wizard's replay leaves the chip register
+        holding its last value, so not overwriting it is the forward-fill the
+        inherited :meth:`snapshot` / :meth:`play_frame` read back.
+        """
         for v_idx, v in enumerate(self.voices):
             # Skip voices whose pattern hasn't reached any non-NOP row
-            # yet — rain8580 v0/v1 have empty first rows and the
-            # reference capture shows no $D40x writes for them on
-            # frame 0 (or whatever empty patterns produce on the real
-            # editor). Bronkosaurus v2's first row is a $7E gate-off
-            # note-FX, which counts as "triggered" via _apply_row.
+            # yet — rain8580 v0/v1 have empty first rows that produce no
+            # $D40x writes on frame 0. Bronkosaurus v2's first row is a
+            # $7E gate-off note-FX, which counts as "triggered" via _apply_row.
             if not v.triggered:
                 continue
             base = SID_BASE + SID_VOICE_OFFSET[v_idx]
@@ -2153,44 +2161,39 @@ class SWMPlayer:
             # TICK_2 / CNTPLAY takes the ``ldy CURINS,x; bne STRTINS;
             # jmp LEGATOO`` branch and LEGATOO ends at WRWFGHO — which
             # writes ONLY the WAVEFORM/CTRL register. FREQ_LO/HI, PW,
-            # AD, SR are left at whatever the SID was holding. Mirror
-            # that so we don't clobber the seed state with our default
-            # zeros (e.g. bronkosaurus v2 which has a $7E gate-off
-            # row 0 with no instrument).
+            # AD, SR are left at whatever the SID was holding.
             if v.instrument is None:
-                writes.append((base + 4, v.sid_ctrl))
+                self._wr(base + 4, v.sid_ctrl)
                 continue
             # TICK_2 of a legato / portamento / NPORTAM row: SID-Wizard's
             # LEGATOO -> WRWFGHO writes ONLY $D404 (CTRL). FREQ/PW/AD/SR
-            # are not touched; the chip retains its previous-frame
-            # values. Mirror that by emitting only sid_ctrl.
+            # are not touched; the chip retains its previous-frame values.
             if v.in_tick2_legato_this_frame:
-                writes.append((base + 4, v.sid_ctrl))
+                self._wr(base + 4, v.sid_ctrl)
                 continue
             # During the HR test-bit frame SID-Wizard's STRTSND only
             # updates AD/SR/CTRL/FREQ_HI ghosts — PWLOGHO/PWHIGHO and
             # FREQ_LO are left unchanged, so SIDG.PLSW retains the
             # previous instrument's PW (or pre-song state for the
-            # first trigger). Skip those writes during HR to avoid
-            # clobbering the carried-over value.
+            # first trigger).
             if v.in_hr_this_frame:
-                writes.append((base + 1, v.sid_freq_hi))
-                writes.append((base + 5, v.sid_ad))
-                writes.append((base + 6, v.sid_sr))
-                writes.append((base + 4, v.sid_ctrl))
+                self._wr(base + 1, v.sid_freq_hi)
+                self._wr(base + 5, v.sid_ad)
+                self._wr(base + 6, v.sid_sr)
+                self._wr(base + 4, v.sid_ctrl)
                 continue
-            writes.append((base + 0, v.sid_freq_lo))
-            writes.append((base + 1, v.sid_freq_hi))
-            writes.append((base + 2, v.sid_pw_lo))
-            writes.append((base + 3, v.sid_pw_hi))
+            self._wr(base + 0, v.sid_freq_lo)
+            self._wr(base + 1, v.sid_freq_hi)
+            self._wr(base + 2, v.sid_pw_lo)
+            self._wr(base + 3, v.sid_pw_hi)
             # SID-Wizard's CNTPLY2 path (WRPULS + WRWFGHO) writes FREQ
-            # + PW + CTRL but NOT AD/SR. Only emit AD/SR when a code
+            # + PW + CTRL but NOT AD/SR. Only write AD/SR when a code
             # path in this tick actually wrote them (STRTSND, HRGTOFF,
             # SMALFX2/3/5/6 — tracked by ``adsr_emit_required``).
             if v.adsr_emit_required:
-                writes.append((base + 5, v.sid_ad))
-                writes.append((base + 6, v.sid_sr))
-            writes.append((base + 4, v.sid_ctrl))
+                self._wr(base + 5, v.sid_ad)
+                self._wr(base + 6, v.sid_sr)
+            self._wr(base + 4, v.sid_ctrl)
         # Global filter / volume. $D417 = resonance (high nibble) +
         # routing (low nibble: bit 0=v0, bit 1=v1, bit 2=v2 — set if
         # that voice has an active filter-table instrument).
@@ -2199,207 +2202,22 @@ class SWMPlayer:
             if v.voice_in_filter:
                 routing |= 1 << v_idx
         res_routing = (self.filter_resonance & 0xF0) | (routing & 0x0F)
-        writes.append((SID_REG_BASE + 0x15, self.filter_cutoff_lo & 0xFF))
-        writes.append((SID_REG_BASE + 0x16, self.filter_cutoff_hi & 0xFF))
-        writes.append((SID_REG_BASE + 0x17, res_routing & 0xFF))
-        writes.append((SID_REG_BASE + 0x18, self.filter_mode_vol & 0xFF))
-        return writes
+        self._wr(SID_REG_BASE + 0x15, self.filter_cutoff_lo & 0xFF)
+        self._wr(SID_REG_BASE + 0x16, self.filter_cutoff_hi & 0xFF)
+        self._wr(SID_REG_BASE + 0x17, res_routing & 0xFF)
+        self._wr(SID_REG_BASE + 0x18, self.filter_mode_vol & 0xFF)
 
+    def snapshot(self) -> List[int]:
+        """The SID register file, pulse-width-high nibble-masked.
 
-# --------------------------------------------------------------------------
-# Pure-Python write iteration (no pyresidfp / numpy required).
-# --------------------------------------------------------------------------
-
-
-def seconds_to_frames(player: SWMPlayer, seconds: float) -> int:
-    """Approximate number of player frames covering ``seconds`` of audio
-    on a PAL C64. Used by render paths that don't have a SID emulator
-    handy to ask for the exact clock frequency."""
-    seconds_per_frame = player.cycles_per_frame / PAL_CLOCK_HZ
-    return int(seconds / seconds_per_frame)
-
-
-def iter_writes(
-    swm: SWMFile,
-    n_frames: int,
-    dedupe: bool = True,
-    initial_state: Optional[Sequence[int]] = None,
-    player: Optional[SWMPlayer] = None,
-) -> Iterator[Tuple[int, int, int]]:
-    """Yield ``(frame, reg_offset, value)`` for ``n_frames`` of playback.
-
-    ``reg_offset`` is the SID register offset (``0..0x18``); add
-    :data:`SID_REG_BASE` for an absolute address. With ``dedupe=True``
-    (the default) consecutive writes of the same value to the same
-    register are suppressed, matching the schema used by the reference
-    CSVs that ``sidwizard-driver`` produces.
-
-    ``initial_state`` (length 25) seeds the dedup baseline. Without it
-    we assume a post-reset SID (all zeros): a ``$00 -> $00`` write at
-    frame 0 gets suppressed.
-
-    ``player`` lets the caller pre-construct (and pre-configure) the
-    :class:`SWMPlayer`. Default: build a fresh one from ``swm``.
-    """
-    if player is None:
-        player = SWMPlayer(swm)
-    if initial_state is None:
-        last_vals: List[int] = [0] * SID_REG_COUNT
-    else:
-        if len(initial_state) != SID_REG_COUNT:
-            raise ValueError(
-                f"initial_state must be length {SID_REG_COUNT}, got {len(initial_state)}"
-            )
-        last_vals = list(initial_state)
-    for frame_idx in range(n_frames):
-        for reg, val in player.play_frame():
-            r = reg - SID_REG_BASE
-            if not 0 <= r <= 0x18:
-                continue
-            v = val & 0xFF
-            if dedupe and last_vals[r] == v:
-                continue
-            last_vals[r] = v
-            yield frame_idx, r, v
-
-
-def write_csv(
-    swm: SWMFile,
-    csv_path: Path,
-    n_frames: int,
-    dedupe: bool = True,
-) -> int:
-    """Write the dedup'd register-write stream for ``swm`` to ``csv_path``.
-
-    Returns the number of data rows written (excluding the header).
-    Schema is ``frame,reg,value`` — the same one consumed by
-    :mod:`pysidwizard.player_diff` and produced by the
-    ``sidwizard-driver`` reference captures.
-    """
-    rows = 0
-    with open(csv_path, "w") as f:
-        f.write("frame,reg,value\n")
-        for frame_idx, r, v in iter_writes(swm, n_frames, dedupe=dedupe):
-            f.write(f"{frame_idx},{r},{v}\n")
-            rows += 1
-    return rows
-
-
-# --------------------------------------------------------------------------
-# WAV rendering.
-# --------------------------------------------------------------------------
-
-
-def render_wav(
-    swm_path: Path,
-    out_wav: Path,
-    seconds: float = 60.0,
-    model_name: str = "MOS6581",
-    dedupe_writes: bool = True,
-) -> int:
-    """Drive an SWM through :class:`SWMPlayer` and an emulated SID into a WAV.
-
-    The SID emulation and WAV encode are delegated to
-    :func:`pysidtracker.render_wav`, fed by this player's per-frame
-    ``(reg, val)`` iterator. Also writes a sibling ``<out_wav>.csv`` with the
-    per-frame register writes — handy for offline diffs and for catching cases
-    where the player emits nothing.
-
-    Raises :class:`pysidtracker.AudioUnavailable` if ``pyresidfp`` is missing.
-    """
-    from pysidtracker import render_wav as _render_wav
-
-    swm = read_swm(str(swm_path))
-    player = SWMPlayer(swm)
-    n_frames = seconds_to_frames(player, seconds)
-
-    grouped: List[List[Tuple[int, int]]] = [[] for _ in range(n_frames)]
-    for frame_idx, r, v in iter_writes(swm, n_frames, dedupe=dedupe_writes, player=player):
-        grouped[frame_idx].append((r, v))
-    model = {"MOS6581": "6581", "MOS8580": "8580"}[model_name]
-    _render_wav(
-        grouped,
-        out_wav,
-        model=model,
-        cycles_per_frame=player.cycles_per_frame,
-        clock_frequency=PAL_CLOCK_HZ,
-    )
-
-    csv_path = out_wav.with_suffix(".csv")
-    n_rows = 0
-    with open(csv_path, "w") as f:
-        f.write("frame,reg,value\n")
-        for frame_idx, pairs in enumerate(grouped):
-            for r, v in pairs:
-                f.write(f"{frame_idx},{r},{v}\n")
-                n_rows += 1
-    print(
-        f"wrote {out_wav} ({seconds:.2f}s @ PAL 50Hz, {model_name}); "
-        f"wrote {csv_path}: {n_rows} write rows"
-    )
-    return 0
-
-
-def render_csv_only(
-    swm_path: Path,
-    out_csv: Path,
-    seconds: float = 60.0,
-    dedupe_writes: bool = True,
-) -> int:
-    """Same write stream as :func:`render_wav`'s sibling CSV, but without
-    importing pyresidfp / numpy. Used by the diff harness and by CI
-    paths that don't have audio dependencies installed."""
-    swm = read_swm(str(swm_path))
-    player = SWMPlayer(swm)
-    n_frames = seconds_to_frames(player, seconds)
-    rows = write_csv(swm, out_csv, n_frames, dedupe=dedupe_writes)
-    print(
-        f"wrote {out_csv}: {rows} write rows over {n_frames} frames "
-        f"({seconds:.2f}s @ PAL 50Hz, dedupe={'on' if dedupe_writes else 'off'})"
-    )
-    return 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("swm", type=Path, help="input SWM module")
-    ap.add_argument(
-        "wav",
-        type=Path,
-        help="output WAV path (or CSV path when --csv-only is given)",
-    )
-    ap.add_argument("--seconds", type=float, default=60.0)
-    ap.add_argument(
-        "--model",
-        default="MOS6581",
-        choices=("MOS6581", "MOS8580"),
-    )
-    ap.add_argument(
-        "--dedupe-writes",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    ap.add_argument(
-        "--csv-only",
-        action="store_true",
-        help="emit only the deduped SID-register CSV; skip pyresidfp / WAV",
-    )
-    args = ap.parse_args(argv)
-    if args.csv_only:
-        return render_csv_only(
-            args.swm,
-            args.wav,
-            args.seconds,
-            dedupe_writes=args.dedupe_writes,
-        )
-    return render_wav(
-        args.swm,
-        args.wav,
-        args.seconds,
-        args.model,
-        dedupe_writes=args.dedupe_writes,
-    )
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+        The SID ignores the upper nibble of the pulse-width-high registers
+        (:data:`~pysidtracker.registers.PW_HI_REGS`); masking them makes the
+        per-frame grid match the sidtrace oracle's
+        :func:`~pysidtracker.oracle.grid_from_writes` convention (as
+        :meth:`pysidtracker.oracle.EmuPlayer.snapshot` does).
+        """
+        base = self.SID_BASE
+        return [
+            (self._mem[base + i] & 0x0F) if i in PW_HI_REGS else self._mem[base + i]
+            for i in range(self.REG_COUNT)
+        ]

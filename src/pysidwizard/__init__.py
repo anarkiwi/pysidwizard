@@ -12,10 +12,10 @@ Three public surfaces:
 * :func:`write_swm` / :func:`build_swm` — serialise an :class:`SWMFile`
   back to disk or bytes; round-trips byte-exactly.
 * :class:`SWMPlayer` (in :mod:`pysidwizard.player`) — per-frame
-  emulation of SID-Wizard's 6502 player IRQ. Output matches a real
-  SID-Wizard running inside ``asid-vice`` byte-for-byte, every frame ×
-  every SID register — verified by the integration test suite on
-  every PR.
+  emulation of SID-Wizard's 6502 player IRQ. Its per-frame SID
+  register output is validated byte-for-byte against the
+  ``anarkiwi/sidtrace`` sidplayfp oracle over curated HVSC SID-Wizard
+  exports (``pytest -m oracle``).
 """
 
 from pysidtracker import attack_decay, sustain_release
@@ -40,7 +40,7 @@ from .model import (
     pack_pattern,
     unpack_pattern,
 )
-from .player import SWMPlayer, iter_writes, render_wav, write_csv
+from .player import SWMPlayer
 from .reader import parse_swm, read_swm
 from .reglog import (
     RegWrite,
@@ -79,7 +79,6 @@ __all__ = [
     "encode_sequence",
     "is_sidwizard_sid",
     "iter_register_writes",
-    "iter_writes",
     "pack_pattern",
     "parse_psid_header",
     "parse_sid",
@@ -87,11 +86,9 @@ __all__ = [
     "read_reglog",
     "read_sid",
     "read_swm",
-    "render_wav",
     "straight_tempo",
     "sustain_release",
     "unpack_pattern",
-    "write_csv",
     "write_reglog",
     "write_swm",
 ]

@@ -3,9 +3,10 @@
 Pure-Python reader, writer, and bit-exact player for
 [SID-Wizard](https://csdb.dk/release/?id=258573) (Hermit / Mihaly Horvath) C64
 tracker modules. Implements the SWM file format and player IRQ from first
-principles, with no native dependencies. The player is verified against a live
-capture of SID-Wizard running inside `asid-vice`: every frame × every SID
-register, on every PR.
+principles, with no native dependencies. The player is validated byte-for-byte
+against the [`anarkiwi/sidtrace`](https://github.com/anarkiwi/sidtrace)
+sidplayfp oracle over real HVSC SID-Wizard exports (`pytest -m oracle`, needs
+Docker).
 
 Also consumes `.sid` files (PSID/RSID containers) and bare `.prg` images through
 the shared [`pysidtracker`](https://github.com/anarkiwi/pysidtracker) base:
@@ -48,8 +49,7 @@ player correctness.
 ```bash
 pip install -e ".[dev]"
 python -m pytest                                   # unit tests (fast, no Docker)
-pip install -e ".[integration]"
-python -m pytest -m integration tests/integration/  # slow; requires Docker
+python -m pytest -m oracle                          # sidtrace oracle; requires Docker
 ```
 
 The four SWM test tunes are not tracked in this repo (SID-Wizard binary

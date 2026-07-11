@@ -2,9 +2,9 @@
 
 The repo deliberately does NOT track ``tests/data/*.swm`` — they're
 SID-Wizard binary artifacts, redistributed as part of the SID-Wizard
-1.94 source tarball. This module reuses ``sidwizard-driver``'s tarball
-cache (the same one ``fetch_disk1_d64`` populates) and extracts only
-the four tunes the player test suite uses.
+1.94 source tarball. This module downloads that tarball directly from
+CSDB (SHA-256 verified) and extracts only the four tunes the player
+test suite uses.
 
 Each tune's bytes are verified by SHA-256 against the value bundled in
 the SID-Wizard 1.94 release. A mismatch is a hard error — never let a
@@ -15,9 +15,7 @@ Usage::
     from tests._swm_cache import swm_path
     p = swm_path("flashitback")  # Path to a verified, cached SWM.
 
-Test-only module — imported only from ``tests/`` and ``tools/``. The
-``pysidwizard`` runtime package has no dependency on
-``sidwizard-driver``.
+Test-only module — imported only from ``tests/``.
 """
 
 from __future__ import annotations
@@ -25,10 +23,15 @@ from __future__ import annotations
 import hashlib
 import os
 import tarfile
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Dict, Tuple
 
-from filelock import FileLock
+TARBALL_URL = "https://csdb.dk/getinternalfile.php/276275/SID-Wizard-1.94-with-sources.tar.gz"
+TARBALL_SHA256 = "544e36aff3fe14b7e4cf81a04c680a6883191a222754b2f0489e15349a89b559"
+_TARBALL_NAME = "SID-Wizard-1.94-with-sources.tar.gz"
 
 # Tune name -> (tarball member path, expected SHA-256 of the SWM bytes).
 TUNE_MEMBERS: Dict[str, Tuple[str, str]] = {
@@ -61,34 +64,10 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _tarball_path() -> Path:
-    """Ensure SID-Wizard's source tarball is downloaded and verified,
-    then return its filesystem path. Delegates the actual download +
-    verification to ``sidwizard-driver`` so we don't duplicate the
-    URL / SHA-256 ratchet.
-
-    Guarded by a cache-dir lock so that, under ``pytest-xdist``,
-    concurrent workers don't race on (or duplicate) the download."""
-    # Imported lazily so collecting the test suite doesn't require
-    # ``sidwizard-driver`` to be installed when none of the player tests
-    # actually run.
-    from sidwizard_driver.fetch import default_cache_dir, fetch_disk1_d64
-
-    tarball = default_cache_dir() / "SID-Wizard-1.94-with-sources.tar.gz"
-    # Serialise the fetch across workers via a lock in our own cache dir.
-    with FileLock(str(swm_cache_dir() / ".tarball.lock")):
-        # ``fetch_disk1_d64`` triggers the download + SHA-256 check of the
-        # SID-Wizard-1.94-with-sources.tar.gz file; we don't need the d64
-        # itself here, just the side effect of having the tarball cached.
-        fetch_disk1_d64()
-    return tarball
-
-
 def swm_cache_dir() -> Path:
-    """Local cache directory for extracted SWM bytes."""
-    from sidwizard_driver.fetch import default_cache_dir
-
-    out = default_cache_dir() / "swm"
+    """Local cache directory for the tarball and extracted SWM bytes."""
+    env = os.environ.get("SIDWIZARD_TUNECACHE")
+    out = Path(env) if env else Path(__file__).resolve().parent / ".swmcache"
     out.mkdir(parents=True, exist_ok=True)
     return out
 
@@ -96,7 +75,7 @@ def swm_cache_dir() -> Path:
 def _atomic_write(dest: Path, data: bytes) -> None:
     """Write ``data`` to ``dest`` atomically so a concurrent reader never
     observes a half-written file: write to a temp file in the same dir and
-    ``os.replace()`` it into place (atomic on POSIX/Windows for same-fs)."""
+    ``os.replace()`` it into place (atomic on same-fs, xdist-safe)."""
     tmp = dest.with_name(f".{dest.name}.{os.getpid()}.tmp")
     try:
         with open(tmp, "wb") as fp:
@@ -105,44 +84,69 @@ def _atomic_write(dest: Path, data: bytes) -> None:
             os.fsync(fp.fileno())
         os.replace(tmp, dest)
     finally:
-        # If os.replace succeeded, tmp is gone; otherwise clean it up.
         try:
             tmp.unlink()
         except FileNotFoundError:
             pass
 
 
+def _download(url: str, *, retries: int = 4) -> bytes:
+    """Download ``url``, retrying transient failures with exponential backoff."""
+    req = urllib.request.Request(url, headers={"User-Agent": "pysidwizard/fetch"})
+    last_err = None
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:  # nosec B310 (https)
+                return resp.read()
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_err = exc
+        if attempt + 1 < retries:
+            time.sleep(min(2**attempt, 5))
+    raise RuntimeError(f"{url}: unreachable after {retries} attempts ({last_err})")
+
+
+def _tarball_path() -> Path:
+    """Ensure the SID-Wizard 1.94 source tarball is downloaded + SHA-256
+    verified, then return its cached filesystem path.
+
+    Atomic ``os.replace`` makes this xdist-safe without a lock: a worker
+    that loses the race simply finds the verified tarball already in place."""
+    tarball = swm_cache_dir() / _TARBALL_NAME
+    if tarball.is_file() and _sha256(tarball) == TARBALL_SHA256:
+        return tarball
+    data = _download(TARBALL_URL)
+    got = hashlib.sha256(data).hexdigest()
+    if got != TARBALL_SHA256:
+        raise RuntimeError(
+            f"{_TARBALL_NAME} SHA-256 mismatch: got {got}, expected {TARBALL_SHA256}"
+        )
+    _atomic_write(tarball, data)
+    return tarball
+
+
 def swm_path(tune: str) -> Path:
     """Return a filesystem path to ``{tune}.swm``, fetching + extracting
     on first call. SHA-256 verified against the expected SID-Wizard 1.94
-    bytes. Idempotent and safe under ``pytest-xdist`` (concurrent workers
-    are serialised per-tune via a file lock; writes are atomic)."""
+    bytes. Idempotent and safe under ``pytest-xdist`` (writes are atomic)."""
     if tune not in TUNE_MEMBERS:
         raise KeyError(f"unknown tune {tune!r}; expected one of {TUNE_NAMES}")
     member, expected_sha = TUNE_MEMBERS[tune]
-    cache = swm_cache_dir()
-    dest = cache / f"{tune}.swm"
-    # Fast path: already extracted + verified, no lock needed.
+    dest = swm_cache_dir() / f"{tune}.swm"
+    # Fast path: already extracted + verified.
     if dest.is_file() and _sha256(dest) == expected_sha:
         return dest
 
-    # Slow path: serialise extract+write for this tune across workers, then
-    # double-check the file under the lock before doing any work.
-    with FileLock(str(cache / f".{tune}.lock")):
-        if dest.is_file() and _sha256(dest) == expected_sha:
-            return dest
+    tarball = _tarball_path()
+    with tarfile.open(tarball, "r:gz") as tf:
+        src = tf.extractfile(member)
+        if src is None:
+            raise RuntimeError(f"tarball member {member!r} is not a regular file")
+        data = src.read()
 
-        tarball = _tarball_path()
-        with tarfile.open(tarball, "r:gz") as tf:
-            src = tf.extractfile(member)
-            if src is None:
-                raise RuntimeError(f"tarball member {member!r} is not a regular file")
-            data = src.read()
-
-        got = hashlib.sha256(data).hexdigest()
-        if got != expected_sha:
-            raise RuntimeError(f"{tune}.swm SHA-256 mismatch: got {got}, expected {expected_sha}")
-        _atomic_write(dest, data)
+    got = hashlib.sha256(data).hexdigest()
+    if got != expected_sha:
+        raise RuntimeError(f"{tune}.swm SHA-256 mismatch: got {got}, expected {expected_sha}")
+    _atomic_write(dest, data)
     return dest
 
 

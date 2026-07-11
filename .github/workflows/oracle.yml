@@ -1,0 +1,65 @@
+name: oracle
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Weekly Mon 06:23 UTC — catches sidtrace-image drift even with no PR.
+    - cron: "23 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  oracle:
+    # Byte-exact comparison of the native SWMPlayer render against the sidtrace
+    # sidplayfp oracle over real HVSC SID-Wizard exports. Never skipped: a failed
+    # HVSC download or oracle render fails the job. HVSC tunes and oracle CSVs are
+    # cached.
+    name: native-render-matches-sidtrace
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Pull sidtrace oracle image
+        id: image
+        run: |
+          docker pull anarkiwi/sidtrace:latest
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' anarkiwi/sidtrace:latest)
+          echo "digest=${digest##*@}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache HVSC tunes
+        uses: actions/cache@v4
+        with:
+          path: .oracle-cache/hvsc
+          key: hvsc-${{ hashFiles('tests/test_oracle.py') }}
+          restore-keys: hvsc-
+
+      - name: Cache oracle CSVs
+        uses: actions/cache@v4
+        with:
+          path: .oracle-cache/csv
+          key: oracle-csv-${{ steps.image.outputs.digest }}-${{ hashFiles('tests/test_oracle.py') }}
+
+      - name: Oracle comparison (never skipped)
+        run: python -m pytest -m oracle -ra -n auto

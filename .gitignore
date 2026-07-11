@@ -217,10 +217,15 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# SID-Wizard binary artifacts — NOT tracked, fetched on demand by
-# tests/_swm_cache.py via sidwizard-driver's tarball cache.
+# SID-Wizard binary artifacts — NOT tracked, downloaded + SHA-256-verified
+# on demand from the SID-Wizard 1.94 tarball by tests/_swm_cache.py.
 tests/data/
+tests/.swmcache/
 
 # HVSC corpus tunes are copyright works — fetched on demand from the HVSC
 # mirror by tests/_hvsc_fetch.py, never committed.
 tests/.tunecache/
+
+# sidtrace oracle scratch: cached HVSC .sid tunes (copyright) + oracle CSVs
+# (tests/test_oracle.py). Never committed.
+.oracle-cache/
