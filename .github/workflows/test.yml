@@ -65,7 +65,7 @@ jobs:
         # The tarball is ~9 MB; caching avoids hitting CSDB on every test
         # run. tests/_swm_cache.py downloads + SHA-256-verifies it directly
         # into tests/.swmcache; key on that module so a pin change busts it.
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: tests/.swmcache
           key: swm-1.94-${{ hashFiles('tests/_swm_cache.py') }}
@@ -74,7 +74,7 @@ jobs:
         # HVSC tunes are copyright and never committed; the corpus tests fetch
         # them from the mirror into a gitignored cache. Cache that dir across
         # runs, keyed on the corpus path list + the fetch helper.
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: tests/.tunecache
           key: hvsc-tunes-${{ hashFiles('tests/_hvsc_corpus.py', 'tests/_hvsc_fetch.py') }}
