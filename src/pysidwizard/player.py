@@ -493,6 +493,9 @@ class SWMPlayer(MemPlayer):
         # maintained by STRTSND's SETFLTP (player.asm:1999-2008), plus the filter-external
         # bit that only BIGFX1F writes. Initialised to 0 by the player's INITER (line 718).
         self.filter_switch = 0x00
+        # FLSHIFT (player.asm:1110): a signed byte BIGFX1C adds to the cutoff-high
+        # ghost on every $D416 write. INITER zero-initialises it (player.asm:694).
+        self.filter_shift = 0x00
         # SID-Wizard's FilterProgram is shared across voices: only the
         # one voice currently marked as filter-controller (FLTCTRL+1
         # operand byte at $1xxx) actually walks its filter table.
@@ -1198,6 +1201,9 @@ class SWMPlayer(MemPlayer):
             elif fx == 0x0F and fx_value is not None:
                 # BIGFX0F (player.asm:3563) writes CTFHGHO, the $D416 cutoff-high ghost.
                 self._set_cutoff_hi(fx_value)
+            elif 0x17 <= fx <= 0x1C and fx_value is not None:
+                # BIGFX1C (player.asm:3706): FLSHIFT := value. BIGFX17..BIGFX1B are bare labels ahead of it (player.asm:3700-3704), so those codes run the same shift.
+                self.filter_shift = fx_value
             elif fx == 0x1F and fx_value is not None:
                 # BIGFX1F (player.asm:3758) stores the value's nibbles into FSWITCH and RESONIB, so it also clears the routing bits until the next STRTSND re-ORs them.
                 self.filter_switch = fx_value & 0x0F
@@ -2348,7 +2354,8 @@ class SWMPlayer(MemPlayer):
         # $D417 = RESONIB (high nibble) | FSWITCH (low nibble), player.asm:1085-1087.
         res_routing = (self.filter_resonance & 0xF0) | (self.filter_switch & 0x0F)
         self._wr(SID_REG_BASE + 0x15, self.filter_cutoff_lo & 0xFF)
-        self._wr(SID_REG_BASE + 0x16, self.filter_cutoff_hi & 0xFF)
+        # $D416 = CTFHGHO + FLSHIFT, an 8-bit adc (player.asm:1105-1110).
+        self._wr(SID_REG_BASE + 0x16, (self.filter_cutoff_hi + self.filter_shift) & 0xFF)
         self._wr(SID_REG_BASE + 0x17, res_routing & 0xFF)
         self._wr(SID_REG_BASE + 0x18, self.filter_mode_vol & 0xFF)
 
