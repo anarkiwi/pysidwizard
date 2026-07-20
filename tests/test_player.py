@@ -704,14 +704,14 @@ def _play(swm: SWMFile, frames: int = 12) -> SWMPlayer:
 def test_unmodelled_big_fx_warns_and_is_tallied():
     """An effect the player does not implement must be observable, not swallowed.
 
-    ``$1D`` (BIGFX1D track-delay, player.asm:3730) is unmodelled.
+    ``$15`` (BIGFX15 track tempo-program, player.asm:3684) is unmodelled.
     """
     with pytest.warns(SWMUnsupportedEffectWarning) as record:
-        p = _play(_fx_swm(0x1D, 0x04))
-    assert p.unsupported_effects == {("big-fx", 0x1D): 3}, "once per voice, all three voices"
+        p = _play(_fx_swm(0x15, 0x04))
+    assert p.unsupported_effects == {("big-fx", 0x15): 3}, "once per voice, all three voices"
     warning = record[0].message
-    assert (warning.column, warning.code, warning.voice) == ("big-fx", 0x1D, 2)
-    assert "$1D" in str(warning)
+    assert (warning.column, warning.code, warning.voice) == ("big-fx", 0x15, 2)
+    assert "$15" in str(warning)
 
 
 def test_unmodelled_fx_warns_once_per_code_but_tallies_every_hit():
@@ -728,7 +728,7 @@ def test_unsupported_effect_warning_can_be_promoted_to_an_error():
     with pytest.raises(SWMUnsupportedEffectWarning):
         with warnings.catch_warnings():
             warnings.simplefilter("error", SWMUnsupportedEffectWarning)
-            _play(_fx_swm(0x1D, 0x04))
+            _play(_fx_swm(0x15, 0x04))
 
 
 def test_modelled_effects_do_not_warn():
@@ -1008,3 +1008,18 @@ def test_big_fx_03_without_a_note_rearms_the_slide():
     assert (v.vibrato_freqmod_lo, v.vibrato_freqmod_hi) == SWMPlayer._lookup_freqmod(
         0x10 + 49
     ), "SETFMOD index is ceil(value/2) + DPITCH"
+
+
+def test_delay_fx_are_no_ops_on_the_default_driver_but_report_on_extra():
+    """DELAYSUPPORT_ON is set only by the Extra player (altplayers.inc:553).
+
+    In every other build BIGFX1D / BIGFX1E (player.asm:3730 / 3746) compile down
+    to a bare ``rts``, so they are no-ops rather than unmodelled effects.
+    """
+    swm = _fx_swm(0x1E, 0x04)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SWMUnsupportedEffectWarning)
+        assert _play(swm, frames=4).unsupported_effects == {}
+    swm.driver_type = 3
+    with pytest.warns(SWMUnsupportedEffectWarning):
+        assert _play(swm, frames=4).unsupported_effects == {("big-fx", 0x1E): 3}

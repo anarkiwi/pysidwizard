@@ -15,6 +15,17 @@ tables; vibrato; portamento; hard-restart; multispeed
 (``frame_speed >= 2``); funktempo; tempo programs; the WRPITCH
 detune-with-carry chain.
 
+This transcribes SID-Wizard's DEFAULT player build (settings.cfg), which is
+what the SWM header's driver byte calls type 0. The Extra player
+(altplayers.inc:533) flips ten feature flags -- ALLGHOSTREGS_ON,
+PORTAVIBRA_ON, FILTERALWAYS_ON / PULSEALWAYS_ON / VIBSLIDEALWAYS_ON,
+FASTSPEEDBIND_ON, DELAYSUPPORT_ON -- each of which changes the register
+stream, so its tunes are out of scope until that flavour is modelled as a
+whole. Two consequences are visible here: tempo 1-2 produces no TICK_2 and
+therefore no new notes (FASTSPEEDBIND's ``cmp #3 ; bmi TICK_2`` at
+player.asm:1725 is what makes those tempos sound, and it is compiled out),
+and the ``$1D`` / ``$1E`` delay FX are no-ops.
+
 Multi-SID / SFX / slowdown / non-440 Hz tuning tables are out of
 scope by intent. Any other effect this player does not implement is
 reported (never swallowed) via
@@ -104,6 +115,10 @@ EXP_MAX_INDEX = EXP_THRESHOLD + len(NOTE_FREQ_HI)
 # opcode (player.asm:3006); no tune can depend on it beyond this single clamped index.
 FREQTBL_PAST_END = 0xC9
 
+# SWM header driver byte for the Extra player (altplayers.inc:533, PLAYERTYPE=3).
+# It is the only build with DELAYSUPPORT_ON / FASTSPEEDBIND_ON (altplayers.inc:552-553).
+EXTRA_DRIVER_TYPE = 3
+
 # Note-column effect-value range constants (mirror constants.py).
 NOTE_FX_MIN = 0x60
 GATE_OFF_FX = 0x7E
@@ -131,9 +146,10 @@ FILT_ROW_STRIDE = 3  # set/sweep byte, cutoff_hi (or sweep delta), kbtrack
 # pre-write supplying the "HR setup" phase (see _emit_pre_hr).
 HR_FRAMES = 1
 
-# How many frames before the next row trigger the player writes
-# HR-AD / HR-SR (and clears the gate) to prime the SID for the
-# upcoming note's hard restart.
+# How many frames before the next row trigger the player writes HR-AD / HR-SR
+# (and clears the gate) to prime the SID for the upcoming note's hard restart.
+# Exactly the default build's TICK_0 + TICK_1 window (player.asm:1383/1626): only
+# the Extra player's FASTSPEEDBIND collapses it, and that build is out of scope.
 PRE_HR_LEAD_FRAMES = 2
 
 # Chord-table separator bytes. ``$7E`` marks "end of chord, return to
@@ -1228,6 +1244,11 @@ class SWMPlayer(MemPlayer):
             elif fx == 0x14 and fx_value is not None:
                 # BIGFX14 (player.asm:3669): track funktempo, this voice only.
                 self._set_tempo([v], fx_value >> 4, fx_value & 0x0F)
+            elif fx in (0x1D, 0x1E) and self.swm.driver_type != EXTRA_DRIVER_TYPE:
+                # BIGFX1D / BIGFX1E (player.asm:3730 / 3746) are wrapped in
+                # ``.if feature.DELAYSUPPORT_ON``, which only the Extra player sets
+                # (altplayers.inc:553); elsewhere both fall through to a bare ``rts``.
+                pass
             elif not portamento_applied:
                 self._report_unsupported(v, "big-fx", fx)
 
