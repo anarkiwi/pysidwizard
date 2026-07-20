@@ -63,6 +63,13 @@ TUNES = {
     "cyberiad_theory": "MUSICIANS/L/LukHash/Cyberiad_Theory.sid",
     "perpetual_motion": "MUSICIANS/L/LukHash/Perpetual_Motion.sid",
     "switchback_remake": "MUSICIANS/V/Vincenzo/Switchback_Remake.sid",
+    # Driver type 3, the Extra build (altplayers.inc:533): matched only once FASTSPEEDBIND / ALLGHOSTREGS / VIBSLIDEALWAYS were modelled.
+    "bad_bagel": "DEMOS/A-F/Bad_Bagel.sid",
+    "eggshell": "MUSICIANS/A/Archmage/Eggshell.sid",
+    "still_time": "MUSICIANS/A/Avrilcadabra/Still_Time.sid",
+    "portugieser": "MUSICIANS/B/Barik/Portugieser.sid",
+    "vinegar": "MUSICIANS/B/Barik/Vinegar.sid",
+    "wattson": "MUSICIANS/B/Barik/Wattson.sid",
 }
 
 

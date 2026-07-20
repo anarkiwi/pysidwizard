@@ -18,8 +18,9 @@ detune-with-carry chain.
 The player is parameterised by the compile-time feature flags of the build the
 module was exported for: :attr:`SWMPlayer.features`, derived from the SWM
 header's driver byte via :func:`pysidwizard.features.features_for_driver`.
-Only the default build (driver type 0) is fully modelled so far; the other
-five builds' differing flags are transcribed build by build.
+Driver types 0 (normal) and 3 (Extra) are modelled; the Extra build's
+DELAYSUPPORT_ON ``$1D`` / ``$1E`` are still reported as unmodelled rather
+than silently dropped. The remaining builds are transcribed one at a time.
 
 Multi-SID / SFX / slowdown / non-440 Hz tuning tables are out of
 scope by intent. Any other effect this player does not implement is
@@ -621,7 +622,8 @@ class SWMPlayer(MemPlayer):
         # writes main AD/SR and CTRL=$09/first_waveform for the new
         # note's HR test-bit frame.
         applied_portamento_row = False
-        if pre_incr_sc == 2 and v.pending_row is not None:
+        apply_sc = self._apply_tick(current_tempo)
+        if pre_incr_sc == apply_sc and v.pending_row is not None:
             row = v.pending_row
             # Detect portamento- or legato-row apply BEFORE clearing
             # pending_row. SID-Wizard's TICK_2 CLEGATO path takes the
@@ -672,7 +674,7 @@ class SWMPlayer(MemPlayer):
         # emit set sid_ctrl=$18. ARPSCNT must NOT decrement (the asm's
         # WFARPTB never runs) so we also skip the per-instrument arp
         # counter update.
-        if self._is_staccato_hr_tick(v, pre_incr_sc):
+        if self._is_staccato_hr_tick(v, pre_incr_sc, apply_sc):
             self._maybe_emit_pre_hr(v, v.pending_row, pre_incr_sc)
             return
         # New-note setup window: TICK_0 / TICK_1 of a row whose pending
@@ -681,7 +683,11 @@ class SWMPlayer(MemPlayer):
         # (PW / Filter tables are NOT walked). v.pending_row is non-None
         # at pre_incr_sc 0 and 1 of a new-note row; it gets cleared at
         # TICK_2 (pre_incr_sc==2).
-        in_new_note_setup = v.pending_row is not None and self._pending_row_has_new_note(v)
+        in_new_note_setup = (
+            v.pending_row is not None
+            and self._pending_row_has_new_note(v)
+            and not self.features.vibslidealways
+        )
         # SID-Wizard's CNTPLY2 runs VIBSLIDE BEFORE WFARPTB
         # (player.asm line ~1632): vibrato first mutates FREQLO/FREQHI
         # ZP, then WFARPTB's RELPTCH/ABSPTCH/chord-pitch paths
@@ -708,7 +714,8 @@ class SWMPlayer(MemPlayer):
         prow = v.pending_row
         if (
             v.skipwft_this_tick
-            and pre_incr_sc in (0, 1)
+            and not self.features.vibslidealways
+            and pre_incr_sc < apply_sc
             and prow is not None
             and prow.note is not None
             and 1 <= prow.note < 0x60
@@ -729,7 +736,7 @@ class SWMPlayer(MemPlayer):
         # note's main AD/SR; this re-assertion overrides with HR
         # values which then persist (via dedup) until STRTSND/SETADSR
         # rewrites them at TICK_2.
-        if pre_incr_sc <= 1 and v.pending_row is not None:
+        if pre_incr_sc < apply_sc and v.pending_row is not None:
             self._maybe_emit_pre_hr(v, v.pending_row, pre_incr_sc)
 
     def _tick_voice_multispeed(self, v: VoiceState) -> None:
@@ -1269,6 +1276,14 @@ class SWMPlayer(MemPlayer):
             elif not portamento_applied:
                 self._report_unsupported(v, "big-fx", fx)
 
+    @staticmethod
+    def _live_nibble(v: VoiceState, which: str) -> Optional[int]:
+        """The voice's current ADSR nibble: its override, else the instrument's."""
+        override = getattr(v, which + "_override")
+        if override is not None:
+            return override
+        return getattr(v.instrument, which) & 0xF if v.instrument is not None else 0
+
     def _apply_small_fx(self, v: VoiceState, code: int) -> None:
         """Dispatch a single SMALFX2..SMALFX7 byte (player.asm
         ``INDEXJ2`` table at line 2605). Used for small-fx in both the
@@ -1285,17 +1300,19 @@ class SWMPlayer(MemPlayer):
         """
         high = code & 0xF0
         low = code & 0x0F
+        # ALLGHOSTREGS_ON (player.asm:3278-3315) sources the untouched nibble from the live SIDG.AD/SR ghost rather than the instrument, so SMALFX combine.
+        keep = self.features.allghostregs
         if high == 0x20:
             v.attack_override = low
-            v.decay_override = None
+            v.decay_override = self._live_nibble(v, "decay") if keep else None
         elif high == 0x30:
-            v.attack_override = None
+            v.attack_override = self._live_nibble(v, "attack") if keep else None
             v.decay_override = low
         elif high == 0x50:
             v.sustain_override = low
-            v.release_override = None
+            v.release_override = self._live_nibble(v, "release") if keep else None
         elif high == 0x60:
-            v.sustain_override = None
+            v.sustain_override = self._live_nibble(v, "sustain") if keep else None
             v.release_override = low
         # SMALFX2/3/5/6 write SIDG.AD / SIDG.SR directly, taking the OTHER nibble from the current instrument (= what the overrides above model).
         ins = v.instrument
@@ -1755,6 +1772,19 @@ class SWMPlayer(MemPlayer):
             ins = self.swm.instruments[row.instrument - 1]
         return ins
 
+    def _apply_tick(self, tempo: int) -> int:
+        """Which SPDCNT tick applies the row read at TICK_0 (= runs TICK_2).
+
+        FASTSPEEDBIND_ON (player.asm:1496-1514, 1704-1723) short-circuits
+        CHKTMP1 to PTN_SEQ when the tempo is below 2 and CHKTMP2 to TICK_2 when
+        it is below 3, so tempo 1 collapses all three ticks into TICK_0 and
+        tempo 2 collapses TICK_1 + TICK_2. Without the flag TICK_2 is only ever
+        reached at SPDCNT 2, which is why tempo 1-2 makes no sound.
+        """
+        if self.features.fastspeedbind:
+            return min(2, max(0, tempo - 1))
+        return 2
+
     def _hr_fires_at_tick(self, ins: Instrument, pre_incr_sc: int) -> bool:
         """Whether HRGTOFF fires at this pre-HR tick. SID-Wizard's
         HARDRST passes A=$02 at TICK_0 (= pre_incr_sc 0, masks control
@@ -1810,12 +1840,12 @@ class SWMPlayer(MemPlayer):
             # Normal HR: gate-off the current WF byte.
             v.sid_ctrl = v.sid_ctrl & 0xFE
 
-    def _is_staccato_hr_tick(self, v: VoiceState, pre_incr_sc: int) -> bool:
+    def _is_staccato_hr_tick(self, v: VoiceState, pre_incr_sc: int, apply_sc: int = 2) -> bool:
         """True if this is a pre-HR tick where staccato HRGTOFF fires
         (= rts before tables walk). _tick_voice uses this to skip the
         WF/vibrato/PW/Filter ticks for the staccato exit.
         """
-        if pre_incr_sc not in (0, 1):
+        if pre_incr_sc >= apply_sc:
             return False
         if v.pending_row is None:
             return False
