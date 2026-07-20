@@ -744,3 +744,34 @@ def test_small_fx_a_sets_main_volume_nibble():
     p = _play(_fx_swm(0xA7))
     assert p.regs[0x18] & 0x0F == 0x07
     assert p.seqvolu == 0x07
+
+
+def test_big_fx_04_writes_the_waveform_register():
+    """BIGFX04 = WRITEWF (player.asm:3509) stores the value straight into WFGHOST.
+
+    INSPTFX runs after STRTSND (player.asm:2054), so on a note row the effect's
+    waveform wins over the instrument's first_waveform ($41 here).
+    """
+    assert _play(_fx_swm(0x02, 0x00), frames=1).regs[4] == 0x00, "STRTSND baseline"
+    assert _play(_fx_swm(0x04, 0x21), frames=1).regs[4] == 0x21
+
+
+def test_big_fx_05_writes_the_attack_decay_register():
+    """BIGFX05 = WRITEAD (player.asm:3512) writes $D405 directly (ALLGHOSTREGS_ON=0)."""
+    assert _play(_fx_swm(0x02, 0x00), frames=1).regs[5] == 0x00, "STRTSND baseline"
+    assert _play(_fx_swm(0x05, 0xA3), frames=1).regs[5] == 0xA3
+
+
+def test_big_fx_06_writes_the_sustain_release_register():
+    """BIGFX06 = WRITESR (player.asm:3514) writes $D406 directly (ALLGHOSTREGS_ON=0)."""
+    assert _play(_fx_swm(0x02, 0x00), frames=1).regs[6] == 0xF0, "STRTSND baseline"
+    assert _play(_fx_swm(0x06, 0x5C), frames=1).regs[6] == 0x5C
+
+
+def test_big_fx_register_writes_apply_on_a_note_less_row():
+    """PATT_FX also runs on rows with no note column (player.asm:1778)."""
+    swm = _fx_swm(0x04, 0x21)
+    swm.patterns[0].rows[1] = Row(fx=0x06, fx_value=0x39)
+    p = _play(swm, frames=4)
+    assert p.regs[6] == 0x39
+    assert p.regs[4] == 0x41, "the WF table walk owns the waveform again by this frame"

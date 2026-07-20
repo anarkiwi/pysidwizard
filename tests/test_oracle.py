@@ -45,6 +45,9 @@ MAX_LEAD = 4
 # deterministic sidtrace oracle (curated from tests/_hvsc_corpus.SAMPLE).
 TUNES = {
     "8_bit_bard": "DEMOS/0-9/8-Bit_Bard.sid",
+    # Exercises BIGFX05 (WRITEAD) alongside BIGFX02/03; matched only once the
+    # $04/$05/$06 register-write effects were modelled.
+    "cloud_9": "MUSICIANS/A/Ash_9/Cloud_9.sid",
     "oua_oua_song": "DEMOS/M-R/Oua_Oua_Song.sid",
     "pentagorat_ii": "GAMES/M-R/Pentagorat_II.sid",
     "burn": "MUSICIANS/D/DAM/Burn.sid",

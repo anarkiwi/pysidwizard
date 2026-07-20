@@ -335,6 +335,10 @@ class VoiceState:
     # exactly as PTNGATE,x in player.asm to mask the WF-table waveform.
     ptn_gate: int = 0xFE
 
+    # A new-note row's FX columns, deferred until after STRTSND's register writes
+    # (player.asm:2054). ``(inst_smallfx, fx, fx_value, portamento_applied)`` or None.
+    deferred_fx: Any = None
+
     # Small-fx ADSR overrides. When a pattern row's fx column is
     # ``$5x`` (set note-volume = sustain nibble) or ``$6x`` (set
     # note-release), the corresponding instrument ADSR field is
@@ -614,6 +618,7 @@ class SWMPlayer(MemPlayer):
         # post-HR frame.
         if v.hr_timer > 0:
             self._compose_sid_writes(v)
+            self._run_deferred_fx(v)
             v.hr_timer -= 1
             return
         # Staccato HR exit (player.asm spec §7 ``lda #$18; sta WFGHOST,x;
@@ -880,6 +885,9 @@ class SWMPlayer(MemPlayer):
         instrument_selected = instrument is not None and 1 <= instrument <= 0x3E
         # Set when the note column consumed the row's BIGFX03 (tone portamento).
         portamento_applied = False
+        # Set when the note column reached STRTSND, which runs INSPTFX after its own
+        # register writes (player.asm:2054) -- so the FX columns are deferred past compose.
+        started_note = False
 
         # Any non-empty column wakes the voice up for emit purposes:
         # SID-Wizard's player runs the per-voice loop for any voice
@@ -991,6 +999,7 @@ class SWMPlayer(MemPlayer):
                     # New pitched note -> start sound.
                     v.note = note
                     self._start_note(v, instrument_selected)
+                    started_note = True
             elif note == GATE_OFF_FX:
                 # SID-Wizard's NGATEOF (player.asm line 2495) sets
                 # PTNGATE=$FE AND immediately AND-masks WFGHOST with
@@ -1067,11 +1076,33 @@ class SWMPlayer(MemPlayer):
                 # actually ends here (don't leave a residual offset).
                 v.vibrato_offset = 0
 
-        # Inst-column small-FX (SMALFX2..SMALFX7 in CURIFX $40..$7F):
-        # apply BEFORE the FX column so player.asm's INSPTFX order
-        # (CURIFX then CURFX2) is preserved. If both columns target
-        # the same nibble (e.g. inst=$2D attack=$D and fx=$2E attack=$E)
-        # the FX column wins, matching ref.
+        # INSPTFX (player.asm:3179) runs after STRTSND's own AD/SR/WFGHOST writes on a
+        # new-note tick, so defer it past this tick's compose; otherwise apply it here.
+        if started_note:
+            v.deferred_fx = (inst_smallfx, fx, fx_value, portamento_applied)
+        else:
+            v.deferred_fx = None
+            self._apply_fx_columns(v, inst_smallfx, fx, fx_value, portamento_applied)
+
+    def _run_deferred_fx(self, v: VoiceState) -> None:
+        """Run a new-note row's INSPTFX, deferred past STRTSND (player.asm:2054)."""
+        if v.deferred_fx is None:
+            return
+        args = v.deferred_fx
+        v.deferred_fx = None
+        self._apply_fx_columns(v, *args)
+
+    def _apply_fx_columns(
+        self,
+        v: VoiceState,
+        inst_smallfx: Optional[int],
+        fx: Optional[int],
+        fx_value: Optional[int],
+        portamento_applied: bool,
+    ) -> None:
+        """INSPTFX (player.asm:3179): the inst-column small-FX, then the FX column."""
+        # INST_FX dispatches CURIFX ($40..$7F) before PATT_FX reads CURFX2, so if both
+        # columns target the same nibble the FX column wins.
         if inst_smallfx is not None:
             self._apply_small_fx(v, inst_smallfx)
 
@@ -1106,6 +1137,17 @@ class SWMPlayer(MemPlayer):
                     lo, hi = self._lookup_freqmod(idx)
                     v.vibrato_freqmod_lo = lo
                     v.vibrato_freqmod_hi = hi
+            elif fx == 0x04 and fx_value is not None:
+                # BIGFX04 = WRITEWF (player.asm:3509): WFGHOST := value, unmasked by PTNGATE.
+                v.sid_ctrl = fx_value
+            elif fx == 0x05 and fx_value is not None:
+                # BIGFX05 = WRITEAD (player.asm:3512): SIDG.AD := value ($D405, no ghost).
+                v.sid_ad = fx_value
+                v.adsr_emit_required = True
+            elif fx == 0x06 and fx_value is not None:
+                # BIGFX06 = WRITESR (player.asm:3514): SIDG.SR := value ($D406, no ghost).
+                v.sid_sr = fx_value
+                v.adsr_emit_required = True
             elif fx == 0x08 and fx_value is not None and v.instrument is not None:
                 # BIGFX08 (player.asm line 2859): set vibrato amp+freq.
                 # FORCVIB resets SLIDEVIB to instrument's control bits
