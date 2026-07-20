@@ -1182,3 +1182,41 @@ def test_filt_ctrl_fx_off_makes_big_fx_1f_a_bare_rts():
     with warnings.catch_warnings():
         warnings.simplefilter("error", SWMUnsupportedEffectWarning)
         assert _play(_medium(swm), frames=4).regs[0x17] != 0x35
+
+
+def _light(swm: SWMFile) -> SWMFile:
+    """Mark a module as exported for the Light build (driver type 2)."""
+    swm.driver_type = 2
+    return swm
+
+
+def test_octaveshift_off_ignores_the_instruments_octave_field():
+    """CLEGATO's ``ldy #9 ; adc (PLAYERZP),y`` is gone (player.asm:1787)."""
+    swm = _toy_swm()
+    swm.instruments[0].octave_shift = 12
+    assert _play(swm, frames=2).regs[1] == NOTE_FREQ_HI[49 + 12]
+    assert _play(_light(swm), frames=2).regs[1] == NOTE_FREQ_HI[49]
+
+
+def test_detunesupport_off_drops_the_detune_add_and_its_carry():
+    """WRPITCH loses both ``adc DETUNER,x`` and ``adc #0`` (player.asm:2540-2560)."""
+    swm = _fx_swm(0x0D, 0x40)
+    assert _play(swm, frames=4).regs[0] == (NOTE_FREQ_LO[49] + 0x40 + 1) & 0xFF
+    assert _play(_light(swm), frames=4).regs[0] == NOTE_FREQ_LO[49]
+
+
+def test_finefiltsweep_off_makes_the_filter_sweep_an_8_bit_add():
+    """Without the flag CTFL_GHO does not exist, so the delta lands straight on $D416."""
+    swm = _toy_swm()
+    swm.instruments[0].filter_table = bytes([0x91, 0x40, 0x00, 0x04, 0x08, 0x00, 0xFF])
+    fine = _play(swm, frames=6)
+    coarse = _play(_light(swm), frames=6)
+    assert coarse.regs[0x16] > fine.regs[0x16], "8-bit sweep steps 8x faster than 11-bit"
+
+
+def test_calcvibrato_off_makes_the_vibrato_amplitude_pitch_independent():
+    """EXPTBASE becomes FREQTBH-1 and SETFMOD drops ``lsr ; adc DPITCH`` (player.asm:2883)."""
+    low = SWMPlayer(_light(_toy_swm()))
+    assert low._freqmod(0x40, 20) == low._freqmod(0x40, 90)
+    calc = SWMPlayer(_toy_swm())
+    assert calc._freqmod(0x40, 20) != calc._freqmod(0x40, 90)

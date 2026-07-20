@@ -77,6 +77,14 @@ TUNES = {
     "soy_un_delincuente_2": "MUSICIANS/M/Morton_Adam/Soy_un_Delincuente_tune_2.sid",
     "probable_harmonies": "MUSICIANS/S/Slash/Probable_Harmonies.sid",
     "easyriff": "MUSICIANS/S/Spider_Jerusalem/Easyriff.sid",
+    # Driver type 2, the Light build (altplayers.inc:432): matched once OCTAVESHIFT / DETUNESUPPORT / CALCVIBRATO / FINEFILTSWEEP / PWRESETSW / FILTRESETSW / CHORDSUPPORT were gated off.
+    "mega_run": "MUSICIANS/A/Arturo_Dente/Mega-Run.sid",
+    "cracked": "MUSICIANS/D/Deetsay/Cracked.sid",
+    "negyedik_emelet": "MUSICIANS/H/Hermit/4_Emelet.sid",
+    "mid_of_ages": "MUSICIANS/K/Kompositkrut/Mid_of_Ages.sid",
+    "cloudless_rain": "MUSICIANS/R/Rousseau_Marcus/Cloudless_Rain.sid",
+    "action_level": "MUSICIANS/S/Spider_Jerusalem/Action_Level.sid",
+    "sad_ending": "MUSICIANS/S/Spider_Jerusalem/Sad_Ending.sid",
 }
 
 

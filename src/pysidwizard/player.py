@@ -18,9 +18,9 @@ detune-with-carry chain.
 The player is parameterised by the compile-time feature flags of the build the
 module was exported for: :attr:`SWMPlayer.features`, derived from the SWM
 header's driver byte via :func:`pysidwizard.features.features_for_driver`.
-Driver types 0 (normal), 1 (Medium) and 3 (Extra) are modelled; the Extra
-build's DELAYSUPPORT_ON ``$1D`` / ``$1E`` are still reported as unmodelled
-rather than silently dropped. Remaining builds land one at a time.
+Driver types 0 (normal), 1 (Medium), 2 (Light) and 3 (Extra) are modelled.
+The Extra build's DELAYSUPPORT_ON ``$1D`` / ``$1E``, and the Light build's
+ARPSPEEDSUPP_ON / TEMPOPRGSUPP_ON / FILTKBTRACK_ON, are not yet gated.
 
 Multi-SID / SFX / slowdown / non-440 Hz tuning tables are out of
 scope by intent. Any other effect this player does not implement is
@@ -108,6 +108,9 @@ EXPTABH = (
 EXP_THRESHOLD = EXPTABH_FREQTBH_OFFSET + len(NOTE_FREQ_HI)
 # MAXSLID (player.asm:2936) clamps Y to EXPTRESHOLD + (ENDFREQTBH - FREQTBH).
 EXP_MAX_INDEX = EXP_THRESHOLD + len(NOTE_FREQ_HI)
+# CALCVIBRATO_ON=0 (player.asm:2883): EXPTBASE = FREQTBH-1, so the threshold is 97.
+NONCALC_THRESHOLD = len(NOTE_FREQ_HI) + 1
+NONCALC_MAX_INDEX = NONCALC_THRESHOLD + len(NOTE_FREQ_HI)
 # calcVib at the clamp reads FREQTBL[96] -- one byte past the table, i.e. whatever the
 # assembled image put there. In the shipped 1.94 player that is SEQ_FX's ``cmp #$A0``
 # opcode (player.asm:3006); no tune can depend on it beyond this single clamped index.
@@ -982,7 +985,7 @@ class SWMPlayer(MemPlayer):
             if 1 <= instrument <= len(self.swm.instruments):
                 ins = self.swm.instruments[instrument - 1]
                 v.instrument = ins
-                v.octave_shift = ins.octave_shift
+                v.octave_shift = ins.octave_shift if self.features.octaveshift else 0
         # Inst-column small-FX (CURIFX $40..$7F) applies INDEPENDENTLY
         # of any small-FX in the FX column — player.asm INSPTFX
         # dispatches CURIFX first (SMALPFX) and THEN CURFX2. Apply
@@ -1102,8 +1105,7 @@ class SWMPlayer(MemPlayer):
                 # A=DEFAULTPORTA (= 110 = $6E). The next pitched note's
                 # CLEGATO will then take the NONEWNO branch.
                 v.slide_vib = 0xFF
-                idx = ((110 + 1) >> 1) + ((v.note + v.octave_shift + v.transpose) & 0x7F)
-                lo, hi = self._lookup_freqmod(idx)
+                lo, hi = self._freqmod(110, v.note + v.octave_shift + v.transpose)
                 v.vibrato_freqmod_lo = lo
                 v.vibrato_freqmod_hi = hi
             elif NOTE_FX_MIN <= note < PORTAMENTO_FX and v.instrument is not None:
@@ -1175,8 +1177,7 @@ class SWMPlayer(MemPlayer):
                     v.vibrato_freqmod_lo = 0
                     v.vibrato_freqmod_hi = 0
                 else:
-                    idx = ((fx_value + 1) >> 1) + ((v.note + v.octave_shift + v.transpose) & 0x7F)
-                    lo, hi = self._lookup_freqmod(idx)
+                    lo, hi = self._freqmod(fx_value, v.note + v.octave_shift + v.transpose)
                     v.vibrato_freqmod_lo = lo
                     v.vibrato_freqmod_hi = hi
             elif fx == 0x02 and fx_value is not None:
@@ -1186,8 +1187,7 @@ class SWMPlayer(MemPlayer):
                     v.vibrato_freqmod_lo = 0
                     v.vibrato_freqmod_hi = 0
                 else:
-                    idx = ((fx_value + 1) >> 1) + ((v.note + v.octave_shift + v.transpose) & 0x7F)
-                    lo, hi = self._lookup_freqmod(idx)
+                    lo, hi = self._freqmod(fx_value, v.note + v.octave_shift + v.transpose)
                     v.vibrato_freqmod_lo = lo
                     v.vibrato_freqmod_hi = hi
             elif fx == 0x03 and fx_value is not None and not portamento_applied:
@@ -1195,8 +1195,9 @@ class SWMPlayer(MemPlayer):
                 # SLIDEVIB=$83 and SETFMOD recomputes the speed against the held DPITCH,
                 # so PORTAME keeps sliding toward the note already playing.
                 v.slide_vib = 0x83
-                idx = ((fx_value + 1) >> 1) + ((v.note + v.octave_shift + v.transpose) & 0x7F)
-                v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = self._lookup_freqmod(idx)
+                v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = self._freqmod(
+                    fx_value, v.note + v.octave_shift + v.transpose
+                )
             elif fx == 0x04 and fx_value is not None:
                 # BIGFX04 = WRITEWF (player.asm:3509): WFGHOST := value, unmasked by PTNGATE.
                 v.sid_ctrl = fx_value
@@ -1393,8 +1394,9 @@ class SWMPlayer(MemPlayer):
             v.vibrato_freqmod_lo = 0
             v.vibrato_freqmod_hi = 0
             return
-        idx = (amp_nibble << 2) + ((v.note + v.octave_shift + v.transpose) & 0x7F)
-        v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = self._lookup_freqmod(idx)
+        v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = self._freqmod(
+            amp_nibble << 3, v.note + v.octave_shift + v.transpose
+        )
 
     def _select_chord(self, v: VoiceState, chord: int) -> None:
         """SMALFX7 (player.asm:3325): CURCHORD := chord, CHORDPOS := CHDPTRLO[chord]."""
@@ -1462,8 +1464,10 @@ class SWMPlayer(MemPlayer):
             # are honoured — a same-instrument retrigger then keeps the
             # PW / filter walk running instead of restarting it.
             ctrl = v.instrument.control
-            pw_reset_off = (not instrument_selected) and (ctrl & 0x40)
-            filt_reset_off = (not instrument_selected) and (ctrl & 0x80)
+            pw_reset_off = self.features.pwresetsw and (not instrument_selected) and (ctrl & 0x40)
+            filt_reset_off = (
+                self.features.filtresetsw and (not instrument_selected) and (ctrl & 0x80)
+            )
             if not pw_reset_off:
                 # PWTPOS resets to the PW-table START as an ABSOLUTE offset
                 # from the instrument base (STRTSND ~line 1445 reads the
@@ -1514,7 +1518,7 @@ class SWMPlayer(MemPlayer):
             # Seed chord state from the instrument's default-chord field
             # (1-based; 0 means "no chord"). The WF-table arp tick will
             # consume ``chord_pos`` whenever it hits a ``$7F`` arp byte.
-            chord_idx = v.instrument.default_chord
+            chord_idx = v.instrument.default_chord if self.features.chordsupport else 0
             if 1 <= chord_idx <= len(self._chord_starts):
                 v.current_chord = chord_idx
                 v.chord_pos = self._chord_starts[chord_idx - 1]
@@ -1570,10 +1574,9 @@ class SWMPlayer(MemPlayer):
             v.vibrato_freqmod_lo = 0
             v.vibrato_freqmod_hi = 0
         else:
-            play_note = (v.note + v.octave_shift + v.transpose) & 0x7F
-            lo, hi = self._lookup_freqmod((amp_nibble << 2) + play_note)
-            v.vibrato_freqmod_lo = lo
-            v.vibrato_freqmod_hi = hi
+            v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = self._freqmod(
+                amp_nibble << 3, v.note + v.octave_shift + v.transpose
+            )
 
     @staticmethod
     def _lookup_freqmod(index: int) -> tuple[int, int]:
@@ -1591,6 +1594,23 @@ class SWMPlayer(MemPlayer):
             return NOTE_FREQ_LO[i], NOTE_FREQ_HI[i]
         # MAXSLID's clamp lands one byte PAST FREQTBL / FREQTBH (player.asm:2936).
         return FREQTBL_PAST_END, EXPTABH[EXPTABH_FREQTBH_OFFSET + i]
+
+    def _freqmod(self, raw_a: int, dpitch: int) -> tuple[int, int]:
+        """SETFMOD (player.asm:2915-2941) for the current build's exponent table.
+
+        With CALCVIBRATO_ON the index is ``ceil(A/2) + DPITCH`` into EXPTABH; with
+        the flag off both steps are compiled out and EXPTBASE becomes ``FREQTBH-1``,
+        so the amplitude is pitch-independent.
+        """
+        if not self.features.calcvibrato:
+            y = min(raw_a & 0xFF, NONCALC_MAX_INDEX)
+            if y < NONCALC_THRESHOLD:
+                return (0 if y == 0 else NOTE_FREQ_HI[y - 1]), 0
+            i = y - NONCALC_THRESHOLD
+            if i < len(NOTE_FREQ_LO):
+                return NOTE_FREQ_LO[i], NOTE_FREQ_HI[i]
+            return FREQTBL_PAST_END, 0
+        return self._lookup_freqmod(((raw_a + 1) >> 1) + (dpitch & 0x7F))
 
     def _tick_vibrato(self, v: VoiceState) -> None:
         """Advance vibrato OR tone-portamento by one frame.
@@ -1743,10 +1763,7 @@ class SWMPlayer(MemPlayer):
         # bit 0 of fx_value, then adc adds DPITCH plus that carry.
         # Effective index = ceil(fx_value / 2) + DPITCH, NOT floor.
         # For odd fx_value this differs from a naive ``fx_value >> 1``.
-        idx = ((fx_value + 1) >> 1) + (target_note & 0x7F)
-        lo, hi = self._lookup_freqmod(idx)
-        v.vibrato_freqmod_lo = lo
-        v.vibrato_freqmod_hi = hi
+        v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = self._freqmod(fx_value, target_note)
 
     # ---- HR pre-write lookahead --------------------------------------
 
@@ -2234,9 +2251,10 @@ class SWMPlayer(MemPlayer):
                 # commit cutoff_hi; cutoff_lo resets to 0.
                 cutoff_hi = table[pos + 1] if pos + 1 < len(table) else 0
                 v.filt_hi = cutoff_hi
-                v.filt_lo = 0
                 self.filter_cutoff_hi = cutoff_hi
-                self.filter_cutoff_lo = 0
+                if self.features.finefiltsweep:
+                    v.filt_lo = 0
+                    self.filter_cutoff_lo = 0
                 # $D417 high nibble = resonance; low nibble (routing) is
                 # composed per-frame in _emit_writes.
                 self.filter_resonance = (byte0 & 0x0F) << 4
@@ -2261,12 +2279,15 @@ class SWMPlayer(MemPlayer):
             delta = table[pos + 1] if pos + 1 < len(table) else 0
             if delta >= 0x80:
                 delta -= 0x100
-            total11 = (v.filt_hi << 3) | (v.filt_lo & 7)
-            total11 = (total11 + delta) & 0x7FF
-            v.filt_lo = total11 & 7
-            v.filt_hi = (total11 >> 3) & 0xFF
+            if self.features.finefiltsweep:
+                total11 = (v.filt_hi << 3) | (v.filt_lo & 7)
+                total11 = (total11 + delta) & 0x7FF
+                v.filt_lo = total11 & 7
+                v.filt_hi = (total11 >> 3) & 0xFF
+                self.filter_cutoff_lo = v.filt_lo
+            else:
+                v.filt_hi = (v.filt_hi + delta) & 0xFF
             self.filter_cutoff_hi = v.filt_hi
-            self.filter_cutoff_lo = v.filt_lo
             return
 
     # ---- SID register assembly ---------------------------------------
@@ -2359,11 +2380,15 @@ class SWMPlayer(MemPlayer):
         # 6502 instruction left set. We track the documented sources
         # via :attr:`VoiceState.wf_pitch_carry`. carry_out of the
         # FREQLO ADC propagates to the FREQHI ADC.
-        carry_in = 1 if v.wf_pitch_carry else 0
-        lo_sum = v.zp_freq_lo + (v.detune & 0xFF) + carry_in
-        v.sid_freq_lo = lo_sum & 0xFF
-        hi_sum = v.zp_freq_hi + (1 if lo_sum > 0xFF else 0)
-        v.sid_freq_hi = hi_sum & 0xFF
+        if not self.features.detunesupport:
+            v.sid_freq_lo = v.zp_freq_lo
+            v.sid_freq_hi = v.zp_freq_hi
+        else:
+            carry_in = 1 if v.wf_pitch_carry else 0
+            lo_sum = v.zp_freq_lo + (v.detune & 0xFF) + carry_in
+            v.sid_freq_lo = lo_sum & 0xFF
+            hi_sum = v.zp_freq_hi + (1 if lo_sum > 0xFF else 0)
+            v.sid_freq_hi = hi_sum & 0xFF
 
         # Pulse width: SID's $D403 / $D40A / $D411 use bits 0-3 as the
         # high nibble of the 12-bit PW value; bits 4-7 are unused on
