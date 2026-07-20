@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 from pysidwizard import (
@@ -12,6 +14,7 @@ from pysidwizard import (
     PlayPattern,
     Row,
     SWMFile,
+    SWMUnsupportedEffectWarning,
     Waveform,
     straight_tempo,
 )
@@ -677,3 +680,67 @@ def test_pre_hr_gate_off_only_on_firing_tick(control, gate_off_tick0, gate_off_t
         ) is gate_off, (
             f"control=${control:02X} frame {frame}: mask {want} expected, PTNGATE=${ptn_gate:02X}"
         )
+
+
+def _fx_swm(fx: int, fx_value=None) -> SWMFile:
+    """``_toy_swm`` at tempo 3 with the given effect column on the first (note) row.
+
+    Tempo 3 is the shortest period whose TICK_2 the player reaches on every row
+    (see ``_tick_voice``), so rows past the first actually apply.
+    """
+    swm = _toy_swm()
+    swm.subtune_tempos = [(straight_tempo(3), straight_tempo(3))]
+    swm.patterns[0].rows[0] = Row(note=49, instrument=1, fx=fx, fx_value=fx_value)
+    return swm
+
+
+def _play(swm: SWMFile, frames: int = 12) -> SWMPlayer:
+    p = SWMPlayer(swm)
+    for _ in range(frames):
+        p.play_frame()
+    return p
+
+
+def test_unmodelled_big_fx_warns_and_is_tallied():
+    """An effect the player does not implement must be observable, not swallowed.
+
+    ``$1D`` (BIGFX1D track-delay, player.asm:3730) is unmodelled.
+    """
+    with pytest.warns(SWMUnsupportedEffectWarning) as record:
+        p = _play(_fx_swm(0x1D, 0x04))
+    assert p.unsupported_effects == {("big-fx", 0x1D): 3}, "once per voice, all three voices"
+    warning = record[0].message
+    assert (warning.column, warning.code, warning.voice) == ("big-fx", 0x1D, 2)
+    assert "$1D" in str(warning)
+
+
+def test_unmodelled_small_fx_warns_once_per_code():
+    """SMALFXD (detune, player.asm:3399) is unmodelled; repeats warn once."""
+    swm = _fx_swm(0xD3)
+    swm.patterns[0].rows[1] = Row(fx=0xD3)
+    with pytest.warns(SWMUnsupportedEffectWarning) as record:
+        p = _play(swm)
+    assert p.unsupported_effects[("small-fx", 0xD3)] == 6, "2 rows x 3 voices applied"
+    assert len(record) == 1, "warned once per (column, code), tallied per application"
+
+
+def test_unsupported_effect_warning_can_be_promoted_to_an_error():
+    with pytest.raises(SWMUnsupportedEffectWarning):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", SWMUnsupportedEffectWarning)
+            _play(_fx_swm(0x1D, 0x04))
+
+
+def test_modelled_effects_do_not_warn():
+    """BIGFX03/$08/$10 and the $Ax / $2x small-FX stay silent."""
+    for fx, fx_value in ((0x03, 0x20), (0x08, 0x42), (0x10, 0x03), (0xA7, None), (0x2C, None)):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", SWMUnsupportedEffectWarning)
+            _play(_fx_swm(fx, fx_value))
+
+
+def test_small_fx_a_sets_main_volume_nibble():
+    """SMALFXA (player.asm:3356) writes MAINVOL + SEQVOLU, so $D418 tracks it."""
+    p = _play(_fx_swm(0xA7))
+    assert p.regs[0x18] & 0x0F == 0x07
+    assert p.seqvolu == 0x07

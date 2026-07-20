@@ -108,6 +108,25 @@ for _ in range(100):
         print(f"${reg:04X} = ${value & 0xFF:02X}")
 ```
 
+### Unmodelled effects
+
+An effect the player does not implement is never silently swallowed: it warns
+once per `(column, code)` with `SWMUnsupportedEffectWarning` and is tallied in
+`player.unsupported_effects`. Promote it to a hard failure with
+`warnings.simplefilter("error", SWMUnsupportedEffectWarning)`.
+
+```python
+import warnings
+from pysidwizard import SWMPlayer, SWMUnsupportedEffectWarning, read_sid
+
+player = SWMPlayer(read_sid("tune.sid"))
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", SWMUnsupportedEffectWarning)
+    for _ in range(3000):
+        player.play_frame()
+print(player.unsupported_effects)  # {("big-fx", 6): 12, ("small-fx", 194): 3}
+```
+
 ### Render to WAV
 
 Use the shared `pysidtracker` CLI (registered for `.sid` files via the

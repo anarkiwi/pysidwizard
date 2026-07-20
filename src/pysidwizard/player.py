@@ -7,7 +7,7 @@ byte-for-byte against the ``anarkiwi/sidtrace`` sidplayfp oracle over
 curated HVSC SID-Wizard exports (see ``tests/test_oracle.py`` — run
 with ``pytest -m oracle``).
 
-The 1-SID feature surface is fully modelled: pattern playback with
+Most of the 1-SID feature surface is modelled: pattern playback with
 note + instrument + small-FX + big-FX columns; note-column effects
 (gate-off, sync, ring, portamento); per-instrument waveform / pulse-
 width / filter tables (set, sweep, jump, end, arp-speed); chord
@@ -16,7 +16,10 @@ tables; vibrato; portamento; hard-restart; multispeed
 detune-with-carry chain.
 
 Multi-SID / SFX / slowdown / non-440 Hz tuning tables are out of
-scope by intent.
+scope by intent. Any other effect this player does not implement is
+reported (never swallowed) via
+:class:`~pysidwizard.errors.SWMUnsupportedEffectWarning` and tallied in
+:attr:`SWMPlayer.unsupported_effects`.
 
 A tune plays via the generic ``pysidtracker`` CLI (``pysidtracker
 info|reglog|wav <tune.sid>``), which pysidwizard registers for ``.sid``
@@ -25,6 +28,7 @@ files through the ``pysidtracker.formats`` entry point.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
@@ -44,6 +48,7 @@ from .constants import (
     SYNC_OFF_FX,
     SYNC_ON_FX,
 )
+from .errors import SWMUnsupportedEffectWarning
 from .model import (
     End,
     Instrument,
@@ -380,6 +385,7 @@ class SWMPlayer(MemPlayer):
 
     def __init__(self, swm: SWMFile) -> None:
         self.swm = swm
+        self._unsupported_effects: dict = {}
         super().__init__(b"", 0)
 
     def _init(self, subtune: int = 0) -> None:
@@ -872,6 +878,8 @@ class SWMPlayer(MemPlayer):
         # selection always resets those tables; only a same-instrument
         # retrigger honours the instrument's reset-off control bits.
         instrument_selected = instrument is not None and 1 <= instrument <= 0x3E
+        # Set when the note column consumed the row's BIGFX03 (tone portamento).
+        portamento_applied = False
 
         # Any non-empty column wakes the voice up for emit purposes:
         # SID-Wizard's player runs the per-voice loop for any voice
@@ -929,6 +937,7 @@ class SWMPlayer(MemPlayer):
                     # the new target.
                     v.note = note
                     self._begin_portamento(v, fx_value if fx_value is not None else 0)
+                    portamento_applied = True
                 elif v.slide_vib == 0xFF:
                     # Note-FX portamento pre-flag (NPORTAM at $78 set
                     # SLIDEVIB=$FF on the previous row). CLEGATO line
@@ -1066,19 +1075,10 @@ class SWMPlayer(MemPlayer):
         if inst_smallfx is not None:
             self._apply_small_fx(v, inst_smallfx)
 
-        # FX column. Recognise the small-fx codes documented in the
-        # SID-Wizard 1.94 manual lines 577-580 that this player can
-        # represent, and silently swallow the rest.
+        # FX column: PATT_FX (player.asm:3186) sends CURFX2 >= $20 to SMALPFX and $01..$1F through BIGFXTABLE (player.asm:3483); codes this player does not model are reported, never swallowed.
         if fx is not None:
-            if 0x20 <= fx <= 0x7F:
-                # Small-fx in $20..$7F applies via the shared helper —
-                # same dispatch the inst-column small-fx uses.
+            if fx >= 0x20:
                 self._apply_small_fx(v, fx)
-            elif 0xA0 <= fx <= 0xAF:
-                # SMALFXA: set main volume (low nibble of $D418) immediately
-                # and mirror into SEQVOLU so the next row read preserves it.
-                self.filter_mode_vol = (self.filter_mode_vol & 0xF0) | (fx & 0x0F)
-                self.seqvolu = fx & 0x0F
             elif fx == 0x01 and fx_value is not None:
                 # BIGFX01 (player.asm line 2834): pitch slide UP.
                 # ``ldy #$81 ; bne SETSLID`` -> SLIDEVIB=$81, then
@@ -1136,10 +1136,12 @@ class SWMPlayer(MemPlayer):
                     v.filt_pos = target
                     self.filter_sweep_count = 0
             elif fx == 0x10 and fx_value is not None:
-                # Big-fx main tempo: override the funktempo pair with
-                # ``fx_value`` for both halves.
+                # Big-fx main tempo: override both funktempo halves with ``fx_value``.
                 v.tempo_left = fx_value & 0x7F
                 v.tempo_right = fx_value & 0x7F
+            elif not (fx == 0x03 and portamento_applied):
+                # BIGFX03 is applied by the note column above; other unmodelled big-FX report.
+                self._report_unsupported(v, "big-fx", fx)
 
     def _apply_small_fx(self, v: VoiceState, code: int) -> None:
         """Dispatch a single SMALFX2..SMALFX7 byte (player.asm
@@ -1169,26 +1171,44 @@ class SWMPlayer(MemPlayer):
         elif high == 0x60:
             v.sustain_override = None
             v.release_override = low
-        # SID-Wizard's SMALFX2/3/5/6 write SIDG.AD or SIDG.SR directly,
-        # taking the OTHER nibble from the current instrument (= the
-        # behaviour the override fields above model). Reflect that
-        # immediately in v.sid_ad/sr + flag the emit, since the
-        # steady-state compose path no longer touches these.
+        # SMALFX2/3/5/6 write SIDG.AD / SIDG.SR directly, taking the OTHER nibble from the current instrument (= what the overrides above model).
         ins = v.instrument
-        if ins is not None and high in (0x20, 0x30, 0x50, 0x60):
-            attack = v.attack_override if v.attack_override is not None else ins.attack
-            decay = v.decay_override if v.decay_override is not None else ins.decay
-            sustain = v.sustain_override if v.sustain_override is not None else ins.sustain
-            release = v.release_override if v.release_override is not None else ins.release
-            v.sid_ad = ((attack & 0xF) << 4) | (decay & 0xF)
-            v.sid_sr = ((sustain & 0xF) << 4) | (release & 0xF)
-            v.adsr_emit_required = True
+        if high in (0x20, 0x30, 0x50, 0x60):
+            if ins is not None:
+                attack = v.attack_override if v.attack_override is not None else ins.attack
+                decay = v.decay_override if v.decay_override is not None else ins.decay
+                sustain = v.sustain_override if v.sustain_override is not None else ins.sustain
+                release = v.release_override if v.release_override is not None else ins.release
+                v.sid_ad = ((attack & 0xF) << 4) | (decay & 0xF)
+                v.sid_sr = ((sustain & 0xF) << 4) | (release & 0xF)
+                v.adsr_emit_required = True
         elif high == 0x70:
             if 1 <= low <= len(self._chord_starts):
                 v.current_chord = low
                 v.chord_pos = self._chord_starts[low - 1]
-        # $40..$4F (SMALFX4: WF nibble adjust) is not yet modelled —
-        # none of the reference fixtures exercise it.
+        elif high == 0xA0:
+            # SMALFXA (player.asm:3356) writes MAINVOL and SEQVOLU with the value nibble.
+            self.filter_mode_vol = (self.filter_mode_vol & 0xF0) | low
+            self.seqvolu = low
+        else:
+            self._report_unsupported(v, "small-fx", code)
+
+    def _report_unsupported(self, v: VoiceState, column: str, code: int) -> None:
+        """Record + warn (once per ``(column, code)``) that ``code`` is unmodelled."""
+        key = (column, code)
+        seen = self._unsupported_effects.get(key, 0)
+        self._unsupported_effects[key] = seen + 1
+        if not seen:
+            voice_idx = next((i for i, sv in enumerate(self.voices) if sv is v), -1)
+            warnings.warn(
+                SWMUnsupportedEffectWarning(column, code, self.frame_idx, voice_idx),
+                stacklevel=2,
+            )
+
+    @property
+    def unsupported_effects(self) -> dict[tuple[str, int], int]:
+        """Per-``(column, code)`` counts of the effects this render did not model."""
+        return dict(self._unsupported_effects)
 
     def _start_note(self, v: VoiceState, instrument_selected: bool = False) -> None:
         """Re-trigger the voice: reset gates / tables / hard-restart."""
