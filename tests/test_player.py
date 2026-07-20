@@ -949,3 +949,18 @@ def test_exptabh_layout_matches_the_assembled_player():
 )
 def test_lookup_freqmod_walks_the_exponent_table_exactly(index, expected):
     assert SWMPlayer._lookup_freqmod(index) == expected
+
+
+@pytest.mark.parametrize("fx", [0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C])
+def test_big_fx_1c_shifts_the_cutoff_and_17_to_1b_alias_it(fx):
+    """BIGFX1C (player.asm:3706) sets FLSHIFT, which $D416 adds to the cutoff ghost.
+
+    BIGFX17..BIGFX1B (player.asm:3700-3704) are bare labels immediately ahead of
+    BIGFX1C, so all six BIGFXTABLE entries resolve to the same routine.
+    """
+    swm = _fx_swm(0x0F, 0x40)
+    swm.patterns[0].rows[1] = Row(fx=fx, fx_value=0x10)
+    swm.patterns[0].rows[2] = Row(fx=fx, fx_value=0xF0)
+    assert _play(swm, frames=1).regs[0x16] == 0x40
+    assert _play(swm, frames=4).regs[0x16] == 0x50
+    assert _play(swm, frames=7).regs[0x16] == 0x30, "$80..$FF shifts down"
