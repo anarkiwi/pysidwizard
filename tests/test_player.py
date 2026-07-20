@@ -991,3 +991,20 @@ def test_big_fx_13_and_14_set_the_tempo_of_one_track_only():
     p = _play(swm, frames=1)
     assert _tempo_of(p, 0) == (4, 4)
     assert _tempo_of(p, 1) == _tempo_of(p, 2) == (3, 3), "other tracks keep the subtune tempo"
+
+
+def test_big_fx_03_without_a_note_rearms_the_slide():
+    """BIGFX03 (player.asm:3505) is SETSLID + SETFMOD, note column or not.
+
+    With no new note, DPITCH is unchanged, so the slide simply continues toward
+    the note already playing at the newly given speed.
+    """
+    swm = _fx_swm(0x02, 0x10)
+    swm.patterns[0].rows[1] = Row(fx=0x03, fx_value=0x20)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SWMUnsupportedEffectWarning)
+        v = _play(swm, frames=4).voices[0]
+    assert v.slide_vib == 0x83
+    assert (v.vibrato_freqmod_lo, v.vibrato_freqmod_hi) == SWMPlayer._lookup_freqmod(
+        0x10 + 49
+    ), "SETFMOD index is ceil(value/2) + DPITCH"
