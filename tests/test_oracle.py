@@ -85,6 +85,14 @@ TUNES = {
     "cloudless_rain": "MUSICIANS/R/Rousseau_Marcus/Cloudless_Rain.sid",
     "action_level": "MUSICIANS/S/Spider_Jerusalem/Action_Level.sid",
     "sad_ending": "MUSICIANS/S/Spider_Jerusalem/Sad_Ending.sid",
+    # Driver type 4, the Bare build (altplayers.inc:634): every optional feature off, so it inherits the Medium + Light gates without needing any of its own.
+    "lykia_boss": "MUSICIANS/C/C0zmo/Lykia_Boss.sid",
+    "lykia_forest": "MUSICIANS/C/C0zmo/Lykia_Forest.sid",
+    "lykia_tower": "MUSICIANS/C/C0zmo/Lykia_Tower.sid",
+    "kicks_like_a_mule": "MUSICIANS/T/Toggle/Kicks_Like_a_M_U_L_E.sid",
+    "wintry_haze": "MUSICIANS/T/Toggle/Wintry_Haze.sid",
+    "supremacy_intro": "MUSICIANS/T/Toggle/Supremacy_Intro.sid",
+    "juana_azurduy": "MUSICIANS/U/Uctumi/Juana_Azurduy_Reggae_Mix.sid",
 }
 
 
