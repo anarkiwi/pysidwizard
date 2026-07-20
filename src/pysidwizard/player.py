@@ -1147,6 +1147,13 @@ class SWMPlayer(MemPlayer):
                     lo, hi = self._lookup_freqmod(idx)
                     v.vibrato_freqmod_lo = lo
                     v.vibrato_freqmod_hi = hi
+            elif fx == 0x03 and fx_value is not None and not portamento_applied:
+                # BIGFX03 (player.asm:3505) with no new note in the row: SETSLID arms
+                # SLIDEVIB=$83 and SETFMOD recomputes the speed against the held DPITCH,
+                # so PORTAME keeps sliding toward the note already playing.
+                v.slide_vib = 0x83
+                idx = ((fx_value + 1) >> 1) + ((v.note + v.octave_shift + v.transpose) & 0x7F)
+                v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = self._lookup_freqmod(idx)
             elif fx == 0x04 and fx_value is not None:
                 # BIGFX04 = WRITEWF (player.asm:3509): WFGHOST := value, unmasked by PTNGATE.
                 v.sid_ctrl = fx_value
@@ -1221,8 +1228,7 @@ class SWMPlayer(MemPlayer):
             elif fx == 0x14 and fx_value is not None:
                 # BIGFX14 (player.asm:3669): track funktempo, this voice only.
                 self._set_tempo([v], fx_value >> 4, fx_value & 0x0F)
-            elif not (fx == 0x03 and portamento_applied):
-                # BIGFX03 is applied by the note column above; other unmodelled big-FX report.
+            elif not portamento_applied:
                 self._report_unsupported(v, "big-fx", fx)
 
     def _apply_small_fx(self, v: VoiceState, code: int) -> None:
