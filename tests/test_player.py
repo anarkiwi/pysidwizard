@@ -838,3 +838,44 @@ def test_filter_routing_bit_follows_the_instrument_filter_table():
     p = _play(swm, frames=1)
     assert p.filter_switch & 0x07 == 0x07, "all three voices play the filtered instrument"
     assert p.regs[0x17] & 0x0F == 0x07
+
+
+def _tables_swm(fx: int, fx_value: int) -> SWMFile:
+    """``_fx_swm`` whose instrument has multi-row WF / PW tables and two chords."""
+    swm = _fx_swm(fx, fx_value)
+    ins = swm.instruments[0]
+    ins.wf_table = bytes([0x41, 0x80, 0x00, 0x11, 0x80, 0x00, 0xFF])
+    ins.pw_table = bytes([0x88, 0x00, 0x00, 0x84, 0x00, 0x00, 0xFF])
+    ins.arp_speed = 0x02
+    swm.chord_table = bytes([0x00, 0x04, 0x07, 0x7F, 0x00, 0x03, 0x07, 0x7F])
+    return swm
+
+
+def test_big_fx_09_jumps_to_a_waveform_table_row():
+    """BIGFX09 (player.asm:3524): WFTPOS := value*3 + WFTABLEPOS."""
+    p = _play(_tables_swm(0x09, 0x01), frames=1)
+    assert p.voices[0].wf_pos == 3
+
+
+def test_big_fx_0a_jumps_to_a_pulse_table_row_and_clears_the_sweep():
+    """BIGFX0A (player.asm:3530): PWTPOS := value*3 + instrument byte $0A, PWEEPCNT := 0."""
+    swm = _tables_swm(0x0A, 0x01)
+    base = 0x10 + len(swm.instruments[0].wf_table) + 1
+    p = _play(swm, frames=1)
+    assert p.voices[0].pw_pos == base + 3
+    assert p.voices[0].pw_sweep_count == 0
+
+
+def test_big_fx_0c_and_small_fx_c_set_the_arpeggio_speed():
+    """BIGFX0C = SMALFXC (player.asm:3391): ARPSPED := value, ARPSCNT := $FF."""
+    p = _play(_tables_swm(0x0C, 0x05), frames=1)
+    assert (p.voices[0].arp_speed_reload, p.voices[0].arp_speed_counter) == (0x05, 0xFF)
+    p = _play(_tables_swm(0xC3, 0x00), frames=1)
+    assert (p.voices[0].arp_speed_reload, p.voices[0].arp_speed_counter) == (0x03, 0xFF)
+
+
+def test_big_fx_07_selects_a_chord_by_full_byte():
+    """BIGFX07 = SMALFX7 (player.asm:3325): CURCHORD := value, CHORDPOS := CHDPTRLO[value]."""
+    p = _play(_tables_swm(0x07, 0x02), frames=1)
+    assert p.voices[0].current_chord == 2
+    assert p.voices[0].chord_pos == p._chord_starts[1]

@@ -1152,6 +1152,9 @@ class SWMPlayer(MemPlayer):
                 # BIGFX06 = WRITESR (player.asm:3514): SIDG.SR := value ($D406, no ghost).
                 v.sid_sr = fx_value
                 v.adsr_emit_required = True
+            elif fx == 0x07 and fx_value is not None:
+                # BIGFX07 = SMALFX7 (player.asm:3516) selects a chord by its full byte.
+                self._select_chord(v, fx_value)
             elif fx == 0x08 and fx_value is not None and v.instrument is not None:
                 # BIGFX08 (player.asm line 2859): set vibrato amp+freq.
                 # FORCVIB resets SLIDEVIB to instrument's control bits
@@ -1172,6 +1175,22 @@ class SWMPlayer(MemPlayer):
                 lo, hi = self._lookup_freqmod(idx)
                 v.vibrato_freqmod_lo = lo
                 v.vibrato_freqmod_hi = hi
+            elif fx == 0x09 and fx_value is not None and v.instrument is not None:
+                # BIGFX09 (player.asm:3524): WFTPOS := value*3 + WFTABLEPOS, i.e. WF-table row ``value``.
+                target = fx_value * 3
+                if target < len(v.instrument.wf_table):
+                    v.wf_pos = target
+            elif fx == 0x0A and fx_value is not None and v.instrument is not None:
+                # BIGFX0A (player.asm:3530): PWTPOS := value*3 + the instrument's PW-table base, PWEEPCNT := 0.
+                ins = v.instrument
+                base = INST_WF_TABLE_POS + len(ins.wf_table) + 1
+                if fx_value * 3 < len(ins.pw_table):
+                    v.pw_pos = base + fx_value * 3
+                    v.pw_sweep_count = 0
+            elif fx == 0x0C and fx_value is not None:
+                # BIGFX0C = SMALFXC (player.asm:3549): ARPSPED := value, ARPSCNT := $FF.
+                v.arp_speed_reload = fx_value
+                v.arp_speed_counter = 0xFF
             elif fx == 0x0B and fx_value is not None and v.instrument is not None:
                 # BIGFX0B (player.asm line 2880): set filter-table
                 # position. FLTPOSI = (fx_value * 3) + byte[$0B] of
@@ -1242,9 +1261,11 @@ class SWMPlayer(MemPlayer):
             # SMALFXE (player.asm:3407) merges a low nibble but never stores it -- its ``jmp WRITEWF`` is commented out in 1.94, so it is a no-op.
             pass
         elif high == 0x70:
-            if 1 <= low <= len(self._chord_starts):
-                v.current_chord = low
-                v.chord_pos = self._chord_starts[low - 1]
+            self._select_chord(v, low)
+        elif high == 0xC0:
+            # SMALFXC (player.asm:3391): ARPSPED := nibble, ARPSCNT := $FF.
+            v.arp_speed_reload = low
+            v.arp_speed_counter = 0xFF
         elif high == 0xB0:
             # SMALFXB (player.asm:3377) writes FLTBAND, the $D418 high nibble.
             self.filter_mode_vol = (self.filter_mode_vol & 0x0F) | (low << 4)
@@ -1257,6 +1278,12 @@ class SWMPlayer(MemPlayer):
             self.seqvolu = low
         else:
             self._report_unsupported(v, "small-fx", code)
+
+    def _select_chord(self, v: VoiceState, chord: int) -> None:
+        """SMALFX7 (player.asm:3325): CURCHORD := chord, CHORDPOS := CHDPTRLO[chord]."""
+        if 1 <= chord <= len(self._chord_starts):
+            v.current_chord = chord
+            v.chord_pos = self._chord_starts[chord - 1]
 
     def _set_cutoff_hi(self, value: int) -> None:
         """Write CTFH_GHO (player.asm:2179), the single global cutoff-high ghost."""
