@@ -775,3 +775,28 @@ def test_big_fx_register_writes_apply_on_a_note_less_row():
     p = _play(swm, frames=4)
     assert p.regs[6] == 0x39
     assert p.regs[4] == 0x41, "the WF table walk owns the waveform again by this frame"
+
+
+def test_small_fx_4_sets_the_waveform_high_nibble():
+    """SMALFX4 (player.asm:3298) merges the value nibble over WFGHOST's high nibble.
+
+    ``lda WFGHOST,x ; jsr SETNIBH`` (player.asm:3216) keeps the low nibble --
+    gate/sync/ring/test bits survive the waveform change.
+    """
+    swm = _fx_swm(0x02, 0x00)
+    swm.patterns[0].rows[1] = Row(fx=0x48)
+    p = _play(swm, frames=4)
+    assert _play(_fx_swm(0x02, 0x00), frames=4).regs[4] == 0x41, "WF table baseline"
+    assert p.regs[4] == 0x81, "waveform nibble replaced, gate bit kept"
+
+
+def test_small_fx_e_is_a_no_op_in_1_94():
+    """SMALFXE (player.asm:3407) computes a merge but its ``jmp WRITEWF`` is
+    commented out, so the register is untouched -- and it must not report as
+    unmodelled."""
+    swm = _fx_swm(0x02, 0x00)
+    swm.patterns[0].rows[1] = Row(fx=0xE0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SWMUnsupportedEffectWarning)
+        p = _play(swm, frames=4)
+    assert p.regs[4] == 0x41, "WFGHOST unchanged: the store is commented out upstream"

@@ -1224,6 +1224,12 @@ class SWMPlayer(MemPlayer):
                 v.sid_ad = ((attack & 0xF) << 4) | (decay & 0xF)
                 v.sid_sr = ((sustain & 0xF) << 4) | (release & 0xF)
                 v.adsr_emit_required = True
+        elif high == 0x40:
+            # SMALFX4 (player.asm:3298) merges the value nibble into WFGHOST's high nibble.
+            v.sid_ctrl = (low << 4) | (v.sid_ctrl & 0x0F)
+        elif high == 0xE0:
+            # SMALFXE (player.asm:3407) merges a low nibble but never stores it -- its ``jmp WRITEWF`` is commented out in 1.94, so it is a no-op.
+            pass
         elif high == 0x70:
             if 1 <= low <= len(self._chord_starts):
                 v.current_chord = low
