@@ -87,6 +87,23 @@ NOTE_FREQ_HI = bytes.fromhex(_NOTE_FREQ_HI_HEX)
 assert len(NOTE_FREQ_LO) == 96
 assert len(NOTE_FREQ_HI) == 96
 
+# EXPTABH (player.asm:2958-2982): 10 + 1 zero bytes, then FREQTBH, then an 8-byte
+# slope extension. It is FREQMOD's fine half and the PW / filter keyboard-track table.
+EXPTABH_FREQTBH_OFFSET = 11
+EXPTABH = (
+    bytes(EXPTABH_FREQTBH_OFFSET)
+    + NOTE_FREQ_HI
+    + bytes([0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF, 0xFF])
+)
+# EXPTRESHOLD = ENDFREQTBH - EXPTABH: where LOOKUPA switches to the rough table.
+EXP_THRESHOLD = EXPTABH_FREQTBH_OFFSET + len(NOTE_FREQ_HI)
+# MAXSLID (player.asm:2936) clamps Y to EXPTRESHOLD + (ENDFREQTBH - FREQTBH).
+EXP_MAX_INDEX = EXP_THRESHOLD + len(NOTE_FREQ_HI)
+# calcVib at the clamp reads FREQTBL[96] -- one byte past the table, i.e. whatever the
+# assembled image put there. In the shipped 1.94 player that is SEQ_FX's ``cmp #$A0``
+# opcode (player.asm:3006); no tune can depend on it beyond this single clamped index.
+FREQTBL_PAST_END = 0xC9
+
 # Note-column effect-value range constants (mirror constants.py).
 NOTE_FX_MIN = 0x60
 GATE_OFF_FX = 0x7E
@@ -1430,13 +1447,9 @@ class SWMPlayer(MemPlayer):
         ramp-from-silence case) and grows each frame in _tick_vibrato.
         The delayed-slide variants ($20/$30) are still out of scope.
 
-        FREQMOD is the calculated-vibrato variant (CALCVIBRATO_ON in
-        upstream settings.cfg): index = ``(amp << 2) + play_note``,
-        then look up into the EXPTABH-extended NOTE_FREQ table. The
-        11-byte zero prefix that player.asm calls EXPTABH lives just
-        before FREQTBH in memory; we approximate by indexing
-        ``NOTE_FREQ_HI[index - 11]`` for the fine range and the full
-        16-bit FREQTBL/FREQTBH pair for the rough range.
+        FREQMOD is the calculated-vibrato variant (CALCVIBRATO_ON in upstream
+        settings.cfg): index = ``(amp << 2) + play_note``, looked up through
+        :meth:`_lookup_freqmod` against :data:`EXPTABH`.
         """
         ins = v.instrument
         v.slide_vib = ins.control & 0x30 if ins is not None else 0
@@ -1475,22 +1488,20 @@ class SWMPlayer(MemPlayer):
 
     @staticmethod
     def _lookup_freqmod(index: int) -> tuple[int, int]:
-        """Walk the CALCVIBRATO_ON exponent table at ``index`` to
-        produce a (FREQMODL, FREQMODH) pair. See player.asm
-        ``LOOKUPA`` / ``calcVib`` (line ~2327).
+        """LOOKUPA / CHKTEND / calcVib (player.asm:2925-2940): FREQMOD from ``index``.
 
-        EXPTABH (= an 11-byte zero prefix that lives in memory just
-        before FREQTBH) is approximated by mapping ``index - 11`` to
-        ``NOTE_FREQ_HI``. For very large indices, the player switches
-        to the rough table (FREQTBL/FREQTBH); we mirror that here.
+        Below :data:`EXP_THRESHOLD` the fine half is ``EXPTABH[index]`` with a zero
+        high byte; at or above it the rough half is the ``FREQTBL`` / ``FREQTBH``
+        pair at ``index - EXP_THRESHOLD``, with MAXSLID clamping the index.
         """
-        eff = index - 11
-        if eff < 0:
-            return 0, 0
-        if eff < len(NOTE_FREQ_HI):
-            return NOTE_FREQ_HI[eff], 0
-        i = min(eff - len(NOTE_FREQ_HI), len(NOTE_FREQ_LO) - 1)
-        return NOTE_FREQ_LO[i], NOTE_FREQ_HI[i]
+        y = min(index & 0xFF, EXP_MAX_INDEX)
+        if y < EXP_THRESHOLD:
+            return EXPTABH[y], 0
+        i = y - EXP_THRESHOLD
+        if i < len(NOTE_FREQ_LO):
+            return NOTE_FREQ_LO[i], NOTE_FREQ_HI[i]
+        # MAXSLID's clamp lands one byte PAST FREQTBL / FREQTBH (player.asm:2936).
+        return FREQTBL_PAST_END, EXPTABH[EXPTABH_FREQTBH_OFFSET + i]
 
     def _tick_vibrato(self, v: VoiceState) -> None:
         """Advance vibrato OR tone-portamento by one frame.
@@ -2258,8 +2269,8 @@ class SWMPlayer(MemPlayer):
             # goes into PWHIGHO.
             dpitch = (v.note + v.octave_shift + v.transpose) & 0x7F
             y = (dpitch + v.pw_kbd_track) & 0xFF
-            e_y = NOTE_FREQ_HI[y - 11] if 11 <= y < 11 + len(NOTE_FREQ_HI) else 0
-            e_ym = NOTE_FREQ_HI[y - 12] if 12 <= y < 12 + len(NOTE_FREQ_HI) else 0
+            e_y = EXPTABH[y] if y < len(EXPTABH) else 0
+            e_ym = EXPTABH[y - 1] if 1 <= y <= len(EXPTABH) else 0
             # sbc EXPTABH-1,y with carry-in 0 (from clc + adc-no-overflow):
             # A = e_y - e_ym - 1 (mod 256), carry SET iff e_y >= e_ym + 1.
             sbc_a = (e_y - e_ym - 1) & 0xFF
