@@ -714,13 +714,13 @@ def test_unmodelled_big_fx_warns_and_is_tallied():
     assert "$1D" in str(warning)
 
 
-def test_unmodelled_small_fx_warns_once_per_code():
-    """SMALFXD (detune, player.asm:3399) is unmodelled; repeats warn once."""
-    swm = _fx_swm(0xD3)
-    swm.patterns[0].rows[1] = Row(fx=0xD3)
+def test_unmodelled_fx_warns_once_per_code_but_tallies_every_hit():
+    """BIGFX12 (main tempo-program, player.asm:3642) is unmodelled."""
+    swm = _fx_swm(0x12, 0x02)
+    swm.patterns[0].rows[1] = Row(fx=0x12, fx_value=0x02)
     with pytest.warns(SWMUnsupportedEffectWarning) as record:
         p = _play(swm)
-    assert p.unsupported_effects[("small-fx", 0xD3)] == 6, "2 rows x 3 voices applied"
+    assert p.unsupported_effects[("big-fx", 0x12)] == 6, "2 rows x 3 voices applied"
     assert len(record) == 1, "warned once per (column, code), tallied per application"
 
 
@@ -879,3 +879,43 @@ def test_big_fx_07_selects_a_chord_by_full_byte():
     p = _play(_tables_swm(0x07, 0x02), frames=1)
     assert p.voices[0].current_chord == 2
     assert p.voices[0].chord_pos == p._chord_starts[1]
+
+
+def test_big_fx_0d_and_small_fx_d_detune_the_voice():
+    """BIGFX0D = SETDETU (player.asm:3551) stores DETUNER; SMALFXD scales by 8."""
+    assert _play(_fx_swm(0x0D, 0x05), frames=1).voices[0].detune == 5
+    assert _play(_fx_swm(0x0D, 0xFB), frames=1).voices[0].detune == -5
+    assert _play(_fx_swm(0xD2), frames=1).voices[0].detune == 16
+
+
+def test_big_fx_0e_sets_the_pulse_width_high_nibble():
+    """BIGFX0E (player.asm:3558): PWHIGHO := value & $0F."""
+    assert _play(_fx_swm(0x0E, 0x3A), frames=1).voices[0].pw_hi == 0x0A
+
+
+def test_big_fx_16_forces_the_vibrato_type():
+    """BIGFX16 = FORCVI2 (player.asm:3698): SLIDEVIB := value & $30."""
+    assert _play(_fx_swm(0x16, 0x37), frames=1).voices[0].slide_vib == 0x30
+
+
+def test_small_fx_9_sets_the_vibrato_frequency_only():
+    """SMALFX9 (player.asm:3349): VIBFREQU := nibble * 2 (``asl``)."""
+    assert _play(_fx_swm(0x93), frames=1).voices[0].vibrato_period == 6
+
+
+def test_small_fx_8_overrides_the_vibrato_amplitude_nibble():
+    """SMALFX8 = VIBAMFX (player.asm:3338) keeps the instrument's frequency nibble."""
+    swm = _fx_swm(0x84)
+    swm.instruments[0].vibrato = 0x25
+    v = _play(swm, frames=1).voices[0]
+    assert v.vibrato_period == 10, "frequency nibble $5 comes from the instrument"
+    assert (v.vibrato_freqmod_lo, v.vibrato_freqmod_hi) != (0, 0), "amplitude $4 applied"
+
+
+def test_big_fx_08_with_zero_amplitude_clears_freqmod():
+    """SETFMOD's ``beq wrFmodL`` (player.asm:2924) zeroes FREQMOD for amplitude 0."""
+    swm = _fx_swm(0x08, 0x07)
+    swm.instruments[0].vibrato = 0x84
+    v = _play(swm, frames=1).voices[0]
+    assert (v.vibrato_freqmod_lo, v.vibrato_freqmod_hi) == (0, 0)
+    assert v.vibrato_period == 14

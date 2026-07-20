@@ -1061,21 +1061,7 @@ class SWMPlayer(MemPlayer):
                 # auto-restore is disabled in that build, so this is
                 # the only way the slide ends.
                 ins = v.instrument
-                vibrato_byte = ((note & 0x0F) << 4) | (ins.vibrato & 0x0F)
-                v.slide_vib = ins.control & 0x30
-                freq_nibble = vibrato_byte & 0x0F
-                amp_nibble = (vibrato_byte >> 4) & 0x0F
-                v.vibrato_period = freq_nibble * 2
-                if v.slide_vib == 0x30:
-                    v.vibrato_freq_counter = 0
-                elif v.slide_vib >= 0x20:
-                    v.vibrato_freq_counter = freq_nibble
-                else:
-                    v.vibrato_freq_counter = freq_nibble >> 1
-                idx = (amp_nibble << 2) + ((v.note + v.octave_shift + v.transpose) & 0x7F)
-                lo, hi = self._lookup_freqmod(idx)
-                v.vibrato_freqmod_lo = lo
-                v.vibrato_freqmod_hi = hi
+                self._apply_vibrato_byte(v, ((note & 0x0F) << 4) | (ins.vibrato & 0x0F))
                 # Snap any in-progress portamento offset so the slide
                 # actually ends here (don't leave a residual offset).
                 v.vibrato_offset = 0
@@ -1156,25 +1142,17 @@ class SWMPlayer(MemPlayer):
                 # BIGFX07 = SMALFX7 (player.asm:3516) selects a chord by its full byte.
                 self._select_chord(v, fx_value)
             elif fx == 0x08 and fx_value is not None and v.instrument is not None:
-                # BIGFX08 (player.asm line 2859): set vibrato amp+freq.
-                # FORCVIB resets SLIDEVIB to instrument's control bits
-                # 4-5, then SETVIBR computes VIBFREQU/VIBRACNT/FREQMOD.
-                ins = v.instrument
-                v.slide_vib = ins.control & 0x30
-                freq_nibble = fx_value & 0x0F
-                amp_nibble = (fx_value >> 4) & 0x0F
-                v.vibrato_period = freq_nibble * 2
-                # VIBRACNT init mirrors SETVIBR (line 2295+).
-                if v.slide_vib == 0x30:
-                    v.vibrato_freq_counter = 0
-                elif v.slide_vib >= 0x20:
-                    v.vibrato_freq_counter = freq_nibble
-                else:
-                    v.vibrato_freq_counter = freq_nibble >> 1
-                idx = (amp_nibble << 2) + ((v.note + v.octave_shift + v.transpose) & 0x7F)
-                lo, hi = self._lookup_freqmod(idx)
-                v.vibrato_freqmod_lo = lo
-                v.vibrato_freqmod_hi = hi
+                # BIGFX08 (player.asm:3518): FORCVIB then SETVIBR on the value byte.
+                self._apply_vibrato_byte(v, fx_value)
+            elif fx == 0x0D and fx_value is not None:
+                # BIGFX0D = SETDETU (player.asm:3551): DETUNER := value (signed).
+                v.detune = fx_value - 0x100 if fx_value >= 0x80 else fx_value
+            elif fx == 0x0E and fx_value is not None:
+                # BIGFX0E (player.asm:3558): PWHIGHO := value & $0F.
+                v.pw_hi = fx_value & 0x0F
+            elif fx == 0x16 and fx_value is not None:
+                # BIGFX16 = FORCVI2 (player.asm:3698): SLIDEVIB := value & $30.
+                v.slide_vib = fx_value & 0x30
             elif fx == 0x09 and fx_value is not None and v.instrument is not None:
                 # BIGFX09 (player.asm:3524): WFTPOS := value*3 + WFTABLEPOS, i.e. WF-table row ``value``.
                 target = fx_value * 3
@@ -1266,6 +1244,16 @@ class SWMPlayer(MemPlayer):
             # SMALFXC (player.asm:3391): ARPSPED := nibble, ARPSCNT := $FF.
             v.arp_speed_reload = low
             v.arp_speed_counter = 0xFF
+        elif high == 0x80:
+            # SMALFX8 = VIBAMFX (player.asm:3338): the nibble overrides the instrument vibrato byte's amplitude, then BIGFX08.
+            if ins is not None:
+                self._apply_vibrato_byte(v, (low << 4) | (ins.vibrato & 0x0F))
+        elif high == 0x90:
+            # SMALFX9 (player.asm:3349): VIBFREQU := nibble * 2, leaving amplitude alone.
+            v.vibrato_period = low << 1
+        elif high == 0xD0:
+            # SMALFXD (player.asm:3399): DETUNER := nibble * 8 (three ASLs into SETDETU).
+            v.detune = (low << 3) & 0xFF
         elif high == 0xB0:
             # SMALFXB (player.asm:3377) writes FLTBAND, the $D418 high nibble.
             self.filter_mode_vol = (self.filter_mode_vol & 0x0F) | (low << 4)
@@ -1278,6 +1266,31 @@ class SWMPlayer(MemPlayer):
             self.seqvolu = low
         else:
             self._report_unsupported(v, "small-fx", code)
+
+    def _apply_vibrato_byte(self, v: VoiceState, vibrato_byte: int) -> None:
+        """BIGFX08 (player.asm:3518): FORCVIB then SETVIBR (player.asm:2894).
+
+        FORCVIB re-reads the vibrato type from the instrument control byte;
+        SETVIBR derives VIBFREQU / VIBRACNT and the FREQMOD amplitude, which
+        SETFMOD leaves at zero for an amplitude nibble of 0 (``beq wrFmodL``).
+        """
+        ins = v.instrument
+        v.slide_vib = ins.control & 0x30 if ins is not None else 0
+        freq_nibble = vibrato_byte & 0x0F
+        amp_nibble = (vibrato_byte >> 4) & 0x0F
+        v.vibrato_period = freq_nibble * 2
+        if v.slide_vib == 0x30:
+            v.vibrato_freq_counter = 0
+        elif v.slide_vib >= 0x20:
+            v.vibrato_freq_counter = freq_nibble
+        else:
+            v.vibrato_freq_counter = freq_nibble >> 1
+        if amp_nibble == 0:
+            v.vibrato_freqmod_lo = 0
+            v.vibrato_freqmod_hi = 0
+            return
+        idx = (amp_nibble << 2) + ((v.note + v.octave_shift + v.transpose) & 0x7F)
+        v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = self._lookup_freqmod(idx)
 
     def _select_chord(self, v: VoiceState, chord: int) -> None:
         """SMALFX7 (player.asm:3325): CURCHORD := chord, CHORDPOS := CHDPTRLO[chord]."""
