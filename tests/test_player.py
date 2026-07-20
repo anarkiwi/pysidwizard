@@ -431,6 +431,7 @@ def test_hard_restart_freezes_wf_table_position():
     a warm-up note (which skips HR) followed by a fresh note that does
     trigger HR — we sample wf_pos during the HR window of that second
     trigger."""
+    from pysidwizard.constants import INST_WF_TABLE_POS
     from pysidwizard.player import HR_FRAMES, WF_ROW_STRIDE
 
     inst = Instrument(
@@ -454,17 +455,17 @@ def test_hard_restart_freezes_wf_table_position():
     # Run through row 0 first (warm-up, no HR, WF table advances).
     for _ in range(4):
         p.play_frame()
-    # Frame 4: row 1's note triggers _start_note, which resets wf_pos
-    # to 0 AND starts the HR window. During HR wf_pos must stay at 0
-    # (the WF table is paused).
+    # Frame 4: row 1's note triggers _start_note, which resets wf_pos to the
+    # WF table's base offset AND starts the HR window. During HR wf_pos must
+    # stay put (the WF table is paused).
     for f in range(HR_FRAMES):
         p.play_frame()
         assert (
-            p.voices[0].wf_pos == 0
+            p.voices[0].wf_pos == INST_WF_TABLE_POS
         ), f"HR frame {f}: WF table ticked (wf_pos={p.voices[0].wf_pos})"
     # On the first post-HR frame the WF table finally ticks.
     p.play_frame()
-    assert p.voices[0].wf_pos == WF_ROW_STRIDE
+    assert p.voices[0].wf_pos == INST_WF_TABLE_POS + WF_ROW_STRIDE
 
 
 def test_untriggered_voice_emits_no_register_writes():
@@ -701,6 +702,42 @@ def _play(swm: SWMFile, frames: int = 12) -> SWMPlayer:
     return p
 
 
+def test_bare_instrument_select_walks_the_instrument_header():
+    """A table cursor the player has not reset yet reads the instrument HEADER.
+
+    player.asm INIPVAR (line 641) zeroes WFTPOS / PWTPOS / FLTPOS, and a bare
+    instrument select takes COLUMN1's ``jsr INSPTFX ; jmp CNTPLY2`` path
+    (line 1777) without reaching STRTSND, so the cursors stay at 0 — an
+    absolute offset from the instrument base, i.e. header byte 0.
+    """
+    inst = Instrument(
+        name=b"STALE   ",
+        control=0x0A,
+        hr_decay=0x0F,
+        hr_sustain=0x0F,
+        sustain=0xF,
+        first_waveform=0x41,
+        wf_table=bytes([0x41, 0x80, 0x00, 0xFF]),
+    )
+    swm = SWMFile(
+        sequences=[[PlayPattern(1), End()]] * 3,
+        patterns=[Pattern(rows=[Row(instrument=1)] + [Row()] * 7, length=8)],
+        instruments=[inst],
+        subtune_tempos=[(straight_tempo(8), straight_tempo(8))],
+    )
+    grid = SWMPlayer(swm).render_grid(10)
+    # PWSWEEP (player.asm:2334) reads header byte 0 ($0A) as the sweep-cycle
+    # count and header byte 1 (HR-AD, $0F) as the per-frame PW-low delta.
+    assert [row[0x02] for row in grid] == [(0x0F * (f + 1)) & 0xFF for f in range(10)]
+    # RDWFROW (player.asm:2404) reads the same header bytes: $0A is below the
+    # $10 waveform threshold so it is an ARP-speed override and NO waveform is
+    # written, while $0F is a relative pitch. Walking wf_table row 0 instead
+    # would write its $41 waveform and its $80 NOP arp (leaving pitch at 0).
+    assert [row[0x04] for row in grid] == [0x00] * 10
+    freqs = {(row[0x00], row[0x01]) for row in grid}
+    assert len(freqs) == 1 and freqs != {(0x00, 0x00)}, freqs
+
+
 def test_unmodelled_big_fx_warns_and_is_tallied():
     """An effect the player does not implement must be observable, not swallowed.
 
@@ -853,8 +890,10 @@ def _tables_swm(fx: int, fx_value: int) -> SWMFile:
 
 def test_big_fx_09_jumps_to_a_waveform_table_row():
     """BIGFX09 (player.asm:3524): WFTPOS := value*3 + WFTABLEPOS."""
+    from pysidwizard.constants import INST_WF_TABLE_POS
+
     p = _play(_tables_swm(0x09, 0x01), frames=1)
-    assert p.voices[0].wf_pos == 3
+    assert p.voices[0].wf_pos == INST_WF_TABLE_POS + 3
 
 
 def test_big_fx_0a_jumps_to_a_pulse_table_row_and_clears_the_sweep():

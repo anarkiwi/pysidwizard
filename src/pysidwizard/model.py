@@ -490,6 +490,17 @@ class Instrument:
             + self.filter_table
         )
 
+    def memory_image(self) -> bytes:
+        """The instrument exactly as the player addresses it: the 16-byte
+        header followed by :meth:`table_image`.
+
+        WFTPOS / PWTPOS / FLTPOS are absolute offsets from the instrument
+        base, and player.asm INIPVAR (line 641) zeroes them, so offset 0 is
+        the control byte rather than the first WF row: a table walk with a
+        cursor the player has not reset yet reads the header as table data.
+        """
+        return self.encode()
+
     @staticmethod
     def _check_nibble(value: int, field_name: str) -> int:
         if not (0 <= value <= 0xF):
