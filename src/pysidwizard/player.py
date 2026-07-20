@@ -250,8 +250,9 @@ class VoiceState:
     # by :meth:`SWMPlayer._start_note` and decremented at end-of-tick.
     hr_timer: int = 0
 
-    # Table positions (byte index into the instrument's wf/pw/filter
-    # tables — the *file* form which excludes the implicit 0xFF terminator).
+    # Table positions: ABSOLUTE byte offsets from the instrument base
+    # (SID-Wizard's WFTPOS / PWTPOS / FLTPOS), so 0 is the control byte of
+    # the 16-byte header, not the first WF row. See Instrument.memory_image.
     wf_pos: int = 0
     wf_arp_pitch: int = 0  # signed offset added to the row's note
     wf_arp_absolute: bool = False  # True if WF arp set an absolute pitch
@@ -453,6 +454,8 @@ class SWMPlayer(MemPlayer):
         # Chord-table base offsets, one per (1-indexed) chord. Computed
         # once at construction so each ``$7F`` arp hit is an O(1) lookup.
         self._chord_starts: List[int] = _parse_chord_starts(swm.chord_table)
+        # Instrument memory images, keyed by object identity (see _image).
+        self._inst_images: dict[int, bytes] = {}
 
         # Per-voice state. SID-Wizard assigns the SWM sequences in the
         # order [V0, V1, V2] for subtune 0 (sequences 0, 1, 2).
@@ -1220,7 +1223,7 @@ class SWMPlayer(MemPlayer):
                 # BIGFX09 (player.asm:3524): WFTPOS := value*3 + WFTABLEPOS, i.e. WF-table row ``value``.
                 target = fx_value * 3
                 if target < len(v.instrument.wf_table):
-                    v.wf_pos = target
+                    v.wf_pos = INST_WF_TABLE_POS + target
             elif fx == 0x0A and fx_value is not None and v.instrument is not None:
                 # BIGFX0A (player.asm:3530): PWTPOS := value*3 + the instrument's PW-table base, PWEEPCNT := 0.
                 ins = v.instrument
@@ -1239,7 +1242,7 @@ class SWMPlayer(MemPlayer):
                 ins = v.instrument
                 target = fx_value * 3
                 if target < len(ins.filter_table):
-                    v.filt_pos = target
+                    v.filt_pos = self._filt_table_start(ins) + target
                     self.filter_sweep_count = 0
             elif fx == 0x0F and fx_value is not None:
                 # BIGFX0F (player.asm:3563) writes CTFHGHO, the $D416 cutoff-high ghost.
@@ -1434,7 +1437,9 @@ class SWMPlayer(MemPlayer):
         v.sustain_override = None
         v.release_override = None
         if v.instrument is not None:
-            v.wf_pos = 0
+            # SETWFTP (player.asm:1853): ``lda #WFTABLEPOS ; sta WFTPOS,x``
+            # — an absolute offset from the instrument base, not row 0.
+            v.wf_pos = INST_WF_TABLE_POS
             # STRTSND's TABLRST: when an instrument is selected this row,
             # the control byte is AND-ed with $3F, clearing the PW/filter
             # reset-off bits so both tables reset. Without a selection the
@@ -1450,7 +1455,7 @@ class SWMPlayer(MemPlayer):
                 # header's PW-table pointer). _tick_pw_table walks from here.
                 v.pw_pos = INST_WF_TABLE_POS + len(v.instrument.wf_table) + 1
             if not filt_reset_off:
-                v.filt_pos = 0
+                v.filt_pos = self._filt_table_start(v.instrument)
             v.wf_arp_pitch = 0
             v.wf_arp_absolute = False
             v.wf_speed_counter = 0
@@ -1883,6 +1888,19 @@ class SWMPlayer(MemPlayer):
 
     # ---- instrument WF / PW / Filter table ticks ---------------------
 
+    def _image(self, ins: Instrument) -> bytes:
+        """The instrument's memory image, cached per instrument object."""
+        image = self._inst_images.get(id(ins))
+        if image is None:
+            image = ins.memory_image()
+            self._inst_images[id(ins)] = image
+        return image
+
+    @staticmethod
+    def _filt_table_start(ins: Instrument) -> int:
+        """Absolute offset of ``ins``' filter table (its header byte $0B)."""
+        return INST_WF_TABLE_POS + len(ins.wf_table) + 1 + len(ins.pw_table) + 1
+
     def _tick_wf_table(self, v: VoiceState) -> None:
         """Advance the per-frame WF / arp / detune table by one step.
 
@@ -1894,8 +1912,8 @@ class SWMPlayer(MemPlayer):
         ins = v.instrument
         if ins is None:
             return
-        table = ins.wf_table
-        if not table:
+        table = self._image(ins)
+        if not ins.wf_table:
             # No WF table: WFARPTB reads the table terminator ($FF) right
             # away — ``cmp #$FE`` leaves carry SET, so WRPITCH adds +1 to
             # FREQ_LO — then ENDWFTB without writing a pitch. Mirror the
@@ -1948,19 +1966,13 @@ class SWMPlayer(MemPlayer):
                 v.wf_pitch_carry = True
                 return
             if byte0 == WF_TABLE_JUMP:
-                # Jump targets in SID-Wizard's WF table are absolute
-                # offsets within the instrument's memory image. The
-                # wf_table itself starts at ``INST_WF_TABLE_POS`` ($10)
-                # in the instrument, so we subtract that to land on
-                # the right local index. Without this, a JUMP $10
-                # (very common — "loop back to start") sets wf_pos=16
-                # past the end of typical 9-byte tables and freezes
-                # the chord/arp cycle.
+                # WFAJUMP (player.asm:2449): ``BMIauto ENDWFTB`` abandons the
+                # jump for a target >= $80; otherwise ``sta WFTPOS,x`` takes
+                # the byte verbatim as an offset from the instrument base.
                 raw = table[pos + 1] if pos + 1 < len(table) else 0
-                target = raw - INST_WF_TABLE_POS
-                if target < 0 or target >= len(table):
+                if raw >= 0x80 or raw >= len(table):
                     return
-                v.wf_pos = target
+                v.wf_pos = raw
                 continue
             if byte0 < 0x10:
                 # Per-row ARP-speed override — player.asm WFTdone branch:
@@ -2050,19 +2062,19 @@ class SWMPlayer(MemPlayer):
     def _tick_pw_table(self, v: VoiceState) -> None:
         """Advance the pulse-width table by one step.
 
-        ``pw_pos`` is an ABSOLUTE offset from the instrument base (>=
-        :data:`INST_WF_TABLE_POS`), matching SID-Wizard's PWTPOS. It is
-        walked against the contiguous :meth:`Instrument.table_image`, so
-        a position carried over an instrument change without a STRTSND
-        reset can legitimately land in another table's bytes (e.g. the
-        WF region) and be decoded there — exactly as the real player does.
+        ``pw_pos`` is an ABSOLUTE offset from the instrument base, matching
+        SID-Wizard's PWTPOS, and is walked against
+        :meth:`Instrument.memory_image`. A position the player has not reset
+        can therefore land in another table's bytes, or (below
+        :data:`INST_WF_TABLE_POS`) in the header — exactly as the real
+        player does.
         """
         ins = v.instrument
         if ins is None:
             return
-        image = ins.table_image()
+        image = self._image(ins)
         for _ in range(4):
-            idx = v.pw_pos - INST_WF_TABLE_POS
+            idx = v.pw_pos
             if idx < 0 or idx >= len(image):
                 return
             byte0 = image[idx]
@@ -2070,11 +2082,10 @@ class SWMPlayer(MemPlayer):
                 return
             if byte0 == PW_TABLE_JUMP:
                 # JUMP target is an absolute instrument offset.
-                raw = image[idx + 1] if idx + 1 < len(image) else 0
-                tgt = raw - INST_WF_TABLE_POS
-                if tgt < 0 or tgt >= len(image):
+                tgt = image[idx + 1] if idx + 1 < len(image) else 0
+                if tgt >= len(image):
                     return
-                v.pw_pos = raw
+                v.pw_pos = tgt
                 # Per player.asm PWTJUMP (~line 1893): if the target's
                 # first byte is sweep mode (< $80), ``bpl SEPWPOS``
                 # just sets PWTPOS and returns — the sweep does not
@@ -2154,16 +2165,13 @@ class SWMPlayer(MemPlayer):
         ins = v.instrument
         if ins is None:
             return
-        table = ins.filter_table
-        if not table:
+        table = self._image(ins)
+        if not ins.filter_table:
             return
         # NOTE: voice_in_filter (= FSWITCH bit) is NOT updated here — per
         # player.asm, FILTPRG only walks the table and writes
         # cutoff/resonance; FSWITCH is only set at STRTSND's SETFLTP. See
         # _start_note for the assignment.
-        # Filter table starts at this absolute offset inside the
-        # instrument; JUMP targets are absolute and need normalising.
-        filt_table_start = INST_WF_TABLE_POS + len(ins.wf_table) + 1 + len(ins.pw_table) + 1
         for _ in range(4):
             pos = v.filt_pos
             if pos >= len(table):
@@ -2172,9 +2180,8 @@ class SWMPlayer(MemPlayer):
             if byte0 == FILT_TABLE_END:
                 return
             if byte0 == FILT_TABLE_JUMP:
-                raw = table[pos + 1] if pos + 1 < len(table) else 0
-                target = raw - filt_table_start
-                if target < 0 or target >= len(table):
+                target = table[pos + 1] if pos + 1 < len(table) else 0
+                if target >= len(table):
                     return
                 v.filt_pos = target
                 # Per player.asm FLTJUMP (~line 1802): if target's
