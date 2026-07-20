@@ -58,6 +58,8 @@ TUNES = {
     "rodman_jr_plus": "MUSICIANS/M/Misfit/Rodman_Jr_plus.sid",
     "death_in_rome": "MUSICIANS/S/Stone_James/Death_in_Rome.sid",
     "star_storm": "GAMES/S-Z/Star_Storm.sid",
+    # Exercises BIGFX11 (main funktempo); matched only once the tempo FX landed.
+    "moofistication": "MUSICIANS/S/Skuggemannen/Moofistication.sid",
     "cyberiad_theory": "MUSICIANS/L/LukHash/Cyberiad_Theory.sid",
     "perpetual_motion": "MUSICIANS/L/LukHash/Perpetual_Motion.sid",
     "switchback_remake": "MUSICIANS/V/Vincenzo/Switchback_Remake.sid",
