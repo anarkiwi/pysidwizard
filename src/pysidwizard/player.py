@@ -472,6 +472,10 @@ class SWMPlayer(MemPlayer):
         self.filter_cutoff_hi = 0x00
         self.filter_cutoff_lo = 0x00
         self.filter_resonance = 0x00  # high nibble of $D417
+        # FSWITCH (player.asm:1085): the low nibble of $D417 -- per-voice routing bits
+        # maintained by STRTSND's SETFLTP (player.asm:1999-2008), plus the filter-external
+        # bit that only BIGFX1F writes. Initialised to 0 by the player's INITER (line 718).
+        self.filter_switch = 0x00
         # SID-Wizard's FilterProgram is shared across voices: only the
         # one voice currently marked as filter-controller (FLTCTRL+1
         # operand byte at $1xxx) actually walks its filter table.
@@ -1177,6 +1181,13 @@ class SWMPlayer(MemPlayer):
                 if target < len(ins.filter_table):
                     v.filt_pos = target
                     self.filter_sweep_count = 0
+            elif fx == 0x0F and fx_value is not None:
+                # BIGFX0F (player.asm:3563) writes CTFHGHO, the $D416 cutoff-high ghost.
+                self._set_cutoff_hi(fx_value)
+            elif fx == 0x1F and fx_value is not None:
+                # BIGFX1F (player.asm:3758) stores the value's nibbles into FSWITCH and RESONIB, so it also clears the routing bits until the next STRTSND re-ORs them.
+                self.filter_switch = fx_value & 0x0F
+                self.filter_resonance = fx_value & 0xF0
             elif fx == 0x10 and fx_value is not None:
                 # Big-fx main tempo: override both funktempo halves with ``fx_value``.
                 v.tempo_left = fx_value & 0x7F
@@ -1234,12 +1245,32 @@ class SWMPlayer(MemPlayer):
             if 1 <= low <= len(self._chord_starts):
                 v.current_chord = low
                 v.chord_pos = self._chord_starts[low - 1]
+        elif high == 0xB0:
+            # SMALFXB (player.asm:3377) writes FLTBAND, the $D418 high nibble.
+            self.filter_mode_vol = (self.filter_mode_vol & 0x0F) | (low << 4)
+        elif high == 0xF0:
+            # SMALFXF (player.asm:3418) writes RESONIB, the $D417 high nibble.
+            self.filter_resonance = low << 4
         elif high == 0xA0:
             # SMALFXA (player.asm:3356) writes MAINVOL and SEQVOLU with the value nibble.
             self.filter_mode_vol = (self.filter_mode_vol & 0xF0) | low
             self.seqvolu = low
         else:
             self._report_unsupported(v, "small-fx", code)
+
+    def _set_cutoff_hi(self, value: int) -> None:
+        """Write CTFH_GHO (player.asm:2179), the single global cutoff-high ghost."""
+        self.filter_cutoff_hi = value & 0xFF
+        if self.filter_controller_voice is not None:
+            self.filter_controller_voice.filt_hi = value & 0xFF
+
+    def _set_filter_routing(self, v: VoiceState, filtered: bool) -> None:
+        """SETFLTP (player.asm:1999-2008): OR / AND this voice's FSWITCH routing bit."""
+        bit = 1 << next((i for i, sv in enumerate(self.voices) if sv is v), 3)
+        if filtered:
+            self.filter_switch |= bit
+        else:
+            self.filter_switch &= ~bit & 0xFF
 
     def _report_unsupported(self, v: VoiceState, column: str, code: int) -> None:
         """Record + warn (once per ``(column, code)``) that ``code`` is unmodelled."""
@@ -1328,6 +1359,7 @@ class SWMPlayer(MemPlayer):
             # voice WAS the controller.
             ft = v.instrument.filter_table
             v.voice_in_filter = bool(ft) and ft[0] != FILT_TABLE_END
+            self._set_filter_routing(v, v.voice_in_filter)
             if ft and ft[0] not in (0x00, FILT_TABLE_END):
                 self.filter_controller_voice = v
             elif ft and ft[0] == FILT_TABLE_END:
@@ -2262,14 +2294,8 @@ class SWMPlayer(MemPlayer):
                 self._wr(base + 5, v.sid_ad)
                 self._wr(base + 6, v.sid_sr)
             self._wr(base + 4, v.sid_ctrl)
-        # Global filter / volume. $D417 = resonance (high nibble) +
-        # routing (low nibble: bit 0=v0, bit 1=v1, bit 2=v2 — set if
-        # that voice has an active filter-table instrument).
-        routing = 0
-        for v_idx, v in enumerate(self.voices):
-            if v.voice_in_filter:
-                routing |= 1 << v_idx
-        res_routing = (self.filter_resonance & 0xF0) | (routing & 0x0F)
+        # $D417 = RESONIB (high nibble) | FSWITCH (low nibble), player.asm:1085-1087.
+        res_routing = (self.filter_resonance & 0xF0) | (self.filter_switch & 0x0F)
         self._wr(SID_REG_BASE + 0x15, self.filter_cutoff_lo & 0xFF)
         self._wr(SID_REG_BASE + 0x16, self.filter_cutoff_hi & 0xFF)
         self._wr(SID_REG_BASE + 0x17, res_routing & 0xFF)

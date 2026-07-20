@@ -800,3 +800,41 @@ def test_small_fx_e_is_a_no_op_in_1_94():
         warnings.simplefilter("error", SWMUnsupportedEffectWarning)
         p = _play(swm, frames=4)
     assert p.regs[4] == 0x41, "WFGHOST unchanged: the store is commented out upstream"
+
+
+def test_big_fx_0f_sets_the_cutoff_high_byte():
+    """BIGFX0F (player.asm:3563) writes CTFHGHO, the $D416 ghost."""
+    assert _play(_fx_swm(0x02, 0x00), frames=1).regs[0x16] == 0x00
+    assert _play(_fx_swm(0x0F, 0xC4), frames=1).regs[0x16] == 0xC4
+
+
+def test_big_fx_1f_sets_filter_switches_and_resonance():
+    """BIGFX1F (player.asm:3758) stores the value's nibbles into FSWITCH and RESONIB.
+
+    Both are plain ``sta``s, so it also clears the per-voice routing bits until
+    the next STRTSND re-ORs them (player.asm:2001).
+    """
+    p = _play(_fx_swm(0x1F, 0x38), frames=1)
+    assert p.regs[0x17] == 0x38
+    assert p.filter_switch == 0x08 and p.filter_resonance == 0x30
+
+
+def test_small_fx_b_sets_the_filter_band_nibble():
+    """SMALFXB (player.asm:3377) writes FLTBAND, the $D418 high nibble."""
+    p = _play(_fx_swm(0xB2), frames=1)
+    assert p.regs[0x18] == 0x2F, "band $2 over the default $F main volume"
+
+
+def test_small_fx_f_sets_the_resonance_nibble():
+    """SMALFXF (player.asm:3418) writes RESONIB, the $D417 high nibble."""
+    p = _play(_fx_swm(0xF9), frames=1)
+    assert p.regs[0x17] == 0x90
+
+
+def test_filter_routing_bit_follows_the_instrument_filter_table():
+    """FSWITCH's routing bits are owned by STRTSND's SETFLTP (player.asm:1999-2008)."""
+    swm = _toy_swm()
+    swm.instruments[0].filter_table = b"\x80\x40\x00\xff"
+    p = _play(swm, frames=1)
+    assert p.filter_switch & 0x07 == 0x07, "all three voices play the filtered instrument"
+    assert p.regs[0x17] & 0x0F == 0x07
