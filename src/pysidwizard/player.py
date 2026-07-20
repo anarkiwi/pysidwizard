@@ -18,9 +18,9 @@ detune-with-carry chain.
 The player is parameterised by the compile-time feature flags of the build the
 module was exported for: :attr:`SWMPlayer.features`, derived from the SWM
 header's driver byte via :func:`pysidwizard.features.features_for_driver`.
-Driver types 0 (normal) and 3 (Extra) are modelled; the Extra build's
-DELAYSUPPORT_ON ``$1D`` / ``$1E`` are still reported as unmodelled rather
-than silently dropped. The remaining builds are transcribed one at a time.
+Driver types 0 (normal), 1 (Medium) and 3 (Extra) are modelled; the Extra
+build's DELAYSUPPORT_ON ``$1D`` / ``$1E`` are still reported as unmodelled
+rather than silently dropped. Remaining builds land one at a time.
 
 Multi-SID / SFX / slowdown / non-440 Hz tuning tables are out of
 scope by intent. Any other effect this player does not implement is
@@ -145,6 +145,9 @@ HR_FRAMES = 1
 # Exactly the default build's TICK_0 + TICK_1 window (player.asm:1383/1626): only
 # the Extra player's FASTSPEEDBIND collapses it, and that build is out of scope.
 PRE_HR_LEAD_FRAMES = 2
+
+# settings.cfg:304 DEFAULTHRADSR: the HR ADSR every instrument gets when HARDRESTYPES_ON is 0.
+DEFAULT_HR_ADSR = 0x0F00
 
 # Chord-table separator bytes. ``$7E`` marks "end of chord, return to
 # WFARP table for the next row" (one-shot chord pluck); ``$7F`` marks
@@ -1252,9 +1255,10 @@ class SWMPlayer(MemPlayer):
                 # BIGFX1C (player.asm:3706): FLSHIFT := value. BIGFX17..BIGFX1B are bare labels ahead of it (player.asm:3700-3704), so those codes run the same shift.
                 self.filter_shift = fx_value
             elif fx == 0x1F and fx_value is not None:
-                # BIGFX1F (player.asm:3758) stores the value's nibbles into FSWITCH and RESONIB, so it also clears the routing bits until the next STRTSND re-ORs them.
-                self.filter_switch = fx_value & 0x0F
-                self.filter_resonance = fx_value & 0xF0
+                # BIGFX1F (player.asm:3758) stores the value's nibbles into FSWITCH and RESONIB, so it also clears the routing bits until the next STRTSND re-ORs them; without FILT_CTRL_FX_ON the whole body is gone and the label is the following ``rts``.
+                if self.features.filt_ctrl_fx:
+                    self.filter_switch = fx_value & 0x0F
+                    self.filter_resonance = fx_value & 0xF0
             elif fx == 0x10 and fx_value is not None:
                 # BIGFX10 (player.asm:3586): main single tempo -- ``ora #$80`` pins the
                 # funk cycle to one slot, and MAINTMP resets every track's TMPPOS.
@@ -1792,6 +1796,9 @@ class SWMPlayer(MemPlayer):
         bit 0). The result of ``control & A`` decides whether HRGTOFF
         actually runs that tick.
         """
+        if not self.features.hardrestypes:
+            # Flag off: HARDRST has no HR-tick-timer and falls straight into HRGTOFF, so HR fires on both pre-HR ticks.
+            return pre_incr_sc in (0, 1)
         if pre_incr_sc == 0:
             return bool(ins.control & 0x02)
         if pre_incr_sc == 1:
@@ -1830,10 +1837,15 @@ class SWMPlayer(MemPlayer):
         # AD/SR — the SID retains the previous note's values until the
         # fire tick. Compose's normal AD/SR write is gated separately
         # via ``in_new_note_setup`` to avoid clobbering this.
-        v.sid_ad = ((ins.hr_attack & 0xF) << 4) | (ins.hr_decay & 0xF)
-        v.sid_sr = ((ins.hr_sustain & 0xF) << 4) | (ins.hr_release & 0xF)
+        if self.features.hardrestypes:
+            v.sid_ad = ((ins.hr_attack & 0xF) << 4) | (ins.hr_decay & 0xF)
+            v.sid_sr = ((ins.hr_sustain & 0xF) << 4) | (ins.hr_release & 0xF)
+        else:
+            # defauHR (player.asm:1588): DEFAULTHRADSR = $0F00 for every instrument.
+            v.sid_ad = DEFAULT_HR_ADSR >> 8
+            v.sid_sr = DEFAULT_HR_ADSR & 0xFF
         v.adsr_emit_required = True
-        if ins.control & 0x04:
+        if self.features.hardrestypes and ins.control & 0x04:
             # Staccato exit per spec §7: WFGHOST = $18.
             v.sid_ctrl = 0x18
         else:
@@ -1852,7 +1864,7 @@ class SWMPlayer(MemPlayer):
         ins = self._upcoming_hr_instrument(v, v.pending_row)
         if ins is None:
             return False
-        if not (ins.control & 0x04):
+        if not self.features.hardrestypes or not (ins.control & 0x04):
             return False
         return self._hr_fires_at_tick(ins, pre_incr_sc)
 
@@ -2300,7 +2312,10 @@ class SWMPlayer(MemPlayer):
             # control=$12), STRTSND skips both writes and CTRL/FREQ_HI
             # retain their pre-HR values — player.asm line 1271 has
             # ``and #8 ; beq SETWFTP`` to bypass the writes.
-            if ins.control & 0x08:
+            if not self.features.frame1switch:
+                # Flag off: the ``and #8`` test is compiled out and STRTSND unconditionally does ``lda #$09 ; sta WFGHOST,x``.
+                v.sid_ctrl = 0x09
+            elif ins.control & 0x08:
                 v.sid_ctrl = ins.first_waveform & v.ptn_gate
                 dpitch = max(
                     0,
@@ -2356,7 +2371,7 @@ class SWMPlayer(MemPlayer):
         # PWHIGHO byte (already AND-masked with $7F at SETPULW), so
         # bits 4-6 of the SID register MAY be non-zero — mirror that.
         pw_hi_sid = v.pw_hi & 0x7F
-        if v.pw_kbd_track != 0:
+        if v.pw_kbd_track != 0 and self.features.pwkeybtrack:
             # PW keyboard tracking (player.asm WRPULS line 1914-1924):
             #   clc ; lda PKBDTRK ; beq combiKT
             #   adc DPITCH ; tay
