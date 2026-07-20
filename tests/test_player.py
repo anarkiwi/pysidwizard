@@ -9,6 +9,7 @@ import pytest
 from pysidwizard import (
     End,
     Instrument,
+    Loop,
     MainVolume,
     Pattern,
     PlayPattern,
@@ -562,6 +563,35 @@ def test_player_handles_loop_command_without_infinite_advance():
     # The loop variant never sets ``finished``; the player must still
     # have produced steady writes.
     assert not p.finished
+
+
+def test_subtune_jump_terminator_continues_in_target_subtune():
+    """A $FF terminator followed by a high-bit byte is a per-channel jump to
+    another subtune (player.asm LOOPSEQ line 1683 -> SETSEQA, then position 0),
+    not a loop position and not the end of playback."""
+    from pysidwizard import SubtuneJump
+
+    inst = Instrument(name=b"SJ      ", sustain=0xF, first_waveform=0x41)
+    swm = SWMFile(
+        sequences=(
+            [[PlayPattern(1), SubtuneJump(byte=0x81)]] * 3 + [[PlayPattern(2), Loop(0)]] * 3
+        ),
+        patterns=[
+            Pattern(rows=[Row(note=49, instrument=1)], length=1),
+            Pattern(rows=[Row(note=61, instrument=1)], length=1),
+        ],
+        instruments=[inst],
+        subtune_tempos=[(straight_tempo(4), straight_tempo(4))] * 2,
+    )
+    p = SWMPlayer(swm)
+    notes = set()
+    for _ in range(40):
+        p.play_frame()
+        notes.add(p.voices[0].note)
+    assert not p.finished, "subtune jump must not end playback"
+    assert notes == {49, 61}, f"expected both subtunes' notes to play, got {notes}"
+    assert p.voices[0].sequence is swm.sequences[3]
+    assert p.voices[0].pattern is swm.patterns[1]
 
 
 def test_orderlist_main_volume_applies_delayed_at_pattern_boundary():

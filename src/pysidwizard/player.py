@@ -67,6 +67,7 @@ from .model import (
     MainVolume,
     Pattern,
     PlayPattern,
+    SubtuneJump,
     SWMFile,
     TempoOverride,
     Transpose,
@@ -199,6 +200,11 @@ class VoiceState:
     # Sequence (orderlist) state.
     sequence: List = field(default_factory=list)
     seq_pos: int = 0
+    # 0..2 SID channel index. A SubtuneJump repoints only THIS channel's
+    # orderlist (player.asm SETSEQA/SETSEQB run for the channel in X
+    # alone), so the walk needs to know which of the target subtune's
+    # three orderlists to pick up.
+    channel: int = 0
     transpose: int = 0
     # Orderlist Transpose commands are read EARLY (during the sequence
     # advance, before the new pattern's note triggers). SID-Wizard stores
@@ -468,7 +474,7 @@ class SWMPlayer(MemPlayer):
             tr = tempo_right & 0x7F
         self.voices: List[VoiceState] = []
         for i in range(3):
-            v = VoiceState()
+            v = VoiceState(channel=i)
             if i < len(swm.sequences):
                 v.sequence = swm.sequences[i]
             v.tempo_left = tl
@@ -872,12 +878,19 @@ class SWMPlayer(MemPlayer):
         otherwise spin forever inside a single frame. ``seen`` records each
         position visited in *this* call and breaks the cycle by treating the
         voice as ended; because a real loop returns at its PlayPattern before
-        ever revisiting a position, this never triggers for valid tunes."""
+        ever revisiting a position, this never triggers for valid tunes. A
+        :class:`SubtuneJump` changes which orderlist is being walked, so the
+        cycle key includes the orderlist's identity.
+
+        A :class:`SubtuneJump` follows player.asm LOOPSEQ (line 1683): SETSEQA
+        repoints only this channel's orderlist at the target subtune, then
+        ``lda #0 / tay`` restarts it at position 0, leaving tempo untouched."""
         seen: set = set()
         while v.seq_pos < len(v.sequence):
-            if v.seq_pos in seen:
+            key = (id(v.sequence), v.seq_pos)
+            if key in seen:
                 break
-            seen.add(v.seq_pos)
+            seen.add(key)
             cmd = v.sequence[v.seq_pos]
             v.seq_pos += 1
             if isinstance(cmd, PlayPattern):
@@ -906,6 +919,13 @@ class SWMPlayer(MemPlayer):
                 return
             if isinstance(cmd, Loop):
                 v.seq_pos = cmd.position
+                continue
+            if isinstance(cmd, SubtuneJump):
+                target = cmd.subtune * 3 + v.channel
+                if target >= len(self.swm.sequences):
+                    break
+                v.sequence = self.swm.sequences[target]
+                v.seq_pos = 0
                 continue
             # RawSequenceByte or unknown — skip.
         v.pattern = None

@@ -193,7 +193,7 @@ byte layout to use the library, but the moving parts:
 
 **Orderlist (`sequences`).** Three independent sequences, one per SID channel.
 Each is a list of typed commands (`PlayPattern`, `Transpose`, `TempoOverride`,
-`End`, `Loop`). Channels advance independently; if v0 is playing a long pattern
+`End`, `Loop`, `SubtuneJump`). Channels advance independently; if v0 is playing a long pattern
 and v1 finishes early, v1 stays silent until its sequence loops.
 
 **Patterns (`patterns`).** A list of rows; each row may set `note` /
@@ -233,6 +233,7 @@ instrument is active:
 | `TempoOverride(value)` | Switch to row-delay `value` until the next override.        |
 | `End()`                | Terminate the sequence without looping.                     |
 | `Loop(position)`       | Terminate and jump back to `position` within the sequence.  |
+| `SubtuneJump(byte)`    | Terminate and restart this channel at position 0 of subtune `byte & 0x1F`. |
 | `RawSequenceByte(b)`   | Opaque single byte preserved for byte-exact round-trip.     |
 
 ### Row fields
