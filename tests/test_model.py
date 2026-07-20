@@ -12,6 +12,7 @@ from pysidwizard import (
     PlayPattern,
     RawSequenceByte,
     Row,
+    SubtuneJump,
     SWMFile,
     SWMFormatError,
     TempoOverride,
@@ -288,6 +289,27 @@ def test_loop_consumes_position_byte_on_round_trip():
     cmds = [PlayPattern(1), PlayPattern(2), Loop(position=1)]
     raw = encode_sequence(cmds)
     assert decode_sequence(raw) == cmds
+
+
+def test_subtune_jump_decodes_from_high_bit_terminator_byte():
+    """player.asm LOOPSEQ's ``bpl lpindex`` (line 1683) routes a high-bit byte
+    after the $FF delimiter to SETSEQA, a jump to another subtune."""
+    cmds = [PlayPattern(1), SubtuneJump(byte=0x81)]
+    raw = encode_sequence(cmds)
+    assert raw == bytes([0x01, 0xFF, 0x81])
+    assert decode_sequence(raw) == cmds
+    assert cmds[1].subtune == 1
+
+
+def test_subtune_jump_masks_bits_five_to_seven():
+    """SETSEQA (player.asm:2671) discards bits 5-7 with three ``asl``s."""
+    assert SubtuneJump(byte=0xE3).subtune == 3
+    assert decode_sequence(bytes([0xFF, 0xE3])) == [SubtuneJump(byte=0xE3)]
+
+
+def test_subtune_jump_rejects_byte_without_high_bit():
+    with pytest.raises(SWMFormatError, match="subtune-jump byte"):
+        SubtuneJump(byte=0x7F).encode()
 
 
 def test_decode_sequence_a0_range_is_main_volume():

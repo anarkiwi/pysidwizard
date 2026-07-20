@@ -83,8 +83,8 @@ def test_build_swm_rejects_oversized_sequence():
 
 def test_build_swm_rejects_sequence_without_terminator():
     swm = _minimal_swm()
-    swm.sequences[0] = [PlayPattern(1)]  # type: ignore[list-item]  # no End / Loop
-    with pytest.raises(SWMFormatError, match="End or Loop"):
+    swm.sequences[0] = [PlayPattern(1)]  # type: ignore[list-item]  # no End / Loop / SubtuneJump
+    with pytest.raises(SWMFormatError, match="End, Loop or SubtuneJump"):
         build_swm(swm)
 
 

@@ -86,6 +86,10 @@ SEQUENCE_TRANSPOSE_BASE = 0x90  # 0x90..0x9F sets a -16..+15 semitone shift
 SEQUENCE_MAINVOL_BASE = 0xA0  # 0xA0..0xAF sets master volume 0..15 (delayed)
 SEQUENCE_TEMPO_BASE = 0xB0  # 0xB0..0xEF overrides the subtune tempo
 SEQUENCE_TEMPO_MAX = 0xEF  # player's chTmpFx band ends here; 0xF0.. are no-ops
+# The byte after a 0xFF terminator: below this it is a loop position within
+# the current orderlist, at or above it player.asm LOOPSEQ (line 1683) calls
+# SETSEQA and restarts the channel at position 0 of another subtune.
+SEQUENCE_SUBTUNE_JUMP_BASE = 0x80
 
 # Subtune funktempo: bit 7 of a tempo byte means "use the low seven bits
 # straight, do not average with the partner byte".

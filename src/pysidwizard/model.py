@@ -50,6 +50,7 @@ from .constants import (
     SEQUENCE_END,
     SEQUENCE_END_WITH_LOOP,
     SEQUENCE_MAINVOL_BASE,
+    SEQUENCE_SUBTUNE_JUMP_BASE,
     SEQUENCE_TEMPO_BASE,
     SEQUENCE_TEMPO_MAX,
     SEQUENCE_TRANSPOSE_BASE,
@@ -208,15 +209,53 @@ class Loop(SequenceCommand):
 
     On disk this is the two-byte sequence ``0xFF, position``. ``position``
     is an offset (in commands' worth of bytes) measured from the start
-    of the sequence.
+    of the sequence, and must be below
+    :data:`~pysidwizard.constants.SEQUENCE_SUBTUNE_JUMP_BASE`: player.asm
+    LOOPSEQ's ``bpl lpindex`` routes a high-bit byte to
+    :class:`SubtuneJump` instead.
     """
 
     position: int = 0
 
     def encode(self) -> bytes:
-        if not (0 <= self.position <= 0xFF):
-            raise SWMFormatError(f"loop position {self.position} out of range 0..255")
+        if not (0 <= self.position < SEQUENCE_SUBTUNE_JUMP_BASE):
+            raise SWMFormatError(
+                f"loop position {self.position} out of range "
+                f"0..{SEQUENCE_SUBTUNE_JUMP_BASE - 1}"
+            )
         return bytes([SEQUENCE_END_WITH_LOOP, self.position])
+
+
+@dataclass
+class SubtuneJump(SequenceCommand):
+    """Terminate and continue this channel in another subtune's orderlist.
+
+    On disk this is ``0xFF, byte`` with bit 7 of ``byte`` set. player.asm
+    LOOPSEQ (line 1683) reads the byte after the ``$FF`` delimiter and
+    branches ``bpl lpindex``; a high-bit byte instead falls into ``jsr
+    SETSEQA`` followed by ``lda #0``, so the channel's orderlist pointer
+    is repointed at the target subtune and playback restarts at position
+    0. SETSEQA (player.asm:2671) discards bits 5-7 of the byte via three
+    ``asl``s, hence :attr:`subtune` masks with ``$1F``.
+
+    Only this channel moves: SETSEQA falls through into SETSEQB for the
+    channel in X alone, and a subtune's funktempo bytes are copied by
+    SETSTUNE, not by this path.
+    """
+
+    byte: int = SEQUENCE_SUBTUNE_JUMP_BASE
+
+    @property
+    def subtune(self) -> int:
+        """The 0-based target subtune (``byte & $1F``)."""
+        return self.byte & 0x1F
+
+    def encode(self) -> bytes:
+        if not (SEQUENCE_SUBTUNE_JUMP_BASE <= self.byte <= 0xFF):
+            raise SWMFormatError(
+                f"subtune-jump byte {self.byte} out of range " f"{SEQUENCE_SUBTUNE_JUMP_BASE}..255"
+            )
+        return bytes([SEQUENCE_END_WITH_LOOP, self.byte])
 
 
 @dataclass
@@ -265,7 +304,11 @@ def decode_sequence(data: bytes) -> List[SequenceCommand]:
             cmds.append(End())
         else:  # b == SEQUENCE_END_WITH_LOOP (0xFF)
             if i < n:
-                cmds.append(Loop(position=data[i]))
+                target = data[i]
+                if target >= SEQUENCE_SUBTUNE_JUMP_BASE:
+                    cmds.append(SubtuneJump(byte=target))
+                else:
+                    cmds.append(Loop(position=target))
                 i += 1
             else:
                 # 0xFF without a trailing position byte — preserve as-is.

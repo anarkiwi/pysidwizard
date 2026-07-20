@@ -33,6 +33,7 @@ from .model import (
     End,
     Loop,
     PlayPattern,
+    SubtuneJump,
     SWMFile,
     encode_sequence,
     pack_pattern,
@@ -68,9 +69,9 @@ def _validate_cross_refs(swm: SWMFile) -> None:
                         f"{cmd.pattern}, but only {pattern_count} patterns "
                         "are defined"
                     )
-        if not any(isinstance(c, (End, Loop)) for c in commands):
+        if not any(isinstance(c, (End, Loop, SubtuneJump)) for c in commands):
             raise SWMFormatError(
-                f"sequences[{s_idx}] does not contain an End or Loop "
+                f"sequences[{s_idx}] does not contain an End, Loop or SubtuneJump "
                 "terminator; the C64 player would walk off the end"
             )
     for p_idx, ptn in enumerate(swm.patterns):
