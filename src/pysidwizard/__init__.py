@@ -21,7 +21,12 @@ Three public surfaces:
 from pysidtracker import attack_decay, sustain_release
 
 from .constants import Waveform, straight_tempo
-from .errors import SIDFormatError, SWMError, SWMFormatError
+from .errors import (
+    SIDFormatError,
+    SWMError,
+    SWMFormatError,
+    SWMUnsupportedEffectWarning,
+)
 from .model import (
     End,
     Instrument,
@@ -68,6 +73,7 @@ __all__ = [
     "SWMFile",
     "SWMFormatError",
     "SWMPlayer",
+    "SWMUnsupportedEffectWarning",
     "SequenceCommand",
     "SidWizardSidParser",
     "TempoOverride",
