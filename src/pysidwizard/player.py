@@ -1209,9 +1209,18 @@ class SWMPlayer(MemPlayer):
                 self.filter_switch = fx_value & 0x0F
                 self.filter_resonance = fx_value & 0xF0
             elif fx == 0x10 and fx_value is not None:
-                # Big-fx main tempo: override both funktempo halves with ``fx_value``.
-                v.tempo_left = fx_value & 0x7F
-                v.tempo_right = fx_value & 0x7F
+                # BIGFX10 (player.asm:3586): main single tempo -- ``ora #$80`` pins the
+                # funk cycle to one slot, and MAINTMP resets every track's TMPPOS.
+                self._set_tempo(self.voices, fx_value & 0x7F, fx_value & 0x7F)
+            elif fx == 0x11 and fx_value is not None:
+                # BIGFX11 (player.asm:3627): main funktempo, high nibble then low.
+                self._set_tempo(self.voices, fx_value >> 4, fx_value & 0x0F)
+            elif fx == 0x13 and fx_value is not None:
+                # BIGFX13 (player.asm:3658): track single tempo, this voice only.
+                self._set_tempo([v], fx_value & 0x7F, fx_value & 0x7F)
+            elif fx == 0x14 and fx_value is not None:
+                # BIGFX14 (player.asm:3669): track funktempo, this voice only.
+                self._set_tempo([v], fx_value >> 4, fx_value & 0x0F)
             elif not (fx == 0x03 and portamento_applied):
                 # BIGFX03 is applied by the note column above; other unmodelled big-FX report.
                 self._report_unsupported(v, "big-fx", fx)
@@ -1289,6 +1298,13 @@ class SWMPlayer(MemPlayer):
             self.seqvolu = low
         else:
             self._report_unsupported(v, "small-fx", code)
+
+    def _set_tempo(self, voices: List[VoiceState], left: int, right: int) -> None:
+        """Write a tempo pair and rewind TMPPOS to its base (player.asm:3591-3625)."""
+        for voice in voices:
+            voice.tempo_left = left
+            voice.tempo_right = right
+            voice.tempo_toggle = 0
 
     def _apply_vibrato_byte(self, v: VoiceState, vibrato_byte: int) -> None:
         """BIGFX08 (player.asm:3518): FORCVIB then SETVIBR (player.asm:2894).

@@ -964,3 +964,30 @@ def test_big_fx_1c_shifts_the_cutoff_and_17_to_1b_alias_it(fx):
     assert _play(swm, frames=1).regs[0x16] == 0x40
     assert _play(swm, frames=4).regs[0x16] == 0x50
     assert _play(swm, frames=7).regs[0x16] == 0x30, "$80..$FF shifts down"
+
+
+def _tempo_of(p: SWMPlayer, idx: int) -> tuple:
+    v = p.voices[idx]
+    return (v.tempo_left, v.tempo_right)
+
+
+def test_big_fx_10_and_11_set_the_main_tempo_on_every_track():
+    """MAINTMP (player.asm:3591) writes TEMPOTBL+0 and rewinds every track's TMPPOS.
+
+    BIGFX10 (player.asm:3586) ``ora #$80``s the value, pinning the funk cycle to
+    the one slot; BIGFX11 (player.asm:3627) splits the byte into two slots.
+    """
+    p = _play(_fx_swm(0x10, 0x04), frames=1)
+    assert [_tempo_of(p, i) for i in range(3)] == [(4, 4)] * 3
+    p = _play(_fx_swm(0x11, 0x53), frames=1)
+    assert [_tempo_of(p, i) for i in range(3)] == [(5, 3)] * 3
+
+
+def test_big_fx_13_and_14_set_the_tempo_of_one_track_only():
+    """BIGFX13 / BIGFX14 (player.asm:3658 / 3669) write the track's own tempo slot."""
+    swm = _fx_swm(0x13, 0x04)
+    swm.sequences = [[PlayPattern(1), End()], [PlayPattern(2), End()], [PlayPattern(2), End()]]
+    swm.patterns.append(Pattern(rows=[Row(note=49, instrument=1)] + [Row()] * 3, length=4))
+    p = _play(swm, frames=1)
+    assert _tempo_of(p, 0) == (4, 4)
+    assert _tempo_of(p, 1) == _tempo_of(p, 2) == (3, 3), "other tracks keep the subtune tempo"
