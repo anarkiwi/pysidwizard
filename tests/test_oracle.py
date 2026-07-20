@@ -93,6 +93,10 @@ TUNES = {
     "wintry_haze": "MUSICIANS/T/Toggle/Wintry_Haze.sid",
     "supremacy_intro": "MUSICIANS/T/Toggle/Supremacy_Intro.sid",
     "juana_azurduy": "MUSICIANS/U/Uctumi/Juana_Azurduy_Reggae_Mix.sid",
+    # Driver type 5, the Demo build (altplayers.inc:735): its flags are a subset of the Medium + Light sets, so it needs no gating of its own.
+    "methodist": "MUSICIANS/M/Mac_TUGCS/Methodist.sid",
+    "smooth_and_wonders": "MUSICIANS/V/Vincenzo/Smooth_and_Wonders.sid",
+    "unfortunate_coincidence": "MUSICIANS/V/Vincenzo/Unfortunate_Coincidence.sid",
 }
 
 
