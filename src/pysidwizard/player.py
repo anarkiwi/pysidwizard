@@ -15,16 +15,11 @@ tables; vibrato; portamento; hard-restart; multispeed
 (``frame_speed >= 2``); funktempo; tempo programs; the WRPITCH
 detune-with-carry chain.
 
-This transcribes SID-Wizard's DEFAULT player build (settings.cfg), which is
-what the SWM header's driver byte calls type 0. The Extra player
-(altplayers.inc:533) flips ten feature flags -- ALLGHOSTREGS_ON,
-PORTAVIBRA_ON, FILTERALWAYS_ON / PULSEALWAYS_ON / VIBSLIDEALWAYS_ON,
-FASTSPEEDBIND_ON, DELAYSUPPORT_ON -- each of which changes the register
-stream, so its tunes are out of scope until that flavour is modelled as a
-whole. Two consequences are visible here: tempo 1-2 produces no TICK_2 and
-therefore no new notes (FASTSPEEDBIND's ``cmp #3 ; bmi TICK_2`` at
-player.asm:1725 is what makes those tempos sound, and it is compiled out),
-and the ``$1D`` / ``$1E`` delay FX are no-ops.
+The player is parameterised by the compile-time feature flags of the build the
+module was exported for: :attr:`SWMPlayer.features`, derived from the SWM
+header's driver byte via :func:`pysidwizard.features.features_for_driver`.
+Only the default build (driver type 0) is fully modelled so far; the other
+five builds' differing flags are transcribed build by build.
 
 Multi-SID / SFX / slowdown / non-440 Hz tuning tables are out of
 scope by intent. Any other effect this player does not implement is
@@ -60,6 +55,7 @@ from .constants import (
     SYNC_ON_FX,
 )
 from .errors import SWMUnsupportedEffectWarning
+from .features import PlayerFeatures, features_for_driver
 from .model import (
     End,
     Instrument,
@@ -115,10 +111,6 @@ EXP_MAX_INDEX = EXP_THRESHOLD + len(NOTE_FREQ_HI)
 # assembled image put there. In the shipped 1.94 player that is SEQ_FX's ``cmp #$A0``
 # opcode (player.asm:3006); no tune can depend on it beyond this single clamped index.
 FREQTBL_PAST_END = 0xC9
-
-# SWM header driver byte for the Extra player (altplayers.inc:533, PLAYERTYPE=3).
-# It is the only build with DELAYSUPPORT_ON / FASTSPEEDBIND_ON (altplayers.inc:552-553).
-EXTRA_DRIVER_TYPE = 3
 
 # Note-column effect-value range constants (mirror constants.py).
 NOTE_FX_MIN = 0x60
@@ -427,8 +419,10 @@ class SWMPlayer(MemPlayer):
     file that :meth:`_frame` writes into and :meth:`snapshot` reads back.
     """
 
-    def __init__(self, swm: SWMFile) -> None:
+    def __init__(self, swm: SWMFile, features: Optional[PlayerFeatures] = None) -> None:
         self.swm = swm
+        # The build this module was exported for (SWM driver byte = PLAYERTYPE).
+        self.features = features or features_for_driver(swm.driver_type)
         self._unsupported_effects: dict = {}
         super().__init__(b"", 0)
 
@@ -1267,7 +1261,7 @@ class SWMPlayer(MemPlayer):
             elif fx == 0x14 and fx_value is not None:
                 # BIGFX14 (player.asm:3669): track funktempo, this voice only.
                 self._set_tempo([v], fx_value >> 4, fx_value & 0x0F)
-            elif fx in (0x1D, 0x1E) and self.swm.driver_type != EXTRA_DRIVER_TYPE:
+            elif fx in (0x1D, 0x1E) and not self.features.delaysupport:
                 # BIGFX1D / BIGFX1E (player.asm:3730 / 3746) are wrapped in
                 # ``.if feature.DELAYSUPPORT_ON``, which only the Extra player sets
                 # (altplayers.inc:553); elsewhere both fall through to a bare ``rts``.
