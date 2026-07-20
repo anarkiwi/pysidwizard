@@ -70,6 +70,13 @@ TUNES = {
     "portugieser": "MUSICIANS/B/Barik/Portugieser.sid",
     "vinegar": "MUSICIANS/B/Barik/Vinegar.sid",
     "wattson": "MUSICIANS/B/Barik/Wattson.sid",
+    # Driver type 1, the Medium build (altplayers.inc:331): matched once HARDRESTYPES / FRAME1SWITCH / PWKEYBTRACK / FILT_CTRL_FX were gated off.
+    "seuck_camp": "MUSICIANS/M/Mac_TUGCS/SEUCK_Camp.sid",
+    "captain_alehouse": "MUSICIANS/M/Max_F3H/Captain_Alehouse.sid",
+    "spongebog": "MUSICIANS/M/Max_F3H/SpongeBog.sid",
+    "soy_un_delincuente_2": "MUSICIANS/M/Morton_Adam/Soy_un_Delincuente_tune_2.sid",
+    "probable_harmonies": "MUSICIANS/S/Slash/Probable_Harmonies.sid",
+    "easyriff": "MUSICIANS/S/Spider_Jerusalem/Easyriff.sid",
 }
 
 

@@ -20,6 +20,7 @@ from pysidwizard import (
     straight_tempo,
 )
 from pysidwizard.player import (
+    DEFAULT_HR_ADSR,
     NOTE_FREQ_HI,
     NOTE_FREQ_LO,
     SWMPlayer,
@@ -1138,3 +1139,46 @@ def test_allghostregs_combines_two_adsr_small_fx_in_one_row():
     swm.patterns[0].rows[2] = Row(instrument=0x69)
     assert _play(swm, frames=7).regs[6] == 0xF9, "instrument sustain $F wins back"
     assert _play(_extra(swm), frames=7).regs[6] == 0x09, "the $50 sustain survives"
+
+
+def _medium(swm: SWMFile) -> SWMFile:
+    """Mark a module as exported for the Medium build (driver type 1)."""
+    swm.driver_type = 1
+    return swm
+
+
+def test_hardrestypes_off_uses_the_default_hr_adsr_on_both_pre_hr_ticks():
+    """defauHR (player.asm:1588) writes DEFAULTHRADSR = $0F00 for every instrument.
+
+    Without HARDRESTYPES_ON, HARDRST has no per-instrument control-bit test and
+    falls straight into HRGTOFF, so HR fires on TICK_0 and TICK_1 alike.
+    """
+    swm = _toy_swm()
+    swm.subtune_tempos = [(straight_tempo(6), straight_tempo(6))]
+    swm.instruments[0].hr_attack = 0xA
+    swm.instruments[0].hr_decay = 0xB
+    swm.instruments[0].hr_sustain = 0xC
+    swm.instruments[0].hr_release = 0xD
+    swm.instruments[0].control = 0x1A
+    default = _play(swm, frames=17)
+    assert (default.regs[5], default.regs[6]) == (0xAB, 0xCD), "per-instrument HR ADSR"
+    medium = _play(_medium(swm), frames=17)
+    assert (medium.regs[5], medium.regs[6]) == (DEFAULT_HR_ADSR >> 8, DEFAULT_HR_ADSR & 0xFF)
+
+
+def test_frame1switch_off_always_starts_the_note_on_waveform_09():
+    """STRTSND drops the ``and #8`` test and does ``lda #$09`` (player.asm:1849)."""
+    swm = _toy_swm()
+    swm.instruments[0].control = 0x12  # bit 3 clear: the default build writes no CTRL
+    swm.instruments[0].first_waveform = 0x89
+    assert _play(swm, frames=1).regs[4] != 0x09
+    assert _play(_medium(swm), frames=1).regs[4] == 0x09
+
+
+def test_filt_ctrl_fx_off_makes_big_fx_1f_a_bare_rts():
+    """Without FILT_CTRL_FX_ON the BIGFX1F body is gone and RTBIGFX's rts takes over."""
+    swm = _fx_swm(0x1F, 0x35)
+    assert _play(swm, frames=4).regs[0x17] == 0x35
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SWMUnsupportedEffectWarning)
+        assert _play(_medium(swm), frames=4).regs[0x17] != 0x35
