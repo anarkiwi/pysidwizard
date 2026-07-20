@@ -919,3 +919,33 @@ def test_big_fx_08_with_zero_amplitude_clears_freqmod():
     v = _play(swm, frames=1).voices[0]
     assert (v.vibrato_freqmod_lo, v.vibrato_freqmod_hi) == (0, 0)
     assert v.vibrato_period == 14
+
+
+def test_exptabh_layout_matches_the_assembled_player():
+    """EXPTABH (player.asm:2958-2982) is 11 zeros, FREQTBH, then an 8-byte slope."""
+    from pysidwizard.player import EXP_MAX_INDEX, EXP_THRESHOLD, EXPTABH
+
+    assert EXPTABH[:11] == bytes(11)
+    assert EXPTABH[11:107] == NOTE_FREQ_HI
+    assert EXPTABH[107:] == bytes([0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF, 0xFF])
+    assert (EXP_THRESHOLD, EXP_MAX_INDEX) == (107, 203)
+
+
+@pytest.mark.parametrize(
+    "index,expected",
+    [
+        # LOOKUPA (player.asm:2925): below EXPTRESHOLD the fine half is EXPTABH[y]
+        # with a zero high byte; at or above it, the FREQTBL/FREQTBH pair at
+        # y - EXPTRESHOLD; MAXSLID clamps y to 203.
+        (0, (0x00, 0x00)),
+        (10, (0x00, 0x00)),
+        (11, (NOTE_FREQ_HI[0], 0x00)),
+        (106, (NOTE_FREQ_HI[95], 0x00)),
+        (107, (NOTE_FREQ_LO[0], NOTE_FREQ_HI[0])),
+        (202, (NOTE_FREQ_LO[95], NOTE_FREQ_HI[95])),
+        (203, (0xC9, 0xF9)),
+        (255, (0xC9, 0xF9)),
+    ],
+)
+def test_lookup_freqmod_walks_the_exponent_table_exactly(index, expected):
+    assert SWMPlayer._lookup_freqmod(index) == expected
