@@ -1571,9 +1571,9 @@ class SWMPlayer(MemPlayer):
         ins = self._upcoming_hr_instrument(v, row)
         if ins is None:
             return
-        v.ptn_gate = 0xFE
         if not self._hr_fires_at_tick(ins, pre_incr_sc):
             return
+        v.ptn_gate = 0xFE  # PTNGATE write is inside HRGTOFF (player.asm 1568)
         # SID-Wizard's HARDRST gates the entire HR-AD/SR/PTNGATE/CTRL
         # write block on ``A & control != 0`` (lines 1167-1170). For
         # instruments with bit 0 only (HR fires at TICK_1) or bit 1

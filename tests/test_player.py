@@ -611,3 +611,69 @@ def test_orderlist_main_volume_absent_keeps_default_volume():
     for _ in range(8):
         p.play_frame()
         assert p.regs[0x18] & 0x0F == 0x0F
+
+
+def _hr_timer_swm(control: int) -> SWMFile:
+    """Tempo-3 tune: a held note, then a fresh note two rows later whose
+    instrument's ``control`` byte selects the hard-restart tick. The WF
+    table loops (``$FE $10``) so every frame re-writes the waveform byte
+    through ``ptn_gate``, making the gate mask observable in CTRL."""
+    inst = Instrument(
+        name=b"HRTIME  ",
+        control=control,
+        hr_attack=0,
+        hr_decay=0xF,
+        hr_sustain=0,
+        hr_release=0,
+        sustain=0xF,
+        first_waveform=0x41,
+        wf_table=bytes([0x41, 0x80, 0x00, 0xFE, 0x10, 0x00]),
+    )
+    pattern = Pattern(
+        rows=[Row(note=49, instrument=1), Row(), Row(note=53, instrument=1), Row()],
+        length=4,
+    )
+    return SWMFile(
+        sequences=[[PlayPattern(1), End()]] * 3,
+        patterns=[pattern],
+        instruments=[inst],
+        subtune_tempos=[(straight_tempo(3), straight_tempo(3))],
+    )
+
+
+@pytest.mark.parametrize(
+    "control,gate_off_tick0,gate_off_tick1",
+    [
+        # ISHARDR (player.asm:1564) ANDs the instrument control byte with
+        # A=$02 at TICK_0 (HARDRST, line 1518) / A=$01 at TICK_1 (HRDR1FR,
+        # line 1726) and takes ``beq HRENDER`` when the bit is clear, so
+        # HRGTOFF's PTNGATE=$FE (lines 1568-1571) runs on the firing tick
+        # only.
+        (0x1A, True, True),  # bit 1: fires at TICK_0, mask persists to TICK_1
+        (0x1D, False, True),  # bit 0: fires at TICK_1 only (staccato exit)
+        (0x18, False, False),  # neither bit: no HR, gate held to STRTSND
+    ],
+)
+def test_pre_hr_gate_off_only_on_firing_tick(control, gate_off_tick0, gate_off_tick1):
+    """The pre-HR gate mask must not drop a frame early: an instrument
+    whose HR fires at TICK_1 has to keep the previous note gated through
+    TICK_0, otherwise its tail is cut by one frame."""
+    p = SWMPlayer(_hr_timer_swm(control))
+    frames = []
+    for _ in range(6):
+        p.play_frame()
+        frames.append((p.voices[0].sid_ctrl, p.voices[0].ptn_gate))
+    # Tempo 3, note on row 2: frame 4 is TICK_0, frame 5 is TICK_1.
+    for frame, gate_off in ((4, gate_off_tick0), (5, gate_off_tick1)):
+        ctrl, ptn_gate = frames[frame]
+        want = "off" if gate_off else "on"
+        assert (
+            not ctrl & 0x01
+        ) is gate_off, (
+            f"control=${control:02X} frame {frame}: gate {want} expected, CTRL=${ctrl:02X}"
+        )
+        assert (
+            ptn_gate == 0xFE
+        ) is gate_off, (
+            f"control=${control:02X} frame {frame}: mask {want} expected, PTNGATE=${ptn_gate:02X}"
+        )
