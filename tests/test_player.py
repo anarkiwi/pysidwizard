@@ -1092,3 +1092,49 @@ def test_delay_fx_are_no_ops_on_the_default_driver_but_report_on_extra():
     swm.driver_type = 3
     with pytest.warns(SWMUnsupportedEffectWarning):
         assert _play(swm, frames=4).unsupported_effects == {("big-fx", 0x1E): 3}
+
+
+def _extra(swm: SWMFile) -> SWMFile:
+    """Mark a module as exported for the Extra build (driver type 3)."""
+    swm.driver_type = 3
+    return swm
+
+
+@pytest.mark.parametrize("tempo,expected_apply_tick", [(1, 0), (2, 1), (3, 2), (6, 2)])
+def test_fastspeedbind_collapses_the_row_ticks_at_tempo_1_and_2(tempo, expected_apply_tick):
+    """FASTSPEEDBIND_ON short-circuits CHKTMP1/CHKTMP2 (player.asm:1496, 1704).
+
+    Below tempo 2 TICK_0 falls straight through to PTN_SEQ and TICK_2; below
+    tempo 3 TICK_1 does. Without the flag TICK_2 only ever runs at SPDCNT 2.
+    """
+    default = SWMPlayer(_toy_swm())
+    extra = SWMPlayer(_extra(_toy_swm()))
+    assert default._apply_tick(tempo) == 2
+    assert extra._apply_tick(tempo) == expected_apply_tick
+
+
+@pytest.mark.parametrize("tempo", [1, 2])
+def test_extra_build_advances_rows_at_tempo_1_and_2(tempo):
+    """The default build reaches no TICK_2 at tempo 1-2, so no later row applies.
+
+    ``_toy_swm`` row 3 is a different pitch, so only a build that reaches TICK_2
+    at these tempos ever leaves row 0's note.
+    """
+    swm = _toy_swm()
+    swm.subtune_tempos = [(straight_tempo(tempo), straight_tempo(tempo))]
+    assert _play(swm, frames=10).regs[1] == NOTE_FREQ_HI[49], "pinned on row 0"
+    assert _play(_extra(swm), frames=10).regs[1] == NOTE_FREQ_HI[53]
+
+
+def test_allghostregs_combines_two_adsr_small_fx_in_one_row():
+    """SMALFX2/3/5/6 read SIDG.AD/SR under ALLGHOSTREGS_ON (player.asm:3278-3315).
+
+    Without it each takes the untouched nibble from the instrument, so a $5x
+    sustain on one row is wiped by a $6x release on the next; with it they merge.
+    """
+    swm = _toy_swm()
+    swm.subtune_tempos = [(straight_tempo(3), straight_tempo(3))]
+    swm.patterns[0].rows[1] = Row(instrument=0x50)
+    swm.patterns[0].rows[2] = Row(instrument=0x69)
+    assert _play(swm, frames=7).regs[6] == 0xF9, "instrument sustain $F wins back"
+    assert _play(_extra(swm), frames=7).regs[6] == 0x09, "the $50 sustain survives"
