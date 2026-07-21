@@ -124,6 +124,7 @@ from .model import (
     decode_sequence,
     unpack_pattern,
 )
+from .player import FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
 from .sidfile import find_player_signature, parse_psid_header
 
 # SID-Wizard's "packed" (``SWP``) export keeps an ``SWP1`` magic (the ``SWM1``
@@ -226,8 +227,33 @@ def _validate_pattern_refs(sequences, n_patterns: int) -> None:
                 )
 
 
+def _freq_table_tail(data: bytes) -> bytes:
+    """Image bytes following the player's FREQTBL, anchored on the table itself.
+
+    ``and #$7F`` / ``ldy DPITCH,x`` pitch loads (player.asm:2523-2535) index past
+    the table's 96 notes into whatever the assembler put there, so reproducing
+    those frequencies needs the real bytes rather than a clamp.
+    """
+    pos = data.find(NOTE_FREQ_LO)
+    if pos < 0:
+        return b""
+    end = pos + len(NOTE_FREQ_LO)
+    return data[end : end + FREQ_TABLE_TAIL_LEN]
+
+
 def parse_sid(data: bytes) -> SWMFile:
     """Parse a single-SID SID-Wizard ``.sid`` image into a :class:`SWMFile`.
+
+    Also captures the image's :attr:`~pysidwizard.model.SWMFile.freq_table_tail`
+    so the player reproduces past-table pitch lookups exactly.
+    """
+    swm = _parse_sid_layout(data)
+    swm.freq_table_tail = _freq_table_tail(data)
+    return swm
+
+
+def _parse_sid_layout(data: bytes) -> SWMFile:
+    """Resolve a ``.sid`` image's SID-Wizard tune tables into a :class:`SWMFile`.
 
     The returned model plays under :class:`~pysidwizard.player.SWMPlayer`
     exactly as a parsed ``.swm`` would (multi-subtune tunes expose their other

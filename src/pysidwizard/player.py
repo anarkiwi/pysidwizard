@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from pysidtracker.player import MemPlayer
 from pysidtracker.registers import (
@@ -96,14 +96,12 @@ NOTE_FREQ_HI = bytes.fromhex(_NOTE_FREQ_HI_HEX)
 assert len(NOTE_FREQ_LO) == 96
 assert len(NOTE_FREQ_HI) == 96
 
-# EXPTABH (player.asm:2958-2982): 10 + 1 zero bytes, then FREQTBH, then an 8-byte
-# slope extension. It is FREQMOD's fine half and the PW / filter keyboard-track table.
+# Keyboard-track slope after ENDFREQTBH (player.asm:2980-2982), assembled only when CALCVIBRATO / PWKEYBTRACK / FILTKBTRACK is on.
+FREQTBH_SLOPE = bytes([0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF, 0xFF])
+
+# EXPTABH (player.asm:2958-2982): 10 + 1 zero bytes, then FREQTBH, then the slope. FREQMOD's fine half and the PW / filter keyboard-track table.
 EXPTABH_FREQTBH_OFFSET = 11
-EXPTABH = (
-    bytes(EXPTABH_FREQTBH_OFFSET)
-    + NOTE_FREQ_HI
-    + bytes([0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF, 0xFF])
-)
+EXPTABH = bytes(EXPTABH_FREQTBH_OFFSET) + NOTE_FREQ_HI + FREQTBH_SLOPE
 # EXPTRESHOLD = ENDFREQTBH - EXPTABH: where LOOKUPA switches to the rough table.
 EXP_THRESHOLD = EXPTABH_FREQTBH_OFFSET + len(NOTE_FREQ_HI)
 # MAXSLID (player.asm:2936) clamps Y to EXPTRESHOLD + (ENDFREQTBH - FREQTBH).
@@ -111,10 +109,32 @@ EXP_MAX_INDEX = EXP_THRESHOLD + len(NOTE_FREQ_HI)
 # CALCVIBRATO_ON=0 (player.asm:2883): EXPTBASE = FREQTBH-1, so the threshold is 97.
 NONCALC_THRESHOLD = len(NOTE_FREQ_HI) + 1
 NONCALC_MAX_INDEX = NONCALC_THRESHOLD + len(NOTE_FREQ_HI)
-# calcVib at the clamp reads FREQTBL[96] -- one byte past the table, i.e. whatever the
-# assembled image put there. In the shipped 1.94 player that is SEQ_FX's ``cmp #$A0``
-# opcode (player.asm:3006); no tune can depend on it beyond this single clamped index.
+# Bytes the assembler placed after FREQTBL (player.asm:3006 -- SEQ_FX's ``cmp #$A0`` in the shipped 1.94 build). Indexed loads past the table's 96th entry read them; the exact bytes are image-specific, so ``.sid`` inputs carry their own via :attr:`~pysidwizard.model.SWMFile.freq_table_tail` and this is only the fallback for a bare ``.swm``.
 FREQTBL_PAST_END = 0xC9
+
+# Longest past-FREQTBL run any indexed load can reach: ``ldy DPITCH,x`` is unmasked, so Y spans 0..255.
+FREQ_TABLE_SPAN = 256
+FREQ_TABLE_TAIL_LEN = FREQ_TABLE_SPAN - len(NOTE_FREQ_LO)
+
+
+def freq_tables(features: PlayerFeatures, tail: bytes = b"") -> Tuple[bytes, bytes]:
+    """FREQTBL / FREQTBH as the 6502 sees them: 96 notes then the following image bytes.
+
+    ``tail`` is the assembled image from FREQTBL's end onward. FREQTBH sits
+    *before* FREQTBL (player.asm:2958-3005), so reading past it walks the
+    build-gated :data:`FREQTBH_SLOPE`, then FREQTBL itself, then ``tail``.
+    """
+    tail = tail or bytes([FREQTBL_PAST_END]) * FREQ_TABLE_SPAN
+    slope = (
+        FREQTBH_SLOPE
+        if (features.calcvibrato or features.pwkeybtrack or features.filtkbtrack)
+        else b""
+    )
+    pad = bytes([FREQTBL_PAST_END]) * FREQ_TABLE_SPAN
+    lo = (NOTE_FREQ_LO + tail + pad)[:FREQ_TABLE_SPAN]
+    hi = (NOTE_FREQ_HI + slope + NOTE_FREQ_LO + tail + pad)[:FREQ_TABLE_SPAN]
+    return lo, hi
+
 
 # Note-column effect-value range constants (mirror constants.py).
 NOTE_FX_MIN = 0x60
@@ -430,6 +450,7 @@ class SWMPlayer(MemPlayer):
         self.swm = swm
         # The build this module was exported for (SWM driver byte = PLAYERTYPE).
         self.features = features or features_for_driver(swm.driver_type)
+        self.freq_lo, self.freq_hi = freq_tables(self.features, swm.freq_table_tail)
         self._unsupported_effects: dict = {}
         super().__init__(b"", 0)
 
@@ -1025,14 +1046,7 @@ class SWMPlayer(MemPlayer):
                     # LEGATO: SETPRTA sets SLIDEVIB=$83 (FREQMODL was
                     # already set by NPORTAM) and LEGATOO -> WRWFGHO.
                     # No STRTSND, no table reset.
-                    target_note = max(
-                        0,
-                        min(
-                            len(NOTE_FREQ_LO) - 1,
-                            note + v.octave_shift + v.transpose,
-                        ),
-                    )
-                    target_freq = (NOTE_FREQ_HI[target_note] << 8) | NOTE_FREQ_LO[target_note]
+                    target_freq = self._dpitch_freq(note + v.octave_shift + v.transpose)
                     # SID-Wizard reads ZP FREQLO/HI (pre-carry, pre-detune)
                     # for portamento seeding — see _begin_portamento.
                     previous_freq = (v.zp_freq_hi << 8) | v.zp_freq_lo
@@ -1051,14 +1065,7 @@ class SWMPlayer(MemPlayer):
                     # We seed vibrato_offset from previous_freq - target
                     # like _begin_portamento does, then set the slide
                     # state directly.
-                    target_note = max(
-                        0,
-                        min(
-                            len(NOTE_FREQ_LO) - 1,
-                            note + v.octave_shift + v.transpose,
-                        ),
-                    )
-                    target_freq = (NOTE_FREQ_HI[target_note] << 8) | NOTE_FREQ_LO[target_note]
+                    target_freq = self._dpitch_freq(note + v.octave_shift + v.transpose)
                     # ZP read; see _begin_portamento.
                     previous_freq = (v.zp_freq_hi << 8) | v.zp_freq_lo
                     v.vibrato_offset = (previous_freq - target_freq) & 0xFFFF
@@ -1578,22 +1585,24 @@ class SWMPlayer(MemPlayer):
                 amp_nibble << 3, v.note + v.octave_shift + v.transpose
             )
 
-    @staticmethod
-    def _lookup_freqmod(index: int) -> tuple[int, int]:
+    def _dpitch_freq(self, dpitch: int) -> int:
+        """FREQTBL/FREQTBH word at DPITCH, which the asm indexes unmasked (``ldy DPITCH,x``)."""
+        i = dpitch & 0xFF
+        return (self.freq_hi[i] << 8) | self.freq_lo[i]
+
+    def _lookup_freqmod(self, index: int) -> tuple[int, int]:
         """LOOKUPA / CHKTEND / calcVib (player.asm:2925-2940): FREQMOD from ``index``.
 
         Below :data:`EXP_THRESHOLD` the fine half is ``EXPTABH[index]`` with a zero
         high byte; at or above it the rough half is the ``FREQTBL`` / ``FREQTBH``
-        pair at ``index - EXP_THRESHOLD``, with MAXSLID clamping the index.
+        pair at ``index - EXP_THRESHOLD``, with MAXSLID clamping the index one
+        entry past the tables' 96 notes.
         """
         y = min(index & 0xFF, EXP_MAX_INDEX)
         if y < EXP_THRESHOLD:
             return EXPTABH[y], 0
         i = y - EXP_THRESHOLD
-        if i < len(NOTE_FREQ_LO):
-            return NOTE_FREQ_LO[i], NOTE_FREQ_HI[i]
-        # MAXSLID's clamp lands one byte PAST FREQTBL / FREQTBH (player.asm:2936).
-        return FREQTBL_PAST_END, EXPTABH[EXPTABH_FREQTBH_OFFSET + i]
+        return self.freq_lo[i], self.freq_hi[i]
 
     def _freqmod(self, raw_a: int, dpitch: int) -> tuple[int, int]:
         """SETFMOD (player.asm:2915-2941) for the current build's exponent table.
@@ -1607,10 +1616,9 @@ class SWMPlayer(MemPlayer):
             if y < NONCALC_THRESHOLD:
                 return (0 if y == 0 else NOTE_FREQ_HI[y - 1]), 0
             i = y - NONCALC_THRESHOLD
-            if i < len(NOTE_FREQ_LO):
-                return NOTE_FREQ_LO[i], NOTE_FREQ_HI[i]
-            return FREQTBL_PAST_END, 0
-        return self._lookup_freqmod(((raw_a + 1) >> 1) + (dpitch & 0x7F))
+            return self.freq_lo[i], self.freq_hi[i]
+        # ``adc DPITCH,x ; tay`` (player.asm:2919-2920) keeps the full byte; LOOKUPA's own MAXSLID does the bounding.
+        return self._lookup_freqmod(((raw_a + 1) >> 1) + (dpitch & 0xFF))
 
     def _tick_vibrato(self, v: VoiceState) -> None:
         """Advance vibrato OR tone-portamento by one frame.
@@ -1751,8 +1759,8 @@ class SWMPlayer(MemPlayer):
         """
         # Target freq: the row's note column with octave + transpose
         # (= the play note we just stored in v.note).
-        target_note = max(0, min(len(NOTE_FREQ_LO) - 1, v.note + v.octave_shift + v.transpose))
-        target_freq = (NOTE_FREQ_HI[target_note] << 8) | NOTE_FREQ_LO[target_note]
+        target_note = (v.note + v.octave_shift + v.transpose) & 0xFF
+        target_freq = self._dpitch_freq(target_note)
         # SID-Wizard's portamento seed reads ZP FREQLO/FREQHI (= the
         # pre-carry, pre-detune ghost) — that's the value the prior
         # frame's WF arp / vibrato / portamento step left there.
@@ -2338,11 +2346,8 @@ class SWMPlayer(MemPlayer):
                 v.sid_ctrl = 0x09
             elif ins.control & 0x08:
                 v.sid_ctrl = ins.first_waveform & v.ptn_gate
-                dpitch = max(
-                    0,
-                    min(len(NOTE_FREQ_HI) - 1, v.note + v.octave_shift + v.transpose),
-                )
-                v.sid_freq_hi = NOTE_FREQ_HI[dpitch]
+                # INSCTRL (player.asm:1839) indexes with an unmasked ``ldy DPITCH,x``.
+                v.sid_freq_hi = self.freq_hi[(v.note + v.octave_shift + v.transpose) & 0xFF]
             return
 
         # Post-HR: effective pitch composition. For ABSOLUTE arp
@@ -2360,14 +2365,13 @@ class SWMPlayer(MemPlayer):
             pass
         else:
             if v.wf_arp_absolute:
-                note = v.wf_arp_pitch & 0x7F
+                note = v.wf_arp_pitch
             else:
                 note = v.note + v.wf_arp_pitch + v.transpose + v.octave_shift
-            note = max(0, min(len(NOTE_FREQ_LO) - 1, note))
-            # ZP FREQLO/FREQHI: pre-detune, pre-carry. Vibrato_offset folds
-            # in here because SID-Wizard's NORMVIB ADDFREQ/SUBFREQ writes
-            # the result back to ZP FREQLO/FREQHI before WRPITCH runs.
-            zp_word = (NOTE_FREQ_HI[note] << 8) | NOTE_FREQ_LO[note]
+            # ABSPTCH (player.asm:2525) MASKS with ``and #$7F``, it does not clamp: sums past 95 read past FREQTBL and sums past 127 wrap back into it.
+            note &= 0x7F
+            # ZP FREQLO/FREQHI: pre-detune, pre-carry, with vibrato_offset folded in as NORMVIB's ADDFREQ/SUBFREQ writes it back before WRPITCH runs.
+            zp_word = (self.freq_hi[note] << 8) | self.freq_lo[note]
             zp_word = (zp_word + v.vibrato_offset) & 0xFFFF
             v.zp_freq_lo = zp_word & 0xFF
             v.zp_freq_hi = (zp_word >> 8) & 0xFF

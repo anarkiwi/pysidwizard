@@ -19,11 +19,17 @@ from pysidwizard import (
     Waveform,
     straight_tempo,
 )
+from pysidwizard.features import features_for_driver
 from pysidwizard.player import (
     DEFAULT_HR_ADSR,
+    FREQ_TABLE_SPAN,
+    FREQ_TABLE_TAIL_LEN,
+    FREQTBH_SLOPE,
+    FREQTBL_PAST_END,
     NOTE_FREQ_HI,
     NOTE_FREQ_LO,
     SWMPlayer,
+    freq_tables,
 )
 
 
@@ -56,6 +62,51 @@ def _toy_swm() -> SWMFile:
         instruments=[inst],
         subtune_tempos=[(straight_tempo(2), straight_tempo(2))],
     )
+
+
+def _wf_arp_swm(note: int, arp: int, tail: bytes = b"") -> SWMFile:
+    """``_toy_swm`` whose single WF row applies ``arp`` to ``note``."""
+    swm = _toy_swm()
+    swm.instruments[0].wf_table = bytes([0x41, arp, 0x00, 0xFF])
+    swm.patterns[0].rows[0] = Row(note=note, instrument=1)
+    swm.freq_table_tail = tail
+    return swm
+
+
+def _zp_freq(swm: SWMFile) -> tuple:
+    v = _play(swm, frames=4).voices[0]
+    return v.zp_freq_hi, v.zp_freq_lo
+
+
+def test_wf_arp_relative_step_masks_the_note_index_instead_of_clamping():
+    """ABSPTCH (player.asm:2525) is ``and #$7F``, so 62 + 126 plays index 60, not 95."""
+    assert _zp_freq(_wf_arp_swm(62, 0x7E)) == (NOTE_FREQ_HI[60], NOTE_FREQ_LO[60])
+    assert _zp_freq(_wf_arp_swm(62, 0x7E)) != (NOTE_FREQ_HI[95], NOTE_FREQ_LO[95])
+
+
+def test_wf_arp_step_past_the_last_note_reads_past_the_frequency_tables():
+    """``lda FREQTBL,y`` at y=97 leaves the 96-note table; FREQTBH's own past-end is the keyboard-track slope."""
+    tail = bytes(range(FREQ_TABLE_TAIL_LEN))
+    assert _zp_freq(_wf_arp_swm(49, 0x30, tail)) == (FREQTBH_SLOPE[1], tail[1])
+
+
+def test_freq_tables_lay_out_the_players_image_order():
+    """FREQTBH sits before FREQTBL (player.asm:2958-3005), so reading past it walks the slope, then FREQTBL."""
+    lo, hi = freq_tables(features_for_driver(0), b"\xaa\xbb")
+    assert (lo[:96], hi[:96]) == (NOTE_FREQ_LO, NOTE_FREQ_HI)
+    assert lo[96:98] == b"\xaa\xbb"
+    assert hi[96:104] == FREQTBH_SLOPE
+    assert hi[104:200] == NOTE_FREQ_LO
+    assert (len(lo), len(hi)) == (FREQ_TABLE_SPAN, FREQ_TABLE_SPAN)
+    # No image (a bare .swm): the shipped 1.94 player's first past-FREQTBL byte stands in.
+    assert set(freq_tables(features_for_driver(0))[0][96:]) == {FREQTBL_PAST_END}
+
+
+def test_freq_tables_drop_the_slope_when_no_build_flag_assembles_it():
+    """The slope is gated on CALCVIBRATO / PWKEYBTRACK / FILTKBTRACK (player.asm:2980)."""
+    lo, hi = freq_tables(features_for_driver(2), b"\xaa\xbb")
+    assert hi[96:192] == NOTE_FREQ_LO
+    assert lo[96:98] == b"\xaa\xbb"
 
 
 def test_freq_table_has_96_entries_and_matches_middle_c():
@@ -1018,7 +1069,7 @@ def test_exptabh_layout_matches_the_assembled_player():
     ],
 )
 def test_lookup_freqmod_walks_the_exponent_table_exactly(index, expected):
-    assert SWMPlayer._lookup_freqmod(index) == expected
+    assert SWMPlayer(_toy_swm())._lookup_freqmod(index) == expected
 
 
 @pytest.mark.parametrize("fx", [0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C])
@@ -1075,7 +1126,7 @@ def test_big_fx_03_without_a_note_rearms_the_slide():
         warnings.simplefilter("error", SWMUnsupportedEffectWarning)
         v = _play(swm, frames=4).voices[0]
     assert v.slide_vib == 0x83
-    assert (v.vibrato_freqmod_lo, v.vibrato_freqmod_hi) == SWMPlayer._lookup_freqmod(
+    assert (v.vibrato_freqmod_lo, v.vibrato_freqmod_hi) == SWMPlayer(swm)._lookup_freqmod(
         0x10 + 49
     ), "SETFMOD index is ceil(value/2) + DPITCH"
 

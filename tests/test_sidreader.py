@@ -29,6 +29,8 @@ from pysidwizard import (
 )
 from pysidwizard.constants import SWM_MAGIC, TUNE_HEADER_SIZE
 from pysidwizard.model import encode_sequence, pack_pattern
+from pysidwizard.player import FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
+from pysidwizard.sidreader import _freq_table_tail
 
 LOAD = 0x1000
 
@@ -543,6 +545,20 @@ def test_parse_sid_result_plays():
     player = SWMPlayer(swm)
     for _ in range(200):
         player.play_frame()
+
+
+def test_parse_sid_captures_the_bytes_past_freqtbl():
+    """Past-table pitch lookups (player.asm:2523-2535) need the image's own bytes."""
+    sid, _ = _build_reference_image()
+    tail = bytes(range(FREQ_TABLE_TAIL_LEN))
+    swm = parse_sid(sid + NOTE_FREQ_LO + tail)
+    assert swm.freq_table_tail == tail
+    assert SWMPlayer(swm).freq_lo[96:] == tail
+
+
+def test_freq_table_tail_is_empty_when_the_image_has_no_frequency_table():
+    """Without FREQTBL in the image the player stays on its shipped-build fallback."""
+    assert _freq_table_tail(b"\x00" * 4096) == b""
 
 
 def test_parse_sid_exposes_all_subtunes():
