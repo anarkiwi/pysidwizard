@@ -97,6 +97,10 @@ TUNES = {
     "methodist": "MUSICIANS/M/Mac_TUGCS/Methodist.sid",
     "smooth_and_wonders": "MUSICIANS/V/Vincenzo/Smooth_and_Wonders.sid",
     "unfortunate_coincidence": "MUSICIANS/V/Vincenzo/Unfortunate_Coincidence.sid",
+    # WF-arp relative steps whose sum leaves the 96-note table (masked indices 97 / 107 / 109 / 117): matched only once ABSPTCH's ``and #$7F`` replaced a clamp and the tunes' own past-FREQTBL image bytes backed the lookup.
+    "one_two_three_c64": "MUSICIANS/D/Deetsay/1_2_3_C64.sid",
+    "argonaut": "MUSICIANS/A/AMB/Argonaut.sid",
+    "memory_invaders": "MUSICIANS/C/Chiummo_Gaetano/Memory_Invaders.sid",
 }
 
 

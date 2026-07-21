@@ -46,6 +46,15 @@ if is_sidwizard_sid(data):
 
 This path is read-only and lossy (see [format.md](format.md#sid-wizard-sid-export-read-only-lossy)).
 
+A `.sid` also carries its player image, so `parse_sid` captures
+`SWMFile.freq_table_tail`: the bytes the assembler placed after the player's
+96-note `FREQTBL`. SID-Wizard's arp pitch lookup *masks* its note index
+(`and #$7F`, `player.asm:2525`) rather than clamping it, so a relative arp step
+or transpose summing past 95 reads those bytes and one summing past 127 wraps
+back into the table. A module built in memory or read from a bare `.swm` has no
+image, and the player falls back to the shipped 1.94 build's first past-table
+byte — which only matters for tunes that arp beyond the note range.
+
 ## Build an SWM from scratch
 
 ```python

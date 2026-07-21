@@ -686,6 +686,8 @@ class SWMFile:
     tempo_table: bytes = b""
     subtune_tempos: List[Tuple[int, int]] = field(default_factory=list)
     load_address: Optional[int] = DEFAULT_LOAD_ADDRESS
+    # Image bytes following the player's FREQTBL. Indexed pitch loads past the table's 96 notes read them (player.asm:2523-2535), so a ``.sid`` carries its own; empty for a bare ``.swm``, which has no player image.
+    freq_table_tail: bytes = b""
 
     @property
     def sequence_count(self) -> int:
@@ -743,6 +745,7 @@ class SWMFile:
             tempo_table=self.tempo_table,
             subtune_tempos=tempos,
             load_address=self.load_address,
+            freq_table_tail=self.freq_table_tail,
         )
 
     def author_str(self) -> str:
