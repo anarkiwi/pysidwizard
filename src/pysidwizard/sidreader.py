@@ -1033,7 +1033,7 @@ def _build_codescan(data: bytes, load: int, base: int) -> SWMFile:
 # When the static readers above cannot resolve a layout -- the tune data is only
 # materialised by the player's init (packed/relocating drivers), or the version's
 # export is an alternate layout -- the tune is recovered by *running its player*.
-# ``run_init`` (py65) executes the tune's init so the runtime image lands in
+# ``run_init`` (jennings) executes the tune's init so the runtime image lands in
 # memory exactly as on a C64; every table base is then read straight from the
 # player's own instruction operands (never scanned or guessed). The only
 # tolerance is that pointer-table slots the tune never plays -- unused, or
