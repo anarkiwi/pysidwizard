@@ -119,8 +119,8 @@ the export is an alternate-driver layout (driver types 0/2/5, versions V1.0–V1
 with idioms the static readers don't match — inline instrument names, the V1.0
 contiguous pointer-table idiom, the driver-5 direct orderlist), or the file is
 partly truncated in HVSC. These are recovered by **running the tune's own
-player**: `pysidtracker.run_init` (a py65 6502 emulator, pulled in via
-`pysidtracker[emu]`) executes the tune's init so the runtime image lands in
+player**: `pysidtracker.run_init` (the jennings 6502 emulator, a core pysidtracker
+dependency) executes the tune's init so the runtime image lands in
 memory exactly as on a C64, then every table base is read **straight from the
 player's instruction operands** — no scanning, no guessed relocation:
 

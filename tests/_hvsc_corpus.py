@@ -30,7 +30,7 @@ single-SID only by design. Of the ``1126`` SID-Wizard tunes found:
   *static* image — the tune data is only materialised by the player's own
   init/relocation, the export is an alternate-driver layout (drivers 0/2/5,
   V1.0–V1.5), or the file is partly truncated. They are recovered by **running
-  the tune's own player** (``pysidtracker.run_init``, py65) and reading every
+  the tune's own player** (``pysidtracker.run_init``, jennings) and reading every
   table base straight from the player's instruction operands — no scanning, no
   guessed relocation. Spans direct and subtune-indirect orderlists, inline
   instrument names, the V1.0 contiguous-table idiom, and multi-subtune tunes.
