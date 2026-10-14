@@ -35,6 +35,10 @@ from pysidwizard import (
 )
 from pysidwizard.player import SWMPlayer
 
+# INITER zeroes SPDCNT, so play calls 0 and 1 are row 0's TICK_0 and TICK_1 and
+# its note first applies on call 2 (TICK_2).
+SETUP_FRAMES = 2
+
 
 def _sweep_filter_instrument(name: bytes, delta: int) -> Instrument:
     """Instrument whose filter table is a single sweep row.
@@ -75,9 +79,9 @@ def _swap_swm() -> SWMFile:
     """Two voices, each with a sweep-starting filter instrument.
 
     With tempo=6 a new row applies every 6 frames. v0's row 0 (a real
-    note + filter instrument) is pre-warmed and applies at frame 0; v1's
-    row 1 (its note + filter instrument) applies at frame 6 — the
-    mid-song controller swap.
+    note + filter instrument) applies at frame SETUP_FRAMES; v1's row 1
+    (its note + filter instrument) applies 6 frames later — the mid-song
+    controller swap.
     """
     pat_v0 = Pattern(rows=[Row(note=49, instrument=1)] + [Row()] * 7, length=8)
     pat_v1 = Pattern(rows=[Row(), Row(note=49, instrument=2)] + [Row()] * 6, length=8)
@@ -104,9 +108,12 @@ def test_sweep_starting_filter_table_claims_controller():
     SETFLTP gate (``ft[0] not in (0x00, 0xFF)``)."""
     p = SWMPlayer(_swap_swm())
 
-    # Frame 0: PLAYER iterates voices reverse (v2, v1, v0). v0's STRTSND
-    # runs last so it wins controllership. v0's filter table starts with
-    # $10 — a sweep row the pre-fix gate would have rejected.
+    # Row 0's TICK_2: PLAYER iterates voices reverse (v2, v1, v0). v0's
+    # STRTSND runs last so it wins controllership. v0's filter table starts
+    # with $10 — a sweep row the pre-fix gate would have rejected.
+    for _ in range(SETUP_FRAMES):
+        p.play_frame()
+    assert p.filter_controller_voice is None
     p.play_frame()
     assert p.filter_controller_voice is p.voices[0]
 
@@ -115,8 +122,8 @@ def test_controller_swaps_to_later_voice_mid_song():
     """Bug B: a second voice triggering a sweep-starting filter
     instrument later in the song takes over as controller."""
     p = SWMPlayer(_swap_swm())
-    # Run through frame 6, where v1's row 1 applies (tempo=6).
-    for _ in range(7):
+    # Run through v1's row 1 TICK_2 (tempo=6).
+    for _ in range(SETUP_FRAMES + 7):
         p.play_frame()
     assert p.filter_controller_voice is p.voices[1]
 
@@ -128,14 +135,14 @@ def test_global_cwepcnt_persists_across_controller_swap():
     restarting at 0."""
     p = SWMPlayer(_swap_swm())
 
-    # Frame 0 + 5 more: v0 controls, its lone $10 sweep row hasn't
+    # Row 0's TICK_2 + 5 more: v0 controls, its lone $10 sweep row hasn't
     # completed (16 cycles), so the global counter climbs once per frame.
-    for _ in range(6):
+    for _ in range(SETUP_FRAMES + 6):
         p.play_frame()
     pre_swap = p.filter_sweep_count
     assert pre_swap >= 5, f"expected counter to accumulate under v0; got {pre_swap}"
 
-    # Frame 6: v1 takes control, but its FILTPRG is HR-locked this frame
+    # Row 1's TICK_2: v1 takes control, but its FILTPRG is HR-locked this frame
     # (hr_timer=1), so the global counter must sit unchanged — STRTSND
     # does not clear CWEPCNT.
     p.play_frame()
@@ -145,7 +152,7 @@ def test_global_cwepcnt_persists_across_controller_swap():
         f"was {pre_swap}, now {p.filter_sweep_count}"
     )
 
-    # Frame 7: v1's HR clears and FILTPRG runs under v1 ownership. The
+    # The next frame: v1's HR clears and FILTPRG runs under v1 ownership. The
     # global counter ticks once more from v0's value. Under the OLD
     # per-voice model, v1's own counter would have been 0 and read 1
     # here — a value clearly distinct from the carried-over global.

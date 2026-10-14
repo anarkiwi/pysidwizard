@@ -73,6 +73,7 @@ driver/tuning, chord/tempo-table lengths); otherwise model defaults are used.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, List, Optional, Union
 
 from pysidtracker import (
@@ -84,7 +85,9 @@ from pysidtracker import (
     SidImage,
     find_code_all,
     run_init,
+    wire_mpu,
 )
+from pysidtracker.registers import sid_model_for_flags
 
 from .constants import (
     AUTHOR_LEN,
@@ -124,7 +127,7 @@ from .model import (
     decode_sequence,
     unpack_pattern,
 )
-from .player import FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
+from .player import FREQ_TABLE_SPAN, FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
 from .sidfile import find_player_signature, parse_psid_header
 
 # SID-Wizard's "packed" (``SWP``) export keeps an ``SWP1`` magic (the ``SWM1``
@@ -241,6 +244,40 @@ def _freq_table_tail(data: bytes) -> bytes:
     return data[end : end + FREQ_TABLE_TAIL_LEN]
 
 
+# INSCTRL's first-frame pitch (player.asm:1838-1843): ``and #8 ; beq ; ldy DPITCH,x ; lda FREQTBH,{y|x}``.
+_INSCTRL_FREQTBH = re.compile(rb"\x29\x08\xf0.\xbc..([\xb9\xbd])", re.S)
+_LDA_ABS_X = 0xBD
+
+
+# ABSPTCH's pitch load (player.asm:2531-2535): ``tay ; lda FREQTBL,y ; sta FREQLO,x ; lda FREQTBH,y ; sta FREQHI,x``.
+_CODE_FREQTBL = CodePattern("A8 B9 {lo:w} 9D ?? ?? B9 {hi:w} 9D")
+# FREQTBL follows FREQTBH directly, or after the 8-byte keyboard-track slope.
+_FREQTBH_SPANS = (len(NOTE_FREQ_LO), len(NOTE_FREQ_LO) + 8)
+
+
+def _freq_table_images(data: bytes) -> tuple:
+    """``(lo, hi)``: the 256-byte spans from the image's FREQTBL / FREQTBH bases.
+
+    Read from the player's own pitch load, so an NTSC export's table and the
+    bytes past each table are the ones its player indexes. Empty when no load
+    matches.
+    """
+    image = SidImage.from_sid(data)
+    for match in find_code_all(image, _CODE_FREQTBL):
+        lo, hi = match.captures["lo"], match.captures["hi"]
+        if lo - hi in _FREQTBH_SPANS:
+            return bytes(image.mem[lo : lo + FREQ_TABLE_SPAN]), bytes(
+                image.mem[hi : hi + FREQ_TABLE_SPAN]
+            )
+    return b"", b""
+
+
+def _first_frame_freq_by_track(data: bytes) -> bool:
+    """Whether STRTSND's first-frame FREQTBH load is the pre-1.8 ``lda FREQTBH,x`` typo."""
+    match = _INSCTRL_FREQTBH.search(data)
+    return bool(match) and match.group(1)[0] == _LDA_ABS_X
+
+
 def parse_sid(data: bytes) -> SWMFile:
     """Parse a single-SID SID-Wizard ``.sid`` image into a :class:`SWMFile`.
 
@@ -249,7 +286,23 @@ def parse_sid(data: bytes) -> SWMFile:
     """
     swm = _parse_sid_layout(data)
     swm.freq_table_tail = _freq_table_tail(data)
+    swm.first_frame_freq_by_track = _first_frame_freq_by_track(data)
+    swm.freq_lo_image, swm.freq_hi_image = _freq_table_images(data)
     return swm
+
+
+def _single_sid_header(data: bytes):
+    """The container header, or :class:`SIDFormatError` outside the single-SID scope."""
+    header = parse_psid_header(data)
+    if header.magic not in (PSID_MAGIC, RSID_MAGIC):
+        raise SIDFormatError(f"unsupported SID magic {header.magic!r}")
+    if header.version >= 3 or header.is_multi_sid:
+        raise SIDFormatError(
+            "multi-SID (2-SID / 3-SID) files are not supported: the player and "
+            "SWMFile model are single-SID only, so parsing one SID's channels "
+            "would misrepresent the tune"
+        )
+    return header
 
 
 def _parse_sid_layout(data: bytes) -> SWMFile:
@@ -268,16 +321,7 @@ def _parse_sid_layout(data: bytes) -> SWMFile:
     single-SID only, so playback would be wrong), a missing tune header on a
     plain export, truncation, or pointer tables that do not resolve.
     """
-    header = parse_psid_header(data)
-    if header.magic not in (PSID_MAGIC, RSID_MAGIC):
-        raise SIDFormatError(f"unsupported SID magic {header.magic!r}")
-    if header.version >= 3 or header.is_multi_sid:
-        raise SIDFormatError(
-            "multi-SID (2-SID / 3-SID) files are not supported: the player and "
-            "SWMFile model are single-SID only, so parsing one SID's channels "
-            "would misrepresent the tune"
-        )
-
+    header = _single_sid_header(data)
     load = header.real_load_address
     base = header.data_start  # file offset that maps to ``load``
     swp_pos = data.find(SWP_MAGIC, base)
@@ -339,6 +383,149 @@ def _parse_sid_layout(data: bytes) -> SWMFile:
         "coherent layout (stale/template header or unmaterialised relocated "
         f"export); out of the single-SID direct-load scope. Last probe: {last_error}"
     )
+
+
+# The player jump table (player.asm:168) starts ``inisub jmp INITER ; playsub jmp
+# PLAYER`` and is followed by the tracker-info text.
+_JMP = 0x4C
+_JMP_LEN = 3
+_PLAYER_MARK = b"SID-WIZARD"
+_MARK_REACH = 0x30
+# Init budget for reaching INITER; generous for wrappers that unpack first.
+_INIT_MAX_CYCLES = 8_000_000
+# PSID header fields (big-endian) the module window rewrites.
+_PSID_LOAD = slice(0x08, 0x0A)
+_PSID_INIT = slice(0x0A, 0x0C)
+_PSID_PLAY = slice(0x0C, 0x0E)
+# The SID's I/O page: 32-byte register mirrors, 25 registers each.
+SID_IO, SID_IO_END = 0xD400, 0xD800
+SID_MIRROR_MASK = 0x1F
+SID_REGS = 25
+# SETSEQA (player.asm:2669) stores the subtune times the 8-byte block size here.
+_SUBTPOS_SHIFT = 3
+
+
+def _player_bases(mem) -> List[int]:
+    """Jump-table addresses of the SID-Wizard players in ``mem``, ascending.
+
+    A base is the lowest ``jmp ; jmp`` pair within :data:`_MARK_REACH` bytes
+    below a ``SID-WIZARD`` tracker-info text.
+    """
+    buf = bytes(mem)
+    bases = []
+    mark = buf.find(_PLAYER_MARK)
+    while mark >= 0:
+        base = next(
+            (
+                a
+                for a in range(max(0, mark - _MARK_REACH), mark)
+                if buf[a] == _JMP and buf[a + _JMP_LEN] == _JMP
+            ),
+            None,
+        )
+        if base is not None:
+            bases.append(base)
+        mark = buf.find(_PLAYER_MARK, mark + 1)
+    return sorted(set(bases))
+
+
+def _song_entry(data: bytes, song: int):
+    """``(entry, sid)``: the player song ``song``'s init starts, and the SID it leaves.
+
+    Runs the tune's init (accumulator = 0-based ``song``). ``base`` is the last
+    player jump table it enters and ``mem`` a snapshot of memory at that entry
+    (the wrapper's own data patches applied, INITER not yet run). ``subtune`` is
+    what that player's SETSEQA stores (``None`` when it never runs during init)
+    and ``swp`` the SWP data base INITER receives in X / Y. ``None`` when the init
+    enters no player. ``sid`` is the register file the whole init wrote (the
+    chip's ``$20``-byte mirrors folded), which the first play call starts from.
+    """
+    image = SidImage.from_sid(data)
+    header = image.header
+    bases = _player_bases(image.mem)
+    bounds = dict(zip(bases, bases[1:] + [MEM_SIZE], strict=False))
+    subtpos = {
+        m.addr + 1: base
+        for base in bases
+        for m in find_code_all(image.mem, _CODE_SUBTUNES, start=base, end=bounds[base])
+    }
+    mpu, mem = wire_mpu(image.mem, sid_model=sid_model_for_flags(header.flags))
+    written = {}
+    mem.subscribe_to_write(subtpos, lambda addr, value: written.__setitem__(subtpos[addr], value))
+    sid = bytearray(SID_REGS)
+
+    def _sid_write(addr: int, value: int) -> None:
+        reg = addr & SID_MIRROR_MASK
+        if reg < SID_REGS:
+            sid[reg] = value
+
+    mem.subscribe_to_write(range(SID_IO, SID_IO_END), _sid_write)
+    entry = None
+    top = mpu.sp
+    for byte_ in (0x00, 0x01):  # return address the final RTS climbs above ``top``
+        mem[0x0100 + mpu.sp] = byte_
+        mpu.sp = (mpu.sp - 1) & 0xFF
+    mpu.a = song & 0xFF
+    mpu.pc = header.init_address or header.real_load_address
+    start = mpu.processorCycles
+    while mpu.sp < top and mpu.processorCycles - start < _INIT_MAX_CYCLES:
+        if mpu.pc in bounds:
+            entry = (bytes(image.mem), mpu.pc, (mpu.y << 8) | mpu.x)
+        mpu.step()
+    if entry is None:
+        return None, bytes(sid)
+    snapshot, base, swp = entry
+    value = written.get(base)
+    has_subtunes = any(owner == base for owner in subtpos.values())
+    subtune = value >> _SUBTPOS_SHIFT if value is not None else (None if has_subtunes else 0)
+    return (snapshot, base, subtune, swp), bytes(sid)
+
+
+def _module_window(data: bytes, mem: bytes, base: int, swp: int) -> bytes:
+    """A single-player ``.sid`` of the module the player at ``base`` plays.
+
+    The window is ``mem`` from the module start up to the next player jump
+    table, with init / play pointed at ``base``. A packed player's module starts
+    at its SWP data base; a plain player's at its jump table.
+    """
+    header = parse_psid_header(data)
+    start = swp if mem[swp : swp + len(SWP_MAGIC)] == SWP_MAGIC else base
+    following = [b for b in _player_bases(mem) if b > max(start, base)]
+    stop = following[0] if following else header.real_load_address + len(data) - header.data_start
+    out = bytearray(data[: header.data_offset])
+    out[_PSID_LOAD] = bytes(2)
+    out[_PSID_INIT] = base.to_bytes(2, "big")
+    out[_PSID_PLAY] = (base + _JMP_LEN).to_bytes(2, "big")
+    return bytes(out) + start.to_bytes(2, "little") + mem[start:stop]
+
+
+def parse_sid_song(data: bytes, song: int) -> SWMFile:
+    """The single-subtune module that 1-based header ``song`` plays.
+
+    The song number is only the accumulator the tune's init receives; a wrapper
+    may map it to another subtune, patch the tune data, or call one of several
+    embedded players (each with its own module). This runs the init up to the
+    SID-Wizard player it enters and decodes that player's module from the memory
+    the wrapper prepared, selecting the subtune INITER receives in A
+    (``SETSTUNE``, player.asm:2611). An init that enters the player directly is
+    the plain :func:`parse_sid` of the file. Raises :class:`SIDFormatError` when
+    the selected subtune is not in the decoded module.
+    """
+    header = _single_sid_header(data)
+    found, sid = _song_entry(data, song - 1)
+    if found is None or found[2] is None:
+        swm, subtune = parse_sid(data), song - 1
+    else:
+        mem, base, subtune, swp = found
+        direct = base == (header.init_address or header.real_load_address)
+        swm = parse_sid(data if direct else _module_window(data, mem, base, swp))
+    if not 0 <= subtune < swm.subtune_count:
+        raise SIDFormatError(
+            f"song {song} selects subtune {subtune}, but the module decodes "
+            f"{swm.subtune_count} subtune(s)"
+        )
+    swm.sid_init = sid
+    return swm.subtune(subtune)
 
 
 def read_sid(path: Union[str, os.PathLike[str]]) -> SWMFile:

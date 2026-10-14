@@ -162,6 +162,8 @@ FILT_ROW_STRIDE = 3  # set/sweep byte, cutoff_hi (or sweep delta), kbtrack
 # 0) — so the visible HR window is 1 frame, with the 2-frames-before
 # pre-write supplying the "HR setup" phase (see _emit_pre_hr).
 HR_FRAMES = 1
+# Per-track variable stride: X is 0 / 7 / 14 for tracks 1..3 (player.asm:953).
+TRACK_STRIDE = 7
 
 # How many frames before the next row trigger the player writes HR-AD / HR-SR
 # (and clears the gate) to prime the SID for the upcoming note's hard restart.
@@ -275,7 +277,6 @@ class VoiceState:
     wf_pos: int = 0
     wf_arp_pitch: int = 0  # signed offset added to the row's note
     wf_arp_absolute: bool = False  # True if WF arp set an absolute pitch
-    wf_speed_counter: int = 0  # countdown of pending ARP-speed delay
     # SID-Wizard's ARPSCNT (= zero-page $2B per voice). Each WF tick
     # decrements by 1; if the post-decrement value is "positive" (bit
     # 7 clear) the player skips the WF row read this frame (SKIPWFT).
@@ -352,6 +353,9 @@ class VoiceState:
     # SIDG.AD/SR, so we mirror that by only emitting AD/SR when this
     # flag is set. Reset at top of _tick_voice / _tick_voice_multispeed.
     adsr_emit_required: bool = False
+    # True when this frame's tables were walked through instrument 0's
+    # pointer (CURINS still 0), so the walk's SID writes are emitted.
+    zp_dummy: bool = False
 
     pw_pos: int = 0
     pw_hi: int = 0
@@ -450,12 +454,18 @@ class SWMPlayer(MemPlayer):
         self.swm = swm
         # The build this module was exported for (SWM driver byte = PLAYERTYPE).
         self.features = features or features_for_driver(swm.driver_type)
-        self.freq_lo, self.freq_hi = freq_tables(self.features, swm.freq_table_tail)
+        if swm.freq_lo_image and swm.freq_hi_image:
+            self.freq_lo, self.freq_hi = swm.freq_lo_image, swm.freq_hi_image
+        else:
+            self.freq_lo, self.freq_hi = freq_tables(self.features, swm.freq_table_tail)
         self._unsupported_effects: dict = {}
         super().__init__(b"", 0)
 
     def _init(self, subtune: int = 0) -> None:
         swm = self.swm
+        # The first play call starts from whatever the tune's init wrote (INITER's
+        # SID clear loop writes $00 or, in early drivers, $08).
+        self._mem[SID_BASE : SID_BASE + len(swm.sid_init)] = swm.sid_init
 
         # Frame rate. SID-Wizard's frame speed is the value at offset 4
         # of the header (``FSPEEDPOS`` / 1..8). Each frame the player
@@ -497,31 +507,28 @@ class SWMPlayer(MemPlayer):
         else:
             tl = tempo_left & 0x7F
             tr = tempo_right & 0x7F
+        # INSPTLO/INSPTHI slot 0: the exporter links the unused instrument 0 to
+        # instrument 1 (packdepack.inc:621-633). PLAYERZP points at it whenever
+        # a path loads CURINS=0 without testing it (HRENDER, MULCNTP).
+        self._dummy: Optional[Instrument] = swm.instruments[0] if swm.instruments else None
+        # $D418 and its pending SEQVOLU nibble must exist before INITER's
+        # orderlist walk, which can run a MainVolume seq-fx.
+        self.filter_mode_vol = 0x0F  # $D418
+        self.seqvolu = 0x0F  # SEQVOLU_var: pending master-volume nibble
         self.voices: List[VoiceState] = []
         for i in range(3):
-            v = VoiceState(channel=i)
+            # INITER (player.asm:551) zeroes every per-track variable, so
+            # SPDCNT, PTNGATE and ARPSCNT all start at 0 and the first PLAYER
+            # call runs TICK_0 of row 0.
+            v = VoiceState(channel=i, ptn_gate=0, arp_speed_counter=0)
             if i < len(swm.sequences):
                 v.sequence = swm.sequences[i]
             v.tempo_left = tl
             v.tempo_right = tr
-            # Pre-warm: SID-Wizard's TICK_0 + TICK_1 of row 0 happen
-            # during the F1 transition (frames detected by
-            # ``detect_transition_end``); our compared ``frame 0`` aligns
-            # with ref's TICK_2 of row 0. Pre-stash row 0 in pending_row
-            # and set speed_counter=2 so the first ``play_frame`` runs
-            # TICK_2 of row 0 directly, matching ref's frame-0 STRTSND
-            # write.
-            v.speed_counter = 2
+            # INITPTN (player.asm:788): read each orderlist up to its first
+            # pattern, running any orderlist effects on the way.
+            self._advance_sequence(v)
             self.voices.append(v)
-        # $D418 and its pending SEQVOLU nibble must exist before the
-        # pre-stash _advance_row loop, which performs the SEQVOLU->MAINVOL
-        # copy on the low nibble of filter_mode_vol.
-        self.filter_mode_vol = 0x0F  # $D418
-        self.seqvolu = 0x0F  # SEQVOLU_var: pending master-volume nibble
-        # Pre-stash row 0 for each voice. Done after voice list is
-        # populated so _advance_sequence can read the sequence.
-        for v in self.voices:
-            self._advance_row(v)
 
         # Global filter / volume state. SID-Wizard's volume defaults to
         # $F (max); the filter cutoff and mode bits are configured by
@@ -561,15 +568,12 @@ class SWMPlayer(MemPlayer):
         self.frame_idx = 0
         self.finished = False
 
-        # Multispeed state. For ``frame_speed > 1``, SID-Wizard's IRQ
-        # chain fires ``frame_speed`` times per video frame: one
-        # single-speed call (= ``playsub`` -> PLAYER) plus
-        # ``frame_speed - 1`` multispeed calls (= ``mulpsub`` ->
-        # MULPLY). PLAYER fires first within each video frame, then
-        # the multispeed calls. ``_multispeed_phase`` cycles 0 ..
-        # ``frame_speed - 1`` across consecutive ``play_frame`` calls:
-        # phase 0 -> PLAYER tick, phase >= 1 -> MULPLY tick.
-        self._multispeed_phase = 0
+        # Multispeed state. For ``frame_speed > 1`` the exporter's CIA player
+        # (exporter.asm CIAPLAY) counts calls from 0 at init: calls 1 ..
+        # ``frame_speed - 1`` jump to ``mulpsub`` (MULPLY) and call
+        # ``frame_speed`` resets the count and jumps to ``playsub`` (PLAYER).
+        # ``_multispeed_phase`` is that count; phase 0 -> PLAYER tick.
+        self._multispeed_phase = 1 % max(1, swm.frame_speed)
 
     # ---- per-frame tick ----------------------------------------------
 
@@ -612,6 +616,7 @@ class SWMPlayer(MemPlayer):
         # emit all SID writes via SID-Wizard's MULCNTP -> WRPULS chain.
         v.in_tick2_legato_this_frame = False
         v.adsr_emit_required = False
+        v.zp_dummy = False
         # A voice that never played a note and has no pattern is a true
         # no-op. A voice that REACHED its orderlist terminator
         # (``sequence_ended``) is NOT frozen — it keeps ticking its
@@ -639,10 +644,12 @@ class SWMPlayer(MemPlayer):
             # pinned (player.asm ``dec SPDCNT,x``); the held note's
             # tables keep running on subsequent frames.
             self._advance_row(v)
-            v.tempo_toggle ^= 1
         v.speed_counter += 1
         if v.speed_counter >= current_tempo:
+            # advTprg (player.asm:1385): the counter reaching the tempo both
+            # restarts it and steps TMPPOS to the next row's tempo slot.
             v.speed_counter = 0
+            v.tempo_toggle ^= 1
         # TICK_2: apply the row's note / instrument / fx now, two frames
         # after the row read. _apply_row may call _start_note (sets
         # hr_timer, resets tables, gate-on). The compose call below then
@@ -683,6 +690,26 @@ class SWMPlayer(MemPlayer):
             self._compose_sid_writes(v)
             return
         v.in_tick2_legato_this_frame = False
+        if (
+            v.instrument is None
+            and self._dummy is not None
+            and pre_incr_sc < apply_sc
+            and self._pending_row_has_new_note(v)
+        ):
+            # HARDRST -> HRENDER loads PLAYERZP from CURINS without testing
+            # it (player.asm:1594), so before any instrument is selected the
+            # setup ticks of a new note walk instrument 0's tables.
+            v.instrument = self._dummy
+            v.zp_dummy = True
+            try:
+                self._tick_note_setup(v, pre_incr_sc, apply_sc)
+            finally:
+                v.instrument = None
+            return
+        self._tick_note_setup(v, pre_incr_sc, apply_sc)
+
+    def _tick_note_setup(self, v: VoiceState, pre_incr_sc: int, apply_sc: int) -> None:
+        """The table-walking remainder of a PLAYER tick for ``v``."""
         # Hard-restart phase: SID-Wizard's player holds the test bit on
         # (CTRL=$09 for the default $1A control byte), loads post-HR
         # ADSR, and DOES NOT advance the per-voice instrument tables
@@ -722,6 +749,10 @@ class SWMPlayer(MemPlayer):
         # vibrato step from this frame has zero net effect. Match by
         # ticking vibrato first; _tick_wf_table wipes vibrato_offset
         # on pitch-write rows (RELPTCH / ABSPTCH / chord).
+        if pre_incr_sc < apply_sc and self._pre_hr_instrument(v, pre_incr_sc) is not None:
+            # HRGTOFF (player.asm:1568) sets PTNGATE before HRENDER walks the
+            # WF table, so this tick's waveform is already gated off.
+            v.ptn_gate = 0xFE
         if not in_new_note_setup:
             self._tick_vibrato(v)
         self._tick_wf_table(v)
@@ -783,14 +814,28 @@ class SWMPlayer(MemPlayer):
         # Same reset as _tick_voice — see comment there.
         v.in_tick2_legato_this_frame = False
         v.adsr_emit_required = False
-        if v.instrument is None:
-            return
+        v.zp_dummy = False
         # ARPSCNT bit-7 set = just-had-STRTSND (counter still in
         # $80..$FF). MULCNTP skips this voice until the next PLAYER
         # tick has decremented + reloaded ARPSCNT into the positive
         # range.
         if v.arp_speed_counter >= 0x80:
             return
+        if v.instrument is not None:
+            self._mulcntp(v)
+        elif self._dummy is not None:
+            # MULCNTP never tests CURINS: INITER's zeroed ARPSCNT lets it walk
+            # instrument 0's tables until the first STRTSND sets ARPSCNT=$FF.
+            v.instrument = self._dummy
+            v.zp_dummy = True
+            try:
+                self._mulcntp(v)
+            finally:
+                v.instrument = None
+
+    def _mulcntp(self, v: VoiceState) -> None:
+        """MULCNTP's table walk for ``v`` through its PLAYERZP instrument."""
+        assert v.instrument is not None
         self._tick_wf_table(v)
         if v.instrument.arp_speed & 0x40:
             self._tick_pw_table(v)
@@ -1484,7 +1529,6 @@ class SWMPlayer(MemPlayer):
                 v.filt_pos = self._filt_table_start(v.instrument)
             v.wf_arp_pitch = 0
             v.wf_arp_absolute = False
-            v.wf_speed_counter = 0
             # STRTSND (player.asm line 1422) stores $FF to ARPSCNT so
             # the very first post-note WFARPTB pass falls through the
             # BPL check and reloads from ARPSPED.
@@ -1849,10 +1893,8 @@ class SWMPlayer(MemPlayer):
         §7's ``lda #$18; sta SIDG.WAVE,x; rts``. Caller skips
         WF/PW/Filter/Vibrato walks via ``_is_staccato_hr_tick``.
         """
-        ins = self._upcoming_hr_instrument(v, row)
+        ins = self._pre_hr_instrument(v, pre_incr_sc, row)
         if ins is None:
-            return
-        if not self._hr_fires_at_tick(ins, pre_incr_sc):
             return
         v.ptn_gate = 0xFE  # PTNGATE write is inside HRGTOFF (player.asm 1568)
         # SID-Wizard's HARDRST gates the entire HR-AD/SR/PTNGATE/CTRL
@@ -1876,6 +1918,15 @@ class SWMPlayer(MemPlayer):
         else:
             # Normal HR: gate-off the current WF byte.
             v.sid_ctrl = v.sid_ctrl & 0xFE
+
+    def _pre_hr_instrument(
+        self, v: VoiceState, pre_incr_sc: int, row: Any = None
+    ) -> Optional[Instrument]:
+        """The instrument whose HRGTOFF fires on this pre-HR tick, else None."""
+        ins = self._upcoming_hr_instrument(v, v.pending_row if row is None else row)
+        if ins is None or not self._hr_fires_at_tick(ins, pre_incr_sc):
+            return None
+        return ins
 
     def _is_staccato_hr_tick(self, v: VoiceState, pre_incr_sc: int, apply_sc: int = 2) -> bool:
         """True if this is a pre-HR tick where staccato HRGTOFF fires
@@ -1974,7 +2025,7 @@ class SWMPlayer(MemPlayer):
         if ins is None:
             return
         table = self._image(ins)
-        if not ins.wf_table:
+        if not ins.wf_table and v.wf_pos >= INST_WF_TABLE_POS:
             # No WF table: WFARPTB reads the table terminator ($FF) right
             # away — ``cmp #$FE`` leaves carry SET, so WRPITCH adds +1 to
             # FREQ_LO — then ENDWFTB without writing a pitch. Mirror the
@@ -1996,22 +2047,15 @@ class SWMPlayer(MemPlayer):
         # "positive" (bit 7 clear), BPL is taken and the row read is
         # skipped this frame (SKIPWFT). Else reload ARPSCNT from
         # ``arp_speed & $3F`` and continue to read the row.
-        v.arp_speed_counter = (v.arp_speed_counter - 1) & 0xFF
-        if v.arp_speed_counter < 0x80:
-            v.skipwft_this_tick = True
-            return
+        # Without ARPSPEEDSUPP the dec/reload is compiled out and ``and #$3F``
+        # leaves ARPSCNT non-negative, which is all MULCNTP tests.
+        arp_speed = self.features.arpspeedsupp
+        if arp_speed:
+            v.arp_speed_counter = (v.arp_speed_counter - 1) & 0xFF
+            if v.arp_speed_counter < 0x80:
+                v.skipwft_this_tick = True
+                return
         v.arp_speed_counter = v.arp_speed_reload & 0x3F
-        # Per-row $00..$0F ARP-speed override (the wf_speed_counter
-        # path below) ALSO modulates ARPSCNT in SID-Wizard. We keep
-        # wf_speed_counter as a separate gate for now since it
-        # already covers the current corpus; unify once a fixture
-        # uses both mechanisms together.
-        if v.wf_speed_counter > 0:
-            v.wf_speed_counter -= 1
-            # arp_speed-stalled frames bypass WF row processing -> no
-            # carry-setting CMPs, fall straight to WRPITCH with carry
-            # clear (from the upstream DEC). Leave the flag False.
-            return
         # Loop in case of jump commands.
         for _ in range(4):
             pos = v.wf_pos
@@ -2035,7 +2079,7 @@ class SWMPlayer(MemPlayer):
                     return
                 v.wf_pos = raw
                 continue
-            if byte0 < 0x10:
+            if byte0 < 0x10 and arp_speed:
                 # Per-row ARP-speed override — player.asm WFTdone branch:
                 # ``sta ARPSCNT,x ; bcc SETJARP``. ARPSCNT is set to the
                 # wave byte, the SEWFARP waveform-write is skipped, but
@@ -2059,7 +2103,7 @@ class SWMPlayer(MemPlayer):
                 #   $80       -> NOP (don't change pitch)
                 #   $81..$DF  -> absolute pitch      (arp & 0x7F)
                 #   $E0..$FF  -> relative pitch down (arp - 0x100)
-                if arp == WF_ARP_CHORD:
+                if arp == WF_ARP_CHORD and self.features.chordsupport:
                     if self._tick_chord(v):
                         # $7E chord end: player.asm advances past this
                         # row and immediately re-processes the next
@@ -2073,7 +2117,7 @@ class SWMPlayer(MemPlayer):
                     # WFTPOS,x`` in PLYCHRD). Return without the
                     # row-stride advance below.
                     return
-                elif arp == WF_ARP_NOP:
+                elif arp == WF_ARP_NOP and self.features.wfarp_nop_supp:
                     # NORMARP's NOP path: ``CMP #$80; BEQ ENDWFTB``.
                     # The equality CMP sets carry before BEQ -> WRPITCH
                     # sees C=1 and adds +1 to FREQ_LO. Vibrato's mutation
@@ -2346,8 +2390,13 @@ class SWMPlayer(MemPlayer):
                 v.sid_ctrl = 0x09
             elif ins.control & 0x08:
                 v.sid_ctrl = ins.first_waveform & v.ptn_gate
-                # INSCTRL (player.asm:1839) indexes with an unmasked ``ldy DPITCH,x``.
-                v.sid_freq_hi = self.freq_hi[(v.note + v.octave_shift + v.transpose) & 0xFF]
+                # INSCTRL (player.asm:1839) indexes with an unmasked ``ldy DPITCH,x``;
+                # pre-1.8 drivers index by the track offset X instead.
+                if self.swm.first_frame_freq_by_track:
+                    index = v.channel * TRACK_STRIDE
+                else:
+                    index = (v.note + v.octave_shift + v.transpose) & 0xFF
+                v.sid_freq_hi = self.freq_hi[index]
             return
 
         # Post-HR: effective pitch composition. For ABSOLUTE arp
@@ -2355,7 +2404,7 @@ class SWMPlayer(MemPlayer):
         # directly without further transposition (player.asm ABSPTCH at
         # line 2037 just AND #$7F, no DPITCH/transpose addition). For
         # relative arp, transpose and octave_shift fold in via DPITCH.
-        if not ins.wf_table:
+        if not ins.wf_table and not v.zp_dummy:
             # Instrument with NO WF table: the asm's WFARPTB reads the
             # table terminator immediately (ENDWFTB) and never writes
             # FREQLO/FREQHI ZP, so the freq HOLDS the previous note's
@@ -2449,7 +2498,7 @@ class SWMPlayer(MemPlayer):
             # yet — rain8580 v0/v1 have empty first rows that produce no
             # $D40x writes on frame 0. Bronkosaurus v2's first row is a
             # $7E gate-off note-FX, which counts as "triggered" via _apply_row.
-            if not v.triggered:
+            if not (v.triggered or v.zp_dummy):
                 continue
             base = SID_BASE + SID_VOICE_OFFSET[v_idx]
             # When the voice has no instrument loaded, SID-Wizard's
@@ -2457,7 +2506,7 @@ class SWMPlayer(MemPlayer):
             # jmp LEGATOO`` branch and LEGATOO ends at WRWFGHO — which
             # writes ONLY the WAVEFORM/CTRL register. FREQ_LO/HI, PW,
             # AD, SR are left at whatever the SID was holding.
-            if v.instrument is None:
+            if v.instrument is None and not v.zp_dummy:
                 self._wr(base + 4, v.sid_ctrl)
                 continue
             # TICK_2 of a legato / portamento / NPORTAM row: SID-Wizard's

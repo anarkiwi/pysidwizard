@@ -26,16 +26,25 @@ from pysidwizard.player import (
     FREQ_TABLE_TAIL_LEN,
     FREQTBH_SLOPE,
     FREQTBL_PAST_END,
+    HR_FRAMES,
     NOTE_FREQ_HI,
     NOTE_FREQ_LO,
     SWMPlayer,
     freq_tables,
 )
 
+# INITER zeroes SPDCNT, so play calls 0 and 1 are row 0's TICK_0 and TICK_1 and
+# its note first applies on call 2 (TICK_2).
+SETUP_FRAMES = 2
+
 
 def _toy_swm() -> SWMFile:
     """One pattern, three sequences, one instrument — enough to exercise
-    every per-frame code path."""
+    every per-frame code path.
+
+    Tempo 3 is the shortest period whose TICK_2 the default build reaches
+    (see ``SWMPlayer._apply_tick``), so every row applies.
+    """
     inst = Instrument(
         name=b"TEST    ",
         attack=0,
@@ -60,7 +69,7 @@ def _toy_swm() -> SWMFile:
         sequences=[[PlayPattern(1), End()]] * 3,
         patterns=[pattern],
         instruments=[inst],
-        subtune_tempos=[(straight_tempo(2), straight_tempo(2))],
+        subtune_tempos=[(straight_tempo(3), straight_tempo(3))],
     )
 
 
@@ -74,7 +83,7 @@ def _wf_arp_swm(note: int, arp: int, tail: bytes = b"") -> SWMFile:
 
 
 def _zp_freq(swm: SWMFile) -> tuple:
-    v = _play(swm, frames=4).voices[0]
+    v = _play(swm, frames=SETUP_FRAMES + 4).voices[0]
     return v.zp_freq_hi, v.zp_freq_lo
 
 
@@ -127,10 +136,22 @@ def test_play_frame_returns_offset_diffed_writes():
     frame0 = p.play_frame()
     # The first frame reports all 25 registers as offset/value pairs.
     assert [r for r, _ in frame0] == list(range(25))
+    # Row 0's TICK_0 walks instrument 0 (linked to instrument 1) from table
+    # offset 0: header bytes $00 $00 $00 read as a WF row are an ARP-speed
+    # override (no waveform write) and relative pitch 0 on DPITCH 0.
+    for base in (0, 7, 14):
+        assert frame0[base : base + 2] == [(base, NOTE_FREQ_LO[0]), (base + 1, NOTE_FREQ_HI[0])]
+        assert frame0[base + 4] == (base + 4, 0x00)
     # Later frames report only changed registers, still as $00..$18 offsets.
+    # TICK_1 walks offset 3: AD $00 (ARP-speed) then SR $F0, a relative
+    # step of -16 that ABSPTCH masks to note index $70, past FREQTBL.
+    lo, hi = freq_tables(features_for_driver(0))
     later = p.play_frame()
-    assert later and all(0 <= r <= 0x18 for r, _ in later)
-    assert len(later) <= 25
+    assert later == [
+        (reg, val) for base in (0, 7, 14) for reg, val in ((base, lo[0x70]), (base + 1, hi[0x70]))
+    ]
+    for _ in range(HR_FRAMES + 1):
+        p.play_frame()
     # The full forward-filled register state is always live as ``p.regs``:
     # all three voices play the pitched instrument row, so each voice CTRL
     # ($D404/$D40B/$D412) carries pulse+gate and the global volume is max.
@@ -210,15 +231,13 @@ def test_wf_arp_byte_interpretation(arp_byte, base_note, expected_pitch, expecte
         sequences=[[PlayPattern(1), End()]] * 3,
         patterns=[pattern],
         instruments=[inst],
-        subtune_tempos=[(straight_tempo(1), straight_tempo(1))],
+        subtune_tempos=[(straight_tempo(3), straight_tempo(3))],
     )
     p = SWMPlayer(swm)
-    # HR phase runs for HR_FRAMES (2) frames before the WF table ticks
+    # HR phase runs for HR_FRAMES frames before the WF table ticks
     # for the first time; advance through HR so the arp byte under test
     # actually gets evaluated.
-    from pysidwizard.player import HR_FRAMES
-
-    for _ in range(HR_FRAMES + 1):
+    for _ in range(SETUP_FRAMES + HR_FRAMES + 1):
         p.play_frame()
     v = p.voices[0]
     if expected_absolute:
@@ -265,14 +284,12 @@ def test_filter_set_byte_unpacks_band_resonance_cutoff():
         ],
         patterns=[pat_filt, pat_plain],
         instruments=[filtered, plain],
-        subtune_tempos=[(straight_tempo(2), straight_tempo(2))],
+        subtune_tempos=[(straight_tempo(3), straight_tempo(3))],
     )
-    from pysidwizard.player import HR_FRAMES
-
     p = SWMPlayer(swm)
     # The filter table only walks during post-HR frames; HR_FRAMES of
     # test-bit playback come first.
-    for _ in range(HR_FRAMES):
+    for _ in range(SETUP_FRAMES + HR_FRAMES):
         p.play_frame()
     p.play_frame()
     reg = p.regs
@@ -326,11 +343,11 @@ def test_chord_table_cycles_pitches_with_loop_terminator():
         patterns=[pattern],
         instruments=[inst],
         chord_table=bytes([3, 7, 12, 0x7F]),
-        subtune_tempos=[(straight_tempo(1), straight_tempo(1))],
+        subtune_tempos=[(straight_tempo(3), straight_tempo(3))],
     )
-    from pysidwizard.player import HR_FRAMES
-
     p = SWMPlayer(swm)
+    for _ in range(SETUP_FRAMES):
+        p.play_frame()
     # First note triggers HR for HR_FRAMES frames, then chord cycling
     # begins: post-HR frame -> pitch 3, next -> pitch 7, next -> pitch 12,
     # next -> $7F loops back to pitch 3, and so on.
@@ -397,11 +414,9 @@ def test_hard_restart_holds_test_bit_for_hr_frames():
     the WF-table waveform through.
 
     HR fires on EVERY note trigger including a voice's first one (the
-    reference captures for flashitback show CTRL=$09 on song frame 0
-    for v0 and v2 — see [[flashitback-dump-findings]]). We sample the
-    very first frame of playback to verify."""
-    from pysidwizard.player import HR_FRAMES
-
+    reference captures for flashitback show CTRL=$09 on the song's first
+    note for v0 and v2 — see [[flashitback-dump-findings]]). We sample the
+    first note's TICK_2 to verify."""
     inst = Instrument(
         name=b"HRTEST  ",
         control=0x08,  # bit 3 = test-bit HR enabled (FRAME1SWITCH gate)
@@ -424,10 +439,12 @@ def test_hard_restart_holds_test_bit_for_hr_frames():
         sequences=[[PlayPattern(1), End()]] * 3,
         patterns=[pattern],
         instruments=[inst],
-        subtune_tempos=[(straight_tempo(2), straight_tempo(2))],
+        subtune_tempos=[(straight_tempo(3), straight_tempo(3))],
     )
     p = SWMPlayer(swm)
     samples = []
+    for _ in range(SETUP_FRAMES):
+        p.play_frame()
     for _ in range(HR_FRAMES + 2):
         p.play_frame()
         v0 = p.voices[0]
@@ -453,7 +470,12 @@ def test_first_note_runs_hard_restart():
     """A voice's first-ever note DOES run the HR test-bit phase —
     flashitback ref CSV 21 shows v0 and v2 emitting CTRL=$09 on the
     song's row-0 trigger. With first_waveform=$09 (the SID-Wizard
-    default) and ptn_gate=$FF post-_start_note, the HR CTRL is $09."""
+    default) and ptn_gate=$FF post-_start_note, the HR CTRL is $09.
+
+    The TICK_0 / TICK_1 setup frames before it walk instrument 1's header
+    as WF rows: control byte $08 is below $10, an ARP-speed override that
+    writes no waveform and then holds the walk, so CTRL stays $00.
+    """
     inst = Instrument(
         name=b"FIRST   ",
         control=0x08,  # bit 3 = test-bit HR enabled
@@ -466,9 +488,12 @@ def test_first_note_runs_hard_restart():
         sequences=[[PlayPattern(1), End()]] * 3,
         patterns=[pattern],
         instruments=[inst],
-        subtune_tempos=[(straight_tempo(1), straight_tempo(1))],
+        subtune_tempos=[(straight_tempo(3), straight_tempo(3))],
     )
     p = SWMPlayer(swm)
+    for f in range(SETUP_FRAMES):
+        p.play_frame()
+        assert p.voices[0].sid_ctrl == 0x00, f"setup frame {f}"
     p.play_frame()
     assert (
         p.voices[0].sid_ctrl == 0x09
@@ -485,7 +510,7 @@ def test_hard_restart_freezes_wf_table_position():
     trigger HR — we sample wf_pos during the HR window of that second
     trigger."""
     from pysidwizard.constants import INST_WF_TABLE_POS
-    from pysidwizard.player import HR_FRAMES, WF_ROW_STRIDE
+    from pysidwizard.player import WF_ROW_STRIDE
 
     inst = Instrument(
         name=b"HRWF    ",
@@ -504,11 +529,11 @@ def test_hard_restart_freezes_wf_table_position():
         subtune_tempos=[(straight_tempo(4), straight_tempo(4))],
     )
     p = SWMPlayer(swm)
-    # Tempo=4 -> row 0 occupies frames 0-3, row 1 starts on frame 4.
+    # Tempo=4 -> row 0 applies on frame SETUP_FRAMES, row 1 four frames later.
     # Run through row 0 first (warm-up, no HR, WF table advances).
-    for _ in range(4):
+    for _ in range(SETUP_FRAMES + 4):
         p.play_frame()
-    # Frame 4: row 1's note triggers _start_note, which resets wf_pos to the
+    # Row 1's note triggers _start_note, which resets wf_pos to the
     # WF table's base offset AND starts the HR window. During HR wf_pos must
     # stay put (the WF table is paused).
     for f in range(HR_FRAMES):
@@ -526,9 +551,8 @@ def test_untriggered_voice_emits_no_register_writes():
     must produce zero writes to its $D40x register block — SID-Wizard's
     player gates the per-voice write loop on having seen a real note.
 
-    Voice 0 plays a note; voices 1 and 2 sit on empty rows. The first
-    frame's writes should include voice 0's seven registers and the four
-    global registers, and nothing for voices 1 and 2.
+    Voice 0 plays a note; voices 1 and 2 sit on empty rows, so their
+    register blocks stay at zero on every frame.
     """
     inst = Instrument(
         name=b"V0      ",
@@ -546,15 +570,15 @@ def test_untriggered_voice_emits_no_register_writes():
         ],
         patterns=[pattern_active, pattern_silent],
         instruments=[inst],
-        subtune_tempos=[(straight_tempo(2), straight_tempo(2))],
+        subtune_tempos=[(straight_tempo(3), straight_tempo(3))],
     )
-    p = SWMPlayer(swm)
-    # Step past the HR test-bit frame into a steady CNTPLY2 frame. A
-    # voice that never triggered leaves its register block at the reset
-    # baseline (the memory model forward-fills untouched registers).
-    p.play_frame()
-    p.play_frame()
-    regs = p.regs
+    # Step past the setup and HR test-bit frames into a steady CNTPLY2
+    # frame. A voice that never triggered leaves its register block at the
+    # reset baseline (the memory model forward-fills untouched registers).
+    grid = SWMPlayer(swm).render_grid(SETUP_FRAMES + HR_FRAMES + 1)
+    for regs in grid:
+        assert regs[7:21] == [0] * 14, "voices 1 and 2 (empty rows) must stay silent"
+    regs = grid[-1]
     # Voice 0 (triggered) is programmed: pulse+gate CTRL and a nonzero pitch.
     assert regs[4] & 0x41, "voice 0 CTRL must carry pulse+gate"
     assert regs[0] or regs[1], "voice 0 FREQ must be programmed"
@@ -637,6 +661,8 @@ def test_subtune_jump_terminator_continues_in_target_subtune():
         subtune_tempos=[(straight_tempo(4), straight_tempo(4))] * 2,
     )
     p = SWMPlayer(swm)
+    for _ in range(SETUP_FRAMES):
+        p.play_frame()
     notes = set()
     for _ in range(40):
         p.play_frame()
@@ -746,11 +772,12 @@ def test_pre_hr_gate_off_only_on_firing_tick(control, gate_off_tick0, gate_off_t
     TICK_0, otherwise its tail is cut by one frame."""
     p = SWMPlayer(_hr_timer_swm(control))
     frames = []
-    for _ in range(6):
+    tick0 = SETUP_FRAMES + 4
+    for _ in range(tick0 + 2):
         p.play_frame()
         frames.append((p.voices[0].sid_ctrl, p.voices[0].ptn_gate))
-    # Tempo 3, note on row 2: frame 4 is TICK_0, frame 5 is TICK_1.
-    for frame, gate_off in ((4, gate_off_tick0), (5, gate_off_tick1)):
+    # Tempo 3, note on row 2: row 2's TICK_0 / TICK_1 follow row 1's TICK_2.
+    for frame, gate_off in ((tick0, gate_off_tick0), (tick0 + 1, gate_off_tick1)):
         ctrl, ptn_gate = frames[frame]
         want = "off" if gate_off else "on"
         assert (
@@ -766,13 +793,8 @@ def test_pre_hr_gate_off_only_on_firing_tick(control, gate_off_tick0, gate_off_t
 
 
 def _fx_swm(fx: int, fx_value=None) -> SWMFile:
-    """``_toy_swm`` at tempo 3 with the given effect column on the first (note) row.
-
-    Tempo 3 is the shortest period whose TICK_2 the player reaches on every row
-    (see ``_tick_voice``), so rows past the first actually apply.
-    """
+    """``_toy_swm`` with the given effect column on the first (note) row."""
     swm = _toy_swm()
-    swm.subtune_tempos = [(straight_tempo(3), straight_tempo(3))]
     swm.patterns[0].rows[0] = Row(note=49, instrument=1, fx=fx, fx_value=fx_value)
     return swm
 
@@ -807,7 +829,11 @@ def test_bare_instrument_select_walks_the_instrument_header():
         instruments=[inst],
         subtune_tempos=[(straight_tempo(8), straight_tempo(8))],
     )
-    grid = SWMPlayer(swm).render_grid(10)
+    setup = SWMPlayer(swm).render_grid(SETUP_FRAMES + 10)
+    grid = setup[SETUP_FRAMES:]
+    # Row 0 carries no note, so its TICK_0 / TICK_1 take NONEWNO with CURINS
+    # still 0: no table walk and only WFGHOST ($00) is written.
+    assert [row[0:7] for row in setup[:SETUP_FRAMES]] == [[0] * 7] * SETUP_FRAMES
     # PWSWEEP (player.asm:2334) reads header byte 0 ($0A) as the sweep-cycle
     # count and header byte 1 (HR-AD, $0F) as the per-frame PW-low delta.
     assert [row[0x02] for row in grid] == [(0x0F * (f + 1)) & 0xFF for f in range(10)]
@@ -871,27 +897,27 @@ def test_big_fx_04_writes_the_waveform_register():
     INSPTFX runs after STRTSND (player.asm:2054), so on a note row the effect's
     waveform wins over the instrument's first_waveform ($41 here).
     """
-    assert _play(_fx_swm(0x02, 0x00), frames=1).regs[4] == 0x00, "STRTSND baseline"
-    assert _play(_fx_swm(0x04, 0x21), frames=1).regs[4] == 0x21
+    assert _play(_fx_swm(0x02, 0x00), frames=SETUP_FRAMES + 1).regs[4] == 0x00, "STRTSND baseline"
+    assert _play(_fx_swm(0x04, 0x21), frames=SETUP_FRAMES + 1).regs[4] == 0x21
 
 
 def test_big_fx_05_writes_the_attack_decay_register():
     """BIGFX05 = WRITEAD (player.asm:3512) writes $D405 directly (ALLGHOSTREGS_ON=0)."""
-    assert _play(_fx_swm(0x02, 0x00), frames=1).regs[5] == 0x00, "STRTSND baseline"
-    assert _play(_fx_swm(0x05, 0xA3), frames=1).regs[5] == 0xA3
+    assert _play(_fx_swm(0x02, 0x00), frames=SETUP_FRAMES + 1).regs[5] == 0x00, "STRTSND baseline"
+    assert _play(_fx_swm(0x05, 0xA3), frames=SETUP_FRAMES + 1).regs[5] == 0xA3
 
 
 def test_big_fx_06_writes_the_sustain_release_register():
     """BIGFX06 = WRITESR (player.asm:3514) writes $D406 directly (ALLGHOSTREGS_ON=0)."""
-    assert _play(_fx_swm(0x02, 0x00), frames=1).regs[6] == 0xF0, "STRTSND baseline"
-    assert _play(_fx_swm(0x06, 0x5C), frames=1).regs[6] == 0x5C
+    assert _play(_fx_swm(0x02, 0x00), frames=SETUP_FRAMES + 1).regs[6] == 0xF0, "STRTSND baseline"
+    assert _play(_fx_swm(0x06, 0x5C), frames=SETUP_FRAMES + 1).regs[6] == 0x5C
 
 
 def test_big_fx_register_writes_apply_on_a_note_less_row():
     """PATT_FX also runs on rows with no note column (player.asm:1778)."""
     swm = _fx_swm(0x04, 0x21)
     swm.patterns[0].rows[1] = Row(fx=0x06, fx_value=0x39)
-    p = _play(swm, frames=4)
+    p = _play(swm, frames=SETUP_FRAMES + 4)
     assert p.regs[6] == 0x39
     assert p.regs[4] == 0x41, "the WF table walk owns the waveform again by this frame"
 
@@ -904,8 +930,8 @@ def test_small_fx_4_sets_the_waveform_high_nibble():
     """
     swm = _fx_swm(0x02, 0x00)
     swm.patterns[0].rows[1] = Row(fx=0x48)
-    p = _play(swm, frames=4)
-    assert _play(_fx_swm(0x02, 0x00), frames=4).regs[4] == 0x41, "WF table baseline"
+    p = _play(swm, frames=SETUP_FRAMES + 4)
+    assert _play(_fx_swm(0x02, 0x00), frames=SETUP_FRAMES + 4).regs[4] == 0x41, "WF table baseline"
     assert p.regs[4] == 0x81, "waveform nibble replaced, gate bit kept"
 
 
@@ -917,14 +943,14 @@ def test_small_fx_e_is_a_no_op_in_1_94():
     swm.patterns[0].rows[1] = Row(fx=0xE0)
     with warnings.catch_warnings():
         warnings.simplefilter("error", SWMUnsupportedEffectWarning)
-        p = _play(swm, frames=4)
+        p = _play(swm, frames=SETUP_FRAMES + 4)
     assert p.regs[4] == 0x41, "WFGHOST unchanged: the store is commented out upstream"
 
 
 def test_big_fx_0f_sets_the_cutoff_high_byte():
     """BIGFX0F (player.asm:3563) writes CTFHGHO, the $D416 ghost."""
-    assert _play(_fx_swm(0x02, 0x00), frames=1).regs[0x16] == 0x00
-    assert _play(_fx_swm(0x0F, 0xC4), frames=1).regs[0x16] == 0xC4
+    assert _play(_fx_swm(0x02, 0x00), frames=SETUP_FRAMES + 1).regs[0x16] == 0x00
+    assert _play(_fx_swm(0x0F, 0xC4), frames=SETUP_FRAMES + 1).regs[0x16] == 0xC4
 
 
 def test_big_fx_1f_sets_filter_switches_and_resonance():
@@ -933,20 +959,20 @@ def test_big_fx_1f_sets_filter_switches_and_resonance():
     Both are plain ``sta``s, so it also clears the per-voice routing bits until
     the next STRTSND re-ORs them (player.asm:2001).
     """
-    p = _play(_fx_swm(0x1F, 0x38), frames=1)
+    p = _play(_fx_swm(0x1F, 0x38), frames=SETUP_FRAMES + 1)
     assert p.regs[0x17] == 0x38
     assert p.filter_switch == 0x08 and p.filter_resonance == 0x30
 
 
 def test_small_fx_b_sets_the_filter_band_nibble():
     """SMALFXB (player.asm:3377) writes FLTBAND, the $D418 high nibble."""
-    p = _play(_fx_swm(0xB2), frames=1)
+    p = _play(_fx_swm(0xB2), frames=SETUP_FRAMES + 1)
     assert p.regs[0x18] == 0x2F, "band $2 over the default $F main volume"
 
 
 def test_small_fx_f_sets_the_resonance_nibble():
     """SMALFXF (player.asm:3418) writes RESONIB, the $D417 high nibble."""
-    p = _play(_fx_swm(0xF9), frames=1)
+    p = _play(_fx_swm(0xF9), frames=SETUP_FRAMES + 1)
     assert p.regs[0x17] == 0x90
 
 
@@ -954,7 +980,7 @@ def test_filter_routing_bit_follows_the_instrument_filter_table():
     """FSWITCH's routing bits are owned by STRTSND's SETFLTP (player.asm:1999-2008)."""
     swm = _toy_swm()
     swm.instruments[0].filter_table = b"\x80\x40\x00\xff"
-    p = _play(swm, frames=1)
+    p = _play(swm, frames=SETUP_FRAMES + 1)
     assert p.filter_switch & 0x07 == 0x07, "all three voices play the filtered instrument"
     assert p.regs[0x17] & 0x0F == 0x07
 
@@ -974,7 +1000,7 @@ def test_big_fx_09_jumps_to_a_waveform_table_row():
     """BIGFX09 (player.asm:3524): WFTPOS := value*3 + WFTABLEPOS."""
     from pysidwizard.constants import INST_WF_TABLE_POS
 
-    p = _play(_tables_swm(0x09, 0x01), frames=1)
+    p = _play(_tables_swm(0x09, 0x01), frames=SETUP_FRAMES + 1)
     assert p.voices[0].wf_pos == INST_WF_TABLE_POS + 3
 
 
@@ -982,53 +1008,53 @@ def test_big_fx_0a_jumps_to_a_pulse_table_row_and_clears_the_sweep():
     """BIGFX0A (player.asm:3530): PWTPOS := value*3 + instrument byte $0A, PWEEPCNT := 0."""
     swm = _tables_swm(0x0A, 0x01)
     base = 0x10 + len(swm.instruments[0].wf_table) + 1
-    p = _play(swm, frames=1)
+    p = _play(swm, frames=SETUP_FRAMES + 1)
     assert p.voices[0].pw_pos == base + 3
     assert p.voices[0].pw_sweep_count == 0
 
 
 def test_big_fx_0c_and_small_fx_c_set_the_arpeggio_speed():
     """BIGFX0C = SMALFXC (player.asm:3391): ARPSPED := value, ARPSCNT := $FF."""
-    p = _play(_tables_swm(0x0C, 0x05), frames=1)
+    p = _play(_tables_swm(0x0C, 0x05), frames=SETUP_FRAMES + 1)
     assert (p.voices[0].arp_speed_reload, p.voices[0].arp_speed_counter) == (0x05, 0xFF)
-    p = _play(_tables_swm(0xC3, 0x00), frames=1)
+    p = _play(_tables_swm(0xC3, 0x00), frames=SETUP_FRAMES + 1)
     assert (p.voices[0].arp_speed_reload, p.voices[0].arp_speed_counter) == (0x03, 0xFF)
 
 
 def test_big_fx_07_selects_a_chord_by_full_byte():
     """BIGFX07 = SMALFX7 (player.asm:3325): CURCHORD := value, CHORDPOS := CHDPTRLO[value]."""
-    p = _play(_tables_swm(0x07, 0x02), frames=1)
+    p = _play(_tables_swm(0x07, 0x02), frames=SETUP_FRAMES + 1)
     assert p.voices[0].current_chord == 2
     assert p.voices[0].chord_pos == p._chord_starts[1]
 
 
 def test_big_fx_0d_and_small_fx_d_detune_the_voice():
     """BIGFX0D = SETDETU (player.asm:3551) stores DETUNER; SMALFXD scales by 8."""
-    assert _play(_fx_swm(0x0D, 0x05), frames=1).voices[0].detune == 5
-    assert _play(_fx_swm(0x0D, 0xFB), frames=1).voices[0].detune == -5
-    assert _play(_fx_swm(0xD2), frames=1).voices[0].detune == 16
+    assert _play(_fx_swm(0x0D, 0x05), frames=SETUP_FRAMES + 1).voices[0].detune == 5
+    assert _play(_fx_swm(0x0D, 0xFB), frames=SETUP_FRAMES + 1).voices[0].detune == -5
+    assert _play(_fx_swm(0xD2), frames=SETUP_FRAMES + 1).voices[0].detune == 16
 
 
 def test_big_fx_0e_sets_the_pulse_width_high_nibble():
     """BIGFX0E (player.asm:3558): PWHIGHO := value & $0F."""
-    assert _play(_fx_swm(0x0E, 0x3A), frames=1).voices[0].pw_hi == 0x0A
+    assert _play(_fx_swm(0x0E, 0x3A), frames=SETUP_FRAMES + 1).voices[0].pw_hi == 0x0A
 
 
 def test_big_fx_16_forces_the_vibrato_type():
     """BIGFX16 = FORCVI2 (player.asm:3698): SLIDEVIB := value & $30."""
-    assert _play(_fx_swm(0x16, 0x37), frames=1).voices[0].slide_vib == 0x30
+    assert _play(_fx_swm(0x16, 0x37), frames=SETUP_FRAMES + 1).voices[0].slide_vib == 0x30
 
 
 def test_small_fx_9_sets_the_vibrato_frequency_only():
     """SMALFX9 (player.asm:3349): VIBFREQU := nibble * 2 (``asl``)."""
-    assert _play(_fx_swm(0x93), frames=1).voices[0].vibrato_period == 6
+    assert _play(_fx_swm(0x93), frames=SETUP_FRAMES + 1).voices[0].vibrato_period == 6
 
 
 def test_small_fx_8_overrides_the_vibrato_amplitude_nibble():
     """SMALFX8 = VIBAMFX (player.asm:3338) keeps the instrument's frequency nibble."""
     swm = _fx_swm(0x84)
     swm.instruments[0].vibrato = 0x25
-    v = _play(swm, frames=1).voices[0]
+    v = _play(swm, frames=SETUP_FRAMES + 1).voices[0]
     assert v.vibrato_period == 10, "frequency nibble $5 comes from the instrument"
     assert (v.vibrato_freqmod_lo, v.vibrato_freqmod_hi) != (0, 0), "amplitude $4 applied"
 
@@ -1037,7 +1063,7 @@ def test_big_fx_08_with_zero_amplitude_clears_freqmod():
     """SETFMOD's ``beq wrFmodL`` (player.asm:2924) zeroes FREQMOD for amplitude 0."""
     swm = _fx_swm(0x08, 0x07)
     swm.instruments[0].vibrato = 0x84
-    v = _play(swm, frames=1).voices[0]
+    v = _play(swm, frames=SETUP_FRAMES + 1).voices[0]
     assert (v.vibrato_freqmod_lo, v.vibrato_freqmod_hi) == (0, 0)
     assert v.vibrato_period == 14
 
@@ -1082,9 +1108,9 @@ def test_big_fx_1c_shifts_the_cutoff_and_17_to_1b_alias_it(fx):
     swm = _fx_swm(0x0F, 0x40)
     swm.patterns[0].rows[1] = Row(fx=fx, fx_value=0x10)
     swm.patterns[0].rows[2] = Row(fx=fx, fx_value=0xF0)
-    assert _play(swm, frames=1).regs[0x16] == 0x40
-    assert _play(swm, frames=4).regs[0x16] == 0x50
-    assert _play(swm, frames=7).regs[0x16] == 0x30, "$80..$FF shifts down"
+    assert _play(swm, frames=SETUP_FRAMES + 1).regs[0x16] == 0x40
+    assert _play(swm, frames=SETUP_FRAMES + 4).regs[0x16] == 0x50
+    assert _play(swm, frames=SETUP_FRAMES + 7).regs[0x16] == 0x30, "$80..$FF shifts down"
 
 
 def _tempo_of(p: SWMPlayer, idx: int) -> tuple:
@@ -1098,9 +1124,9 @@ def test_big_fx_10_and_11_set_the_main_tempo_on_every_track():
     BIGFX10 (player.asm:3586) ``ora #$80``s the value, pinning the funk cycle to
     the one slot; BIGFX11 (player.asm:3627) splits the byte into two slots.
     """
-    p = _play(_fx_swm(0x10, 0x04), frames=1)
+    p = _play(_fx_swm(0x10, 0x04), frames=SETUP_FRAMES + 1)
     assert [_tempo_of(p, i) for i in range(3)] == [(4, 4)] * 3
-    p = _play(_fx_swm(0x11, 0x53), frames=1)
+    p = _play(_fx_swm(0x11, 0x53), frames=SETUP_FRAMES + 1)
     assert [_tempo_of(p, i) for i in range(3)] == [(5, 3)] * 3
 
 
@@ -1109,7 +1135,7 @@ def test_big_fx_13_and_14_set_the_tempo_of_one_track_only():
     swm = _fx_swm(0x13, 0x04)
     swm.sequences = [[PlayPattern(1), End()], [PlayPattern(2), End()], [PlayPattern(2), End()]]
     swm.patterns.append(Pattern(rows=[Row(note=49, instrument=1)] + [Row()] * 3, length=4))
-    p = _play(swm, frames=1)
+    p = _play(swm, frames=SETUP_FRAMES + 1)
     assert _tempo_of(p, 0) == (4, 4)
     assert _tempo_of(p, 1) == _tempo_of(p, 2) == (3, 3), "other tracks keep the subtune tempo"
 
@@ -1124,7 +1150,7 @@ def test_big_fx_03_without_a_note_rearms_the_slide():
     swm.patterns[0].rows[1] = Row(fx=0x03, fx_value=0x20)
     with warnings.catch_warnings():
         warnings.simplefilter("error", SWMUnsupportedEffectWarning)
-        v = _play(swm, frames=4).voices[0]
+        v = _play(swm, frames=SETUP_FRAMES + 4).voices[0]
     assert v.slide_vib == 0x83
     assert (v.vibrato_freqmod_lo, v.vibrato_freqmod_hi) == SWMPlayer(swm)._lookup_freqmod(
         0x10 + 49
@@ -1140,10 +1166,10 @@ def test_delay_fx_are_no_ops_on_the_default_driver_but_report_on_extra():
     swm = _fx_swm(0x1E, 0x04)
     with warnings.catch_warnings():
         warnings.simplefilter("error", SWMUnsupportedEffectWarning)
-        assert _play(swm, frames=4).unsupported_effects == {}
+        assert _play(swm, frames=SETUP_FRAMES + 4).unsupported_effects == {}
     swm.driver_type = 3
     with pytest.warns(SWMUnsupportedEffectWarning):
-        assert _play(swm, frames=4).unsupported_effects == {("big-fx", 0x1E): 3}
+        assert _play(swm, frames=SETUP_FRAMES + 4).unsupported_effects == {("big-fx", 0x1E): 3}
 
 
 def _extra(swm: SWMFile) -> SWMFile:
@@ -1167,15 +1193,21 @@ def test_fastspeedbind_collapses_the_row_ticks_at_tempo_1_and_2(tempo, expected_
 
 @pytest.mark.parametrize("tempo", [1, 2])
 def test_extra_build_advances_rows_at_tempo_1_and_2(tempo):
-    """The default build reaches no TICK_2 at tempo 1-2, so no later row applies.
+    """The default build reaches no TICK_2 at tempo 1-2, so no note ever applies.
 
-    ``_toy_swm`` row 3 is a different pitch, so only a build that reaches TICK_2
-    at these tempos ever leaves row 0's note.
+    Without FASTSPEEDBIND SPDCNT wraps before reaching 2, so no voice ever runs
+    STRTSND and PTNGATE keeps INITER's $00, masking every CTRL write to $00.
+    The Extra build applies each row at call ``tempo - 1`` of the row (TICK_0
+    at tempo 1, TICK_1 at tempo 2), so ``_toy_swm`` row 3's pitch first
+    reaches $D401 on the frame after its HR frame.
     """
     swm = _toy_swm()
     swm.subtune_tempos = [(straight_tempo(tempo), straight_tempo(tempo))]
-    assert _play(swm, frames=10).regs[1] == NOTE_FREQ_HI[49], "pinned on row 0"
-    assert _play(_extra(swm), frames=10).regs[1] == NOTE_FREQ_HI[53]
+    default = SWMPlayer(swm).render_grid(16)
+    assert {row[ctrl] for row in default for ctrl in (4, 11, 18)} == {0x00}, "silent"
+    extra = SWMPlayer(_extra(swm)).render_grid(16)
+    first = next(f for f, row in enumerate(extra) if row[1] == NOTE_FREQ_HI[53])
+    assert first == 3 * tempo + (tempo - 1) + HR_FRAMES
 
 
 def test_allghostregs_combines_two_adsr_small_fx_in_one_row():
@@ -1185,11 +1217,10 @@ def test_allghostregs_combines_two_adsr_small_fx_in_one_row():
     sustain on one row is wiped by a $6x release on the next; with it they merge.
     """
     swm = _toy_swm()
-    swm.subtune_tempos = [(straight_tempo(3), straight_tempo(3))]
     swm.patterns[0].rows[1] = Row(instrument=0x50)
     swm.patterns[0].rows[2] = Row(instrument=0x69)
-    assert _play(swm, frames=7).regs[6] == 0xF9, "instrument sustain $F wins back"
-    assert _play(_extra(swm), frames=7).regs[6] == 0x09, "the $50 sustain survives"
+    assert _play(swm, frames=SETUP_FRAMES + 7).regs[6] == 0xF9, "instrument sustain $F wins back"
+    assert _play(_extra(swm), frames=SETUP_FRAMES + 7).regs[6] == 0x09, "the $50 sustain survives"
 
 
 def _medium(swm: SWMFile) -> SWMFile:
@@ -1211,9 +1242,9 @@ def test_hardrestypes_off_uses_the_default_hr_adsr_on_both_pre_hr_ticks():
     swm.instruments[0].hr_sustain = 0xC
     swm.instruments[0].hr_release = 0xD
     swm.instruments[0].control = 0x1A
-    default = _play(swm, frames=17)
+    default = _play(swm, frames=SETUP_FRAMES + 17)
     assert (default.regs[5], default.regs[6]) == (0xAB, 0xCD), "per-instrument HR ADSR"
-    medium = _play(_medium(swm), frames=17)
+    medium = _play(_medium(swm), frames=SETUP_FRAMES + 17)
     assert (medium.regs[5], medium.regs[6]) == (DEFAULT_HR_ADSR >> 8, DEFAULT_HR_ADSR & 0xFF)
 
 
@@ -1222,17 +1253,17 @@ def test_frame1switch_off_always_starts_the_note_on_waveform_09():
     swm = _toy_swm()
     swm.instruments[0].control = 0x12  # bit 3 clear: the default build writes no CTRL
     swm.instruments[0].first_waveform = 0x89
-    assert _play(swm, frames=1).regs[4] != 0x09
-    assert _play(_medium(swm), frames=1).regs[4] == 0x09
+    assert _play(swm, frames=SETUP_FRAMES + 1).regs[4] != 0x09
+    assert _play(_medium(swm), frames=SETUP_FRAMES + 1).regs[4] == 0x09
 
 
 def test_filt_ctrl_fx_off_makes_big_fx_1f_a_bare_rts():
     """Without FILT_CTRL_FX_ON the BIGFX1F body is gone and RTBIGFX's rts takes over."""
     swm = _fx_swm(0x1F, 0x35)
-    assert _play(swm, frames=4).regs[0x17] == 0x35
+    assert _play(swm, frames=SETUP_FRAMES + 4).regs[0x17] == 0x35
     with warnings.catch_warnings():
         warnings.simplefilter("error", SWMUnsupportedEffectWarning)
-        assert _play(_medium(swm), frames=4).regs[0x17] != 0x35
+        assert _play(_medium(swm), frames=SETUP_FRAMES + 4).regs[0x17] != 0x35
 
 
 def _light(swm: SWMFile) -> SWMFile:
@@ -1245,23 +1276,23 @@ def test_octaveshift_off_ignores_the_instruments_octave_field():
     """CLEGATO's ``ldy #9 ; adc (PLAYERZP),y`` is gone (player.asm:1787)."""
     swm = _toy_swm()
     swm.instruments[0].octave_shift = 12
-    assert _play(swm, frames=2).regs[1] == NOTE_FREQ_HI[49 + 12]
-    assert _play(_light(swm), frames=2).regs[1] == NOTE_FREQ_HI[49]
+    assert _play(swm, frames=SETUP_FRAMES + 2).regs[1] == NOTE_FREQ_HI[49 + 12]
+    assert _play(_light(swm), frames=SETUP_FRAMES + 2).regs[1] == NOTE_FREQ_HI[49]
 
 
 def test_detunesupport_off_drops_the_detune_add_and_its_carry():
     """WRPITCH loses both ``adc DETUNER,x`` and ``adc #0`` (player.asm:2540-2560)."""
     swm = _fx_swm(0x0D, 0x40)
-    assert _play(swm, frames=4).regs[0] == (NOTE_FREQ_LO[49] + 0x40 + 1) & 0xFF
-    assert _play(_light(swm), frames=4).regs[0] == NOTE_FREQ_LO[49]
+    assert _play(swm, frames=SETUP_FRAMES + 4).regs[0] == (NOTE_FREQ_LO[49] + 0x40 + 1) & 0xFF
+    assert _play(_light(swm), frames=SETUP_FRAMES + 4).regs[0] == NOTE_FREQ_LO[49]
 
 
 def test_finefiltsweep_off_makes_the_filter_sweep_an_8_bit_add():
     """Without the flag CTFL_GHO does not exist, so the delta lands straight on $D416."""
     swm = _toy_swm()
     swm.instruments[0].filter_table = bytes([0x91, 0x40, 0x00, 0x04, 0x08, 0x00, 0xFF])
-    fine = _play(swm, frames=6)
-    coarse = _play(_light(swm), frames=6)
+    fine = _play(swm, frames=SETUP_FRAMES + 6)
+    coarse = _play(_light(swm), frames=SETUP_FRAMES + 6)
     assert coarse.regs[0x16] > fine.regs[0x16], "8-bit sweep steps 8x faster than 11-bit"
 
 
