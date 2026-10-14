@@ -161,3 +161,31 @@ for clock, reg, value in iter_register_writes(swm, max_frames=1500):
 `iter_register_writes` yields `RegWrite(clock, reg, val)` for the registers that
 change each frame. For a full per-frame 25-register grid, use
 `SWMPlayer(swm).render_grid(n)`, which returns `n` forward-filled rows.
+
+## HVSC oracle survey
+
+[`scripts/oracle_hvsc.py`](../scripts/oracle_hvsc.py) plugs `SWMPlayer` into the
+[`pysidtracker.survey`](https://github.com/anarkiwi/pysidtracker/blob/main/docs/survey.md)
+whole-song comparison against the `sidtrace` oracle (Docker), over every subtune
+of every HVSC SID-Wizard tune. Its `info` reports the export's `driver` build and
+`frame_speed`, `rsid`, the play `trigger` (`pal_video` / `ntsc_video` /
+`cia_timer`, or `null` when unknown), `speed` (play calls per PAL frame) and
+`dynamic` (variable timer). Tunes `parse_sid` rejects (multi-SID, unresolved
+layouts) raise `SIDFormatError`, a `pysidtracker.SidParseError`, so the survey
+counts them as `not_decompiled`.
+
+```bash
+pip install "pysidtracker[survey]>=0.12.0"
+python -m pysidtracker.survey find $HVSC --player sidwizard --out .hvsc-survey/tunes.csv
+PYTHONPATH=scripts python -m pysidtracker.survey run $HVSC .hvsc-survey/tunes.csv \
+    --work .hvsc-survey --render oracle_hvsc:render --jobs 32
+python -m pysidtracker.survey report .hvsc-survey/results.csv
+python -m pysidtracker.survey triage .hvsc-survey
+PYTHONPATH=scripts python -m pysidtracker.survey diff $HVSC .hvsc-survey/tunes.csv <md5>_<song> \
+    --work .hvsc-survey --render oracle_hvsc:render
+```
+
+`.hvsc-survey/` holds copyright-derived traces and is gitignored. When
+`.hvsc-survey/tunes.csv` (or `$PYSIDWIZARD_TUNES_CSV`) and the HVSC tree
+(`$HVSC`, default `/scratch/datasets/hvsc/C64Music`) are present, the unit suite
+also parses and plays every listed tune.

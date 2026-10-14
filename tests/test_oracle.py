@@ -26,12 +26,15 @@ frame must match byte-for-byte.
 """
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
 from pysidtracker.testing import TuneFetchError, oracle_grid, resolve_tune
 
-from pysidwizard import SWMPlayer, parse_sid
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+
+import oracle_hvsc  # noqa: E402  (after sys.path tweak)
 
 # Cache under the workspace (a Docker-daemon-visible path, and what CI persists
 # via actions/cache). ``$PYSIDWIZARD_ORACLE_CACHE`` overrides the location.
@@ -133,7 +136,7 @@ def test_native_render_matches_oracle(tune_id):
     expected = oracle_grid(
         path, oracle_cache=_CACHE / "csv", seconds=seconds, frames=FRAMES + MAX_LEAD
     )
-    rendered = SWMPlayer(parse_sid(Path(path).read_bytes())).render_grid(FRAMES)
+    rendered = oracle_hvsc.render(Path(path).read_bytes(), 1, FRAMES)[0].tolist()
     assert (
         _match_lead(expected, rendered) is not None
     ), f"tune {tune_id}: native SWMPlayer render does not match the sidtrace oracle"

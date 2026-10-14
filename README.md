@@ -42,7 +42,8 @@ swm_from_sid = read_sid("tune.sid")   # read-only, lossy
 See [docs/usage.md](docs/usage.md) for building modules from scratch, playback,
 WAV rendering, raw write iteration, and the CLI, and
 [docs/format.md](docs/format.md) for the SWM/`.sid` format, data model, and
-player correctness.
+player correctness. The [HVSC oracle survey](docs/usage.md#hvsc-oracle-survey)
+runs the player against every HVSC SID-Wizard tune.
 
 ## Development
 

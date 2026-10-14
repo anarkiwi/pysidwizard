@@ -2,7 +2,7 @@
 
 These are **path lists only** — no copyrighted tune bytes are stored. The tunes
 themselves live in the reader's local HVSC tree (``$HVSC`` /
-``/scratch/preframr/hvsc/C64Music``); :mod:`tests.test_hvsc_corpus` gates the
+``/scratch/datasets/hvsc/C64Music``); :mod:`tests.test_hvsc_corpus` gates the
 corpus tests to skip cleanly when that tree is absent and run for real when it
 is present.
 
