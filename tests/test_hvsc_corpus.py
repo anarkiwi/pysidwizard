@@ -4,7 +4,7 @@ The tune list is enumerated deterministically with ``sidid`` (see
 :mod:`tests._hvsc_corpus` for the method) and baked in as **paths only** — no
 copyrighted tune bytes live in the repo. Every test here skips cleanly when the
 local HVSC tree is absent and runs for real against ``$HVSC`` (default
-``/scratch/preframr/hvsc/C64Music``) when present.
+``/scratch/datasets/hvsc/C64Music``) when present.
 
 The positive sample asserts, per tune, that :func:`parse_sid` / :func:`read_sid`
 succeed, that :meth:`SidWizardSidParser.detect` classifies the tune as

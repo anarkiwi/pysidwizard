@@ -229,3 +229,6 @@ tests/.tunecache/
 # sidtrace oracle scratch: cached HVSC .sid tunes (copyright) + oracle CSVs
 # (tests/test_oracle.py). Never committed.
 .oracle-cache/
+
+# pysidtracker.survey work dir: copyright-derived traces.
+.hvsc-survey/

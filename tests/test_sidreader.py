@@ -9,7 +9,9 @@ bottom is opt-in and skips when the local HVSC tree is absent.
 
 from __future__ import annotations
 
+import csv
 import os
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +33,7 @@ from pysidwizard.constants import SWM_MAGIC, TUNE_HEADER_SIZE
 from pysidwizard.model import encode_sequence, pack_pattern
 from pysidwizard.player import FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
 from pysidwizard.sidreader import _freq_table_tail
+from tests._hvsc_fetch import HVSC_ROOT
 
 LOAD = 0x1000
 
@@ -677,26 +680,30 @@ def test_parse_sid_rejects_truncated_image():
 
 
 # --------------------------------------------------------------------------
-# Opt-in real-corpus smoke test (skipped without the local HVSC tree).
+# Opt-in real-corpus smoke test over every SID-Wizard tune ``survey find``
+# listed in ``.hvsc-survey/tunes.csv`` (``$PYSIDWIZARD_TUNES_CSV`` overrides);
+# skipped without that list or the local HVSC tree.
 # --------------------------------------------------------------------------
 
-_HVSC = "/scratch/preframr/hvsc/C64Music"
-_CATALOG = "/scratch/anarkiwi/cbm/hvsc-tracker-catalog/data/results.csv"
-
-
+_HVSC = str(HVSC_ROOT)
+_CATALOG = os.environ.get(
+    "PYSIDWIZARD_TUNES_CSV",
+    str(Path(__file__).resolve().parent.parent / ".hvsc-survey" / "tunes.csv"),
+)
 _CORPUS_PRESENT = os.path.isdir(_HVSC) and os.path.isfile(_CATALOG)
+_CORPUS_SKIP = (
+    f"needs the HVSC tree {_HVSC} ($HVSC) and the SID-Wizard tune list {_CATALOG} "
+    "(python -m pysidtracker.survey find $HVSC --player sidwizard --out <tunes.csv>)"
+)
 
 
 def _corpus_rows():
-    import csv
-
-    # Return an empty list when the corpus isn't present so module-level
-    # parametrize() collection (below) never touches the missing catalog.
-    # The per-test skipif still guards execution; an empty parameter set
-    # skips cleanly.
+    # Empty when the corpus is absent so module-level parametrize() collection
+    # never touches the missing list; the per-test skipif guards execution.
     if not _CORPUS_PRESENT:
         return []
-    return [r for r in csv.reader(open(_CATALOG)) if len(r) > 1 and "SidWizard" in r[1]]
+    with open(_CATALOG, newline="", encoding="utf-8") as fh:
+        return [(r["path"], r["player"]) for r in csv.DictReader(fh) if "SidWizard" in r["player"]]
 
 
 # Materialised once at import so xdist workers parametrize over a stable set.
@@ -707,7 +714,7 @@ def _corpus_id(row):
     return row[0]
 
 
-@pytest.mark.skipif(not _CORPUS_PRESENT, reason="local HVSC corpus not present")
+@pytest.mark.skipif(not _CORPUS_PRESENT, reason=_CORPUS_SKIP)
 @pytest.mark.parametrize("row", _CORPUS_ROWS, ids=_corpus_id)
 def test_real_corpus_row_parses_and_plays(row):
     # Per-tune parse + bounded playback. Parametrized (one case per corpus
@@ -758,7 +765,7 @@ def test_real_corpus_row_parses_and_plays(row):
                 sub_player.play_frame()
 
 
-@pytest.mark.skipif(not _CORPUS_PRESENT, reason="local HVSC corpus not present")
+@pytest.mark.skipif(not _CORPUS_PRESENT, reason=_CORPUS_SKIP)
 def test_real_corpus_has_expected_coverage():
     # Corpus-health fold (natural loop): the catalog must actually resolve to
     # a substantial set of parseable tunes, including the RSID and
@@ -793,7 +800,7 @@ def test_real_corpus_has_expected_coverage():
     assert swp_parsed >= 20, "expected the packed (SWP) tunes to parse now"
 
 
-@pytest.mark.skipif(not _CORPUS_PRESENT, reason="local HVSC corpus not present")
+@pytest.mark.skipif(not _CORPUS_PRESENT, reason=_CORPUS_SKIP)
 @pytest.mark.parametrize("row", _CORPUS_ROWS, ids=_corpus_id)
 def test_real_corpus_row_rejection_is_clear(row):
     # Multi-SID tunes must raise a specific, actionable error rather than
@@ -815,7 +822,7 @@ def test_real_corpus_row_rejection_is_clear(row):
         pytest.skip("not a multi-SID tune")
 
 
-@pytest.mark.skipif(not _CORPUS_PRESENT, reason="local HVSC corpus not present")
+@pytest.mark.skipif(not _CORPUS_PRESENT, reason=_CORPUS_SKIP)
 def test_real_corpus_has_rejection_categories():
     # Corpus-health fold: the catalog must contain at least one multi-SID tune
     # so the per-row rejection test actually exercises it.
@@ -835,7 +842,7 @@ def test_real_corpus_has_rejection_categories():
     assert saw_multisid
 
 
-# The 27 known SID-Wizard "packed" (SWP) tunes in HVSC, relative to _HVSC.
+# The 27 known SID-Wizard "packed" (SWP) tunes in HVSC, relative to the HVSC root.
 _KNOWN_SWP_FILES = [
     "GAMES/G-L/Immensity_preview_2.sid",
     *(
@@ -877,7 +884,7 @@ _KNOWN_SWP_FILES = [
 ]
 
 
-@pytest.mark.skipif(not _CORPUS_PRESENT, reason="local HVSC corpus not present")
+@pytest.mark.skipif(not _CORPUS_PRESENT, reason=_CORPUS_SKIP)
 @pytest.mark.parametrize("rel", _KNOWN_SWP_FILES)
 def test_known_swp_file_parses_and_plays(rel):
     # The packed (SWP) tunes must now decode and play (all subtunes), with
