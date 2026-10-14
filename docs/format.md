@@ -300,6 +300,52 @@ portamento, vibrato, filter walking, instrument inheritance across F1, the
 WRPITCH detune-with-carry chain. Run it with `pytest -m oracle` (requires
 Docker).
 
+### Init and setup frames
+
+`SWMPlayer` starts from the driver's INITER state, so its render lines up with
+the first play call:
+
+- INITER zeroes every per-track variable. SPDCNT, PTNGATE and ARPSCNT start at 0,
+  so call 0 runs TICK_0 (the row read), call 1 runs TICK_1, and the row's note
+  starts at TICK_2. The default build never reaches TICK_2 at tempo 1 or 2.
+- During those setup ticks of a new-note row, HARDRST → HRENDER loads PLAYERZP
+  from CURINS without testing it. While CURINS is still 0, it reads instrument
+  0, which the exporter links to instrument 1 (`packdepack.inc:621-633`). It
+  walks that instrument from absolute offset 0, so the header bytes are read as
+  WF rows. HRGTOFF sets PTNGATE first; an instrument without a TICK_0 HR bit
+  keeps INITER's gate of 0. CNTPLAY returns on CURINS = 0, so note-less rows
+  walk nothing.
+- The CIA multispeed player (`exporter.asm` CIAPLAY) counts calls from 0, so
+  the first `frame_speed - 1` calls are MULPLY and call `frame_speed` is
+  PLAYER. MULCNTP does not test CURINS, so it walks instrument 0 until the
+  first STRTSND sets ARPSCNT to `$FF`.
+- The SID starts from the registers the init wrote (`SWMFile.sid_init`):
+  INITER clears the chip with `$00`, or with `$08` in early drivers.
+- Pitch lookups use the image's own `FREQTBL`/`FREQTBH` (PAL or NTSC). Before
+  SID-Wizard 1.8, STRTSND loads the first-frame pitch with `lda FREQTBH,x`, a
+  typo (ChangeLog.txt:101). The reader detects this from the player code
+  (`SWMFile.first_frame_freq_by_track`).
+- Build gates: without ARPSPEEDSUPP, WF bytes `$00-$0F` are waveforms. Without
+  CHORDSUPPORT, arp `$7F` is a relative step. Without WFARP_NOP_SUPP, `$80` is
+  absolute pitch 0.
+
+### Song selection
+
+`parse_sid_song` runs the song's init in the 6502 emulator.
+
+- **Player entry.** The entry is the last player jump table the init enters: a
+  `jmp ; jmp` pair below a `SID-WIZARD` tracker-info text. Memory is
+  snapshotted at that point, with the wrapper's patches applied and INITER
+  not yet run.
+- **Subtune.** The subtune is what that player's SETSEQA stores in the SUBTPOS
+  operand (`adc #SUBTPOS ; tay ; lda SUBTUNES,y`). This follows wrappers that
+  remap songs or patch `inisub`.
+- **Module.**
+  - Plain player: the module runs from the jump table to the next player.
+  - SWP player: the module starts at the SWP base passed in X / Y.
+- **Errors.** A subtune that the module does not decode raises
+  `SIDFormatError`.
+
 ### Out of scope
 
 Multi-SID, SFX, slowdown, and non-440 Hz tuning tables.

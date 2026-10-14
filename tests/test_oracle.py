@@ -11,18 +11,11 @@ The sidtrace oracle renders a PSID/RSID container through ``sidplayfp``; the fou
 bundled SID-Wizard example tunes are raw ``.swm`` modules it cannot read, so the
 native player is validated against real HVSC SID-Wizard ``.sid`` exports instead.
 :data:`TUNES` is the curated set of such exports whose native
-:class:`~pysidwizard.player.SWMPlayer` render matches the oracle frame-for-frame
-(built by running this comparison over the ``tests/_hvsc_corpus`` sample and
-keeping the byte-exact matches; the rest differ by driver version or the
-reader's lossy recovery and are excluded).
+:class:`~pysidwizard.player.SWMPlayer` render matches the oracle frame-for-frame.
 
-The oracle grid leads the native render by the SID-Wizard driver's init/setup
-frames: the native player starts at musical frame 0 (as the old asid-vice
-harness did with ``skip_transition``), so the match trims up to :data:`MAX_LEAD`
-leading oracle frames. It also excuses the single first musical frame, where the
-oracle still carries the driver's init-register residue in registers the tune
-has not written yet (the old harness ghost-seeded that residue); every remaining
-frame must match byte-for-byte.
+The native player models the driver's INITER state and the TICK_0 / TICK_1 setup
+frames of the first row, so its render matches the oracle from the first play
+call: no leading frame is trimmed or excused.
 """
 
 import os
@@ -30,7 +23,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from pysidtracker.testing import TuneFetchError, oracle_grid, resolve_tune
+from pysidtracker.oracle import cached_sidtrace, sidtrace_grid
+from pysidtracker.testing import TuneFetchError, make_oracle_fixtures, oracle_grid, resolve_tune
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -40,9 +34,8 @@ import oracle_hvsc  # noqa: E402  (after sys.path tweak)
 # via actions/cache). ``$PYSIDWIZARD_ORACLE_CACHE`` overrides the location.
 _CACHE = Path(os.environ.get("PYSIDWIZARD_ORACLE_CACHE", ".oracle-cache"))
 
-# Frames compared per tune, and the max leading oracle init/setup frames trimmed.
+# Frames compared per tune.
 FRAMES = 250
-MAX_LEAD = 4
 
 # HVSC SID-Wizard exports the native player reproduces byte-exactly against the
 # deterministic sidtrace oracle (curated from tests/_hvsc_corpus.SAMPLE).
@@ -101,42 +94,69 @@ TUNES = {
     "smooth_and_wonders": "MUSICIANS/V/Vincenzo/Smooth_and_Wonders.sid",
     "unfortunate_coincidence": "MUSICIANS/V/Vincenzo/Unfortunate_Coincidence.sid",
     # WF-arp relative steps whose sum leaves the 96-note table (masked indices 97 / 107 / 109 / 117): matched only once ABSPTCH's ``and #$7F`` replaced a clamp and the tunes' own past-FREQTBL image bytes backed the lookup.
-    "one_two_three_c64": "MUSICIANS/D/Deetsay/1_2_3_C64.sid",
     "argonaut": "MUSICIANS/A/AMB/Argonaut.sid",
     "memory_invaders": "MUSICIANS/C/Chiummo_Gaetano/Memory_Invaders.sid",
 }
 
 
-def _match_lead(oracle, rendered, max_lead=MAX_LEAD):
-    """Smallest lead with ``oracle[lead+1:lead+N] == rendered[1:N]``, else ``None``.
-
-    Trims the driver's leading init/setup frames the native player skips and
-    excuses only the first musical frame (its un-written init-register residue);
-    every other frame must match byte-for-byte.
-    """
-    n = len(rendered)
-    for lead in range(max_lead + 1):
-        segment = oracle[lead : lead + n]
-        if len(segment) == n and segment[1:] == rendered[1:]:
-            return lead
-    return None
+def _render(data, nframes):
+    return oracle_hvsc.render(data, 1, nframes)[0].tolist()
 
 
-@pytest.fixture(params=list(TUNES))
-def tune_id(request):
-    return request.param
+tune_id, oracle_match = make_oracle_fixtures(
+    TUNES,
+    hvsc_cache=_CACHE / "hvsc",
+    oracle_cache=_CACHE / "csv",
+    render=_render,
+    frames=FRAMES,
+    max_lead=0,
+)
 
 
 @pytest.mark.oracle
-def test_native_render_matches_oracle(tune_id):
-    path = resolve_tune(TUNES[tune_id], cache_dir=_CACHE / "hvsc", local_env="HVSC")
+def test_native_render_matches_oracle(oracle_match):  # noqa: F811
+    """The native render equals the oracle grid from the first play call on."""
+    oracle_match()
+
+
+# WF-arp relative steps whose sum leaves the 96-note table (masked indices 97 / 107 / 109 / 117).
+# The tune's own RSID raster IRQ ($0948) calls a play routine that first copies the
+# previous call's ghost registers ($0800-$0818) to the SID, so each driver frame
+# reaches the chip one interrupt later and the first interrupt writes nothing.
+DELAYED_TUNE = "MUSICIANS/D/Deetsay/1_2_3_C64.sid"
+
+
+@pytest.mark.oracle
+def test_ghost_buffered_rsid_matches_oracle_one_interrupt_late():
+    path = resolve_tune(DELAYED_TUNE, cache_dir=_CACHE / "hvsc", local_env="HVSC")
     if path is None:
-        raise TuneFetchError(f"tune {tune_id} unavailable (offline, not cached)")
-    seconds = (FRAMES + MAX_LEAD) // 50 + 2
+        raise TuneFetchError(f"{DELAYED_TUNE} unavailable (offline, not cached)")
     expected = oracle_grid(
-        path, oracle_cache=_CACHE / "csv", seconds=seconds, frames=FRAMES + MAX_LEAD
+        path, oracle_cache=_CACHE / "csv", seconds=FRAMES // 50 + 2, frames=FRAMES + 1
     )
-    rendered = oracle_hvsc.render(Path(path).read_bytes(), 1, FRAMES)[0].tolist()
-    assert (
-        _match_lead(expected, rendered) is not None
-    ), f"tune {tune_id}: native SWMPlayer render does not match the sidtrace oracle"
+    assert expected[0] == [0] * len(expected[0])
+    assert expected[1:] == _render(Path(path).read_bytes(), FRAMES)
+
+
+# Songs whose init maps the header song to another subtune or to another
+# embedded player's module (sidreader.parse_sid_song): (HVSC path, 1-based song).
+SONGS = {
+    "star_storm_5": ("GAMES/S-Z/Star_Storm.sid", 5),
+    "prex_2nd_player_4": ("GAMES/M-R/PREX.sid", 4),
+    "prex_2nd_player_9": ("GAMES/M-R/PREX.sid", 9),
+    "farming_simulator_1": ("MUSICIANS/V/Vincenzo/Farming_Simulator_6581.sid", 1),
+}
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize("song_id", list(SONGS))
+def test_song_render_matches_oracle(song_id):
+    relpath, song = SONGS[song_id]
+    path = resolve_tune(relpath, cache_dir=_CACHE / "hvsc", local_env="HVSC")
+    if path is None:
+        raise TuneFetchError(f"{relpath} unavailable (offline, not cached)")
+    rows = cached_sidtrace(
+        path, _CACHE / "csv" / f"{song_id}.csv.zst", seconds=FRAMES // 50 + 2, song=song
+    )
+    expected = sidtrace_grid(rows)[:FRAMES]
+    assert expected == oracle_hvsc.render(Path(path).read_bytes(), song, len(expected))[0].tolist()

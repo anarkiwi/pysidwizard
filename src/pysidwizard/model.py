@@ -688,6 +688,13 @@ class SWMFile:
     load_address: Optional[int] = DEFAULT_LOAD_ADDRESS
     # Image bytes following the player's FREQTBL. Indexed pitch loads past the table's 96 notes read them (player.asm:2523-2535), so a ``.sid`` carries its own; empty for a bare ``.swm``, which has no player image.
     freq_table_tail: bytes = b""
+    # Pre-1.8 drivers index STRTSND's first-frame FREQTBH load by X (the track offset) instead of Y = DPITCH (ChangeLog.txt:101).
+    first_frame_freq_by_track: bool = False
+    # The image's own FREQTBL / FREQTBH spans (256 bytes each from each table base): PAL or NTSC, plus the bytes past each table; empty for a bare ``.swm``.
+    freq_lo_image: bytes = b""
+    freq_hi_image: bytes = b""
+    # SID registers ($D400-$D418) as the ``.sid``'s init left them; empty for a bare ``.swm`` (all zero).
+    sid_init: bytes = b""
 
     @property
     def sequence_count(self) -> int:
@@ -746,6 +753,10 @@ class SWMFile:
             subtune_tempos=tempos,
             load_address=self.load_address,
             freq_table_tail=self.freq_table_tail,
+            first_frame_freq_by_track=self.first_frame_freq_by_track,
+            sid_init=self.sid_init,
+            freq_lo_image=self.freq_lo_image,
+            freq_hi_image=self.freq_hi_image,
         )
 
     def author_str(self) -> str:

@@ -55,7 +55,7 @@ from .reglog import (
     write_reglog,
 )
 from .sidfile import PsidHeader, is_sidwizard_sid, parse_psid_header
-from .sidreader import SidWizardSidParser, parse_sid, read_sid
+from .sidreader import SidWizardSidParser, parse_sid, parse_sid_song, read_sid
 from .writer import build_swm, write_swm
 
 __all__ = [
@@ -90,6 +90,7 @@ __all__ = [
     "pack_pattern",
     "parse_psid_header",
     "parse_sid",
+    "parse_sid_song",
     "parse_swm",
     "read_reglog",
     "read_sid",

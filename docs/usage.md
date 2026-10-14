@@ -55,6 +55,20 @@ back into the table. A module built in memory or read from a bare `.swm` has no
 image, and the player falls back to the shipped 1.94 build's first past-table
 byte — which only matters for tunes that arp beyond the note range.
 
+A `.sid` header song is only the accumulator the tune's init receives. Wrappers
+remap it to another subtune, patch the tune data, or call one of several
+embedded players (each with its own module). `parse_sid_song(data, song)` runs
+the init in the 6502 emulator up to the SID-Wizard player it enters and returns
+the single-subtune module that song actually plays, along with
+`SWMFile.sid_init` (the SID registers the init wrote) and the image's own
+`FREQTBL`/`FREQTBH` (`freq_lo_image` / `freq_hi_image`, NTSC exports included):
+
+```python
+from pysidwizard import SWMPlayer, parse_sid_song
+
+grid = SWMPlayer(parse_sid_song(open("tune.sid", "rb").read(), 2)).render_grid(500)
+```
+
 ## Build an SWM from scratch
 
 ```python
