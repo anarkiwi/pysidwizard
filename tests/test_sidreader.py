@@ -1,10 +1,8 @@
 """Tests for the PSID (``.sid``) reader.
 
-The :func:`test_parse_sid_*` cases build a minimal but fully valid SID-Wizard
-runtime tune image in-process (no external files — CI has no HVSC) from the
-documented exporter layout, then assert :func:`parse_sid` recovers the
-expected counts, notes, and instrument fields. The corpus smoke test at the
-bottom is opt-in and skips when the local HVSC tree is absent.
+The ``test_parse_sid_*`` cases build a minimal, fully valid SID-Wizard
+runtime tune image in-process from the documented exporter layout and assert
+:func:`parse_sid` recovers counts, notes, and instrument fields.
 """
 
 from __future__ import annotations
@@ -33,7 +31,7 @@ from pysidwizard import (
 from pysidwizard.constants import AUTHOR_LEN, AUTHOR_POS, SWM_MAGIC, TUNE_HEADER_SIZE
 from pysidwizard.model import encode_sequence, pack_pattern
 from pysidwizard.player import FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
-from pysidwizard.sidreader import _freq_table_tail
+from pysidwizard.sidreader import _filter_table_end, _freq_table_tail
 from tests._hvsc_fetch import HVSC_ROOT
 
 LOAD = 0x1000
@@ -79,10 +77,10 @@ def _make_psid(load: int, image: dict, end: int) -> bytes:
 def _build_reference_image():
     """Construct a tiny but structurally complete SID-Wizard tune image.
 
-    One subtune (3 channels), 2 patterns, 2 instruments, a 4-byte chord table,
+    One subtune (3 channels), 2 patterns, 3 instruments, a 4-byte chord table,
     no tempo programs. Returns ``(sid_bytes, expected)``.
     """
-    seq_amount, pat_amount, inst_amount = 3, 2, 2
+    seq_amount, pat_amount, inst_amount = 3, 2, 3
     chord_len, tempo_len = 4, 0
     image: dict = {}
 
@@ -128,9 +126,10 @@ def _build_reference_image():
             decay=3,
             sustain=10,
             release=5,
-            wf_table=bytes([0x41, 0x42]),
-            pw_table=bytes([0x00, 0x08]),
-            filter_table=bytes([0xF0]),
+            wf_table=bytes([0x41, 0x00, 0x00]),
+            pw_table=bytes([0x00, 0x08, 0x00]),
+            # Issue #58's BASS filter table: $FF bytes are row data, not the end.
+            filter_table=bytes.fromhex("c0c0009f080004ff000b030020ff00"),
         ),
         Instrument(
             control=0x40,
@@ -140,6 +139,12 @@ def _build_reference_image():
             wf_table=bytes([0x21]),
             pw_table=b"",
             filter_table=b"",
+        ),
+        Instrument(
+            control=0x20,
+            wf_table=bytes([0x21, 0x00, 0x00]),
+            # $FE jump row and a $FF keyboard-tracking byte: neither ends the table.
+            filter_table=bytes.fromhex("900000fe00000402ff"),
         ),
     ]
     inst_addrs = []
@@ -349,9 +354,9 @@ def _build_swp_image(subtunes=1, with_header=True, with_chord=True):
             decay=3,
             sustain=10,
             release=5,
-            wf_table=bytes([0x41, 0x42]),
-            pw_table=bytes([0x00, 0x08]),
-            filter_table=bytes([0xF0]),
+            wf_table=bytes([0x41, 0x00, 0x00]),
+            pw_table=bytes([0x00, 0x08, 0x00]),
+            filter_table=bytes.fromhex("c0c0009f080004ff000b030020ff00"),
         ),
         Instrument(
             control=0x40,
@@ -456,9 +461,9 @@ def test_parse_swp_recovers_pattern_and_instrument_content():
     i0, i1 = swm.instruments
     assert i0.control == 0x21
     assert (i0.attack, i0.decay, i0.sustain, i0.release) == (2, 3, 10, 5)
-    assert i0.wf_table == bytes([0x41, 0x42])
-    assert i0.pw_table == bytes([0x00, 0x08])
-    assert i0.filter_table == bytes([0xF0])
+    assert i0.wf_table == bytes([0x41, 0x00, 0x00])
+    assert i0.pw_table == bytes([0x00, 0x08, 0x00])
+    assert i0.filter_table == bytes.fromhex("c0c0009f080004ff000b030020ff00")
     assert i1.first_waveform == 0x11
     assert swm.sequences[0] == [PlayPattern(1), PlayPattern(2), End()]
     assert swm.sequences[1] == [Transpose(1), PlayPattern(2), End()]
@@ -523,16 +528,31 @@ def test_parse_sid_recovers_pattern_notes():
 def test_parse_sid_recovers_instrument_fields():
     sid, _ = _build_reference_image()
     swm = parse_sid(sid)
-    i0, i1 = swm.instruments
+    i0, i1, _i2 = swm.instruments
     assert i0.control == 0x10
     assert (i0.attack, i0.decay, i0.sustain, i0.release) == (2, 3, 10, 5)
-    assert i0.wf_table == bytes([0x41, 0x42])
-    assert i0.pw_table == bytes([0x00, 0x08])
-    assert i0.filter_table == bytes([0xF0])
+    assert i0.wf_table == bytes([0x41, 0x00, 0x00])
+    assert i0.pw_table == bytes([0x00, 0x08, 0x00])
+    assert i0.filter_table == bytes.fromhex("c0c0009f080004ff000b030020ff00")
+    # $FF bytes in the data columns and the $FE jump row stay in the table.
+    assert swm.instruments[2].filter_table == bytes.fromhex("900000fe00000402ff")
     assert i1.control == 0x40
     assert i1.first_waveform == 0x11
     # Names are not recoverable from a SID; placeholders are synthesised.
     assert i0.name == b"INST 01"
+
+
+def test_filter_table_end_walks_rows_not_bytes():
+    """A $FF data byte (column 1 or 2) and a $FE jump row do not end the table."""
+    rows = bytes.fromhex(
+        "c0c0009f080004ff000b030020ff00"  # issue's BASS rows: $FF sweep amounts
+        "90ff00"  # $FF in column 1
+        "0402ff"  # $FF in column 2
+        "fe0200"  # $FE jump row, column 0
+    )
+    data = rows + b"\xff\x00\x00"
+    assert _filter_table_end(data.__getitem__, 0, len(data)) == len(rows)
+    assert _filter_table_end(data.__getitem__, 0, len(rows)) is None
 
 
 def test_parse_sid_recovers_sequences():
