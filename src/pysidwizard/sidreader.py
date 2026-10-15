@@ -536,11 +536,43 @@ def read_sid(path: Union[str, os.PathLike[str]]) -> SWMFile:
         return parse_sid(fh.read())
 
 
+def parse_swp(data: bytes) -> SWMFile:
+    """Decode a standalone SID-Maker-SWP packed tune (``SWP1``) into :class:`SWMFile`.
+
+    A ``.swp`` is relocatable music data: the ``SWP1`` magic may sit bare at
+    offset 0 or follow a 2-byte little-endian load-address PRG prefix (offset 2).
+    The table pointers are relative to the magic, so the load address only sets
+    :attr:`~SWMFile.load_address` and does not affect the decode. There is no
+    container and no ``SWM1`` header, so the chord/tempo-table lengths and the
+    author come from the ``SWP1`` offset-table and block (see :func:`_build_swp`).
+
+    Raises :class:`SIDFormatError` when no ``SWP1`` magic is present at offset 0
+    or 2, or the offset-table / tables do not resolve to a coherent tune.
+    """
+    if len(data) >= 4 and data[0:4] == SWP_MAGIC:
+        magic, load = 0, 0
+    elif len(data) >= 6 and data[2:6] == SWP_MAGIC:
+        magic, load = 2, int.from_bytes(data[0:2], "little")
+    else:
+        raise SIDFormatError("input is not an SWP module (no 'SWP1' magic at offset 0 or 2)")
+    try:
+        return _build_swp(data, load, 0, magic)
+    except _LayoutError as exc:
+        raise SIDFormatError(f"SWP tables did not resolve: {exc}") from exc
+
+
+def read_swp(path: Union[str, os.PathLike[str]]) -> SWMFile:
+    """Read a standalone SID-Wizard ``.swp`` file from ``path`` into a :class:`SWMFile`."""
+    with open(path, "rb") as fh:
+        return parse_swp(fh.read())
+
+
 class SidWizardSidParser(BaseSidParser):
     """:class:`pysidtracker.BaseSidParser` adapter for SID-Wizard ``.sid`` tunes.
 
     Gives SID-Wizard the shared ``read``/``parse``/``detect`` surface: parsing
-    delegates to :func:`parse_sid`, and :meth:`recognize` anchors on the
+    delegates to :func:`parse_sid` for container tunes and :func:`parse_swp` for
+    standalone packed (``SWP1``) tunes, and :meth:`recognize` anchors on the
     ``SWM1`` tune header, the ``SWP1`` packed-export magic, or — for magic-less
     exports — the SID-Wizard 1.x player-code signature, so
     :meth:`~pysidtracker.BaseSidParser.detect` classifies a direct-load tune as
@@ -550,6 +582,9 @@ class SidWizardSidParser(BaseSidParser):
     error_class = SIDFormatError
 
     def parse(self, data: bytes, **kwargs: Any) -> SWMFile:
+        # A standalone packed tune (SWP1 at offset 0 or after a 2-byte load prefix) has no container.
+        if data[:4] == SWP_MAGIC or (len(data) >= 6 and data[2:6] == SWP_MAGIC):
+            return parse_swp(data, **kwargs)
         return parse_sid(data, **kwargs)
 
     def recognize(self, image: SidImage) -> object:

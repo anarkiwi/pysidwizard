@@ -44,6 +44,20 @@ if is_sidwizard_sid(data):
     swm = parse_sid(data)
 ```
 
+## Read a standalone SWP file
+
+A bare `SWP1` packed tune (with or without a two-byte load-address prefix) reads
+into the same model via `read_swp` / `parse_swp`:
+
+```python
+from pysidwizard import read_swp, parse_swp, SWMPlayer
+
+swm = read_swp("tune.swp")             # or parse_swp(open("tune.swp", "rb").read())
+player = SWMPlayer(swm)
+for _ in range(500):
+    player.play_frame()
+```
+
 This path is read-only and lossy (see [format.md](format.md#sid-wizard-sid-export-read-only-lossy)).
 
 A `.sid` also carries its player image, so `parse_sid` captures

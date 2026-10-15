@@ -5,10 +5,13 @@ library implements its SWM module format (documented in
 ``native/sources/SWM-spec.src`` of the SID-Wizard source distribution)
 from first principles — no native dependencies, no extension modules.
 
-Three public surfaces:
+Public surfaces:
 
 * :func:`read_swm` / :func:`parse_swm` — parse an SWM file or byte
   string into a :class:`SWMFile`.
+* :func:`parse_sid` / :func:`read_sid` and :func:`parse_swp` /
+  :func:`read_swp` — read SID-Wizard ``.sid`` exports (plain or ``SWP``-packed)
+  and standalone ``.swp`` packed tunes into the same :class:`SWMFile`.
 * :func:`write_swm` / :func:`build_swm` — serialise an :class:`SWMFile`
   back to disk or bytes; round-trips byte-exactly.
 * :class:`SWMPlayer` (in :mod:`pysidwizard.player`) — per-frame
@@ -55,7 +58,14 @@ from .reglog import (
     write_reglog,
 )
 from .sidfile import PsidHeader, is_sidwizard_sid, parse_psid_header
-from .sidreader import SidWizardSidParser, parse_sid, parse_sid_song, read_sid
+from .sidreader import (
+    SidWizardSidParser,
+    parse_sid,
+    parse_sid_song,
+    parse_swp,
+    read_sid,
+    read_swp,
+)
 from .writer import build_swm, write_swm
 
 __all__ = [
@@ -91,10 +101,12 @@ __all__ = [
     "parse_psid_header",
     "parse_sid",
     "parse_sid_song",
+    "parse_swp",
     "parse_swm",
     "read_reglog",
     "read_sid",
     "read_swm",
+    "read_swp",
     "straight_tempo",
     "sustain_release",
     "unpack_pattern",

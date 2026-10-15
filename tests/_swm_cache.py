@@ -55,6 +55,16 @@ TUNE_MEMBERS: Dict[str, Tuple[str, str]] = {
 
 TUNE_NAMES: Tuple[str, ...] = tuple(TUNE_MEMBERS.keys())
 
+# Packed ``SWP`` music-data files from the tarball, keyed by cache file name.
+SWP_FILES: Dict[str, Tuple[str, str]] = {
+    "flashitback.swp": (
+        "SID-Wizard-1.94/native/sources/SWP-slowdown-example/flashitback.swp",
+        "ce7180b2dcb0902d760a40968354af35bf59c983a9ba34ba36a6cb360afd1dbe",
+    ),
+}
+
+SWP_NAMES: Tuple[str, ...] = tuple(SWP_FILES.keys())
+
 
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -153,3 +163,27 @@ def swm_path(tune: str) -> Path:
 def all_swm_paths() -> Dict[str, Path]:
     """Materialise all four tunes; return ``{tune: path}``."""
     return {tune: swm_path(tune) for tune in TUNE_NAMES}
+
+
+def swp_path(name: str) -> Path:
+    """Return a path to the cached ``SWP`` file ``name``, fetched + extracted on
+    first call. SHA-256 verified. Idempotent and safe under ``pytest-xdist``."""
+    if name not in SWP_FILES:
+        raise KeyError(f"unknown SWP file {name!r}; expected one of {SWP_NAMES}")
+    member, expected_sha = SWP_FILES[name]
+    dest = swm_cache_dir() / name
+    if dest.is_file() and _sha256(dest) == expected_sha:
+        return dest
+
+    tarball = _tarball_path()
+    with tarfile.open(tarball, "r:gz") as tf:
+        src = tf.extractfile(member)
+        if src is None:
+            raise RuntimeError(f"tarball member {member!r} is not a regular file")
+        data = src.read()
+
+    got = hashlib.sha256(data).hexdigest()
+    if got != expected_sha:
+        raise RuntimeError(f"{name} SHA-256 mismatch: got {got}, expected {expected_sha}")
+    _atomic_write(dest, data)
+    return dest
