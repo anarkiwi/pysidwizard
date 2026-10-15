@@ -61,13 +61,15 @@ header: nine little-endian 16-bit offsets (relative to that same base) at
 fixed byte positions — subtunes, ptn-lo/hi, inst-lo/hi, chord table/ptrs and
 tempo table/ptrs (see :data:`_SWP_TABLE_OFFSETS`).
 
-The structural counts come from the table extents (the tables are laid out
-contiguously, so e.g. ``patterns = ptn_hi_off - ptn_lo_off`` and
-``subtunes = (next_off - subtunes_off) // 8``), not from the ``SWM1`` header:
+Structural counts and, unlike the plain path, the chord/tempo-table lengths and
+the tune's author all come from the ``SWP1`` block, not the ``SWM1`` header:
 some packed exports ship a stale player-template ``SWM1`` header (placeholder
-counts, author ``"SIW-WIZARD"``) or omit it entirely. When an ``SWM1`` header
-is present it is still used for the lossy metadata (frame speed, author,
-driver/tuning, chord/tempo-table lengths); otherwise model defaults are used.
+counts, author ``"SIW-WIZARD"``) or omit it entirely. The counts derive from
+the table extents (e.g. ``patterns = ptn_hi_off - ptn_lo_off``), the chord table
+runs from its base to the tempo-table base, the tempo table down to the
+8-byte RESTEMP area below the subtunes, and the author sits at
+``SWP1+AUTHOR_POS``. An ``SWM1`` header, when present, still supplies the
+remaining lossy metadata (frame speed, driver/tuning); else model defaults.
 """
 
 from __future__ import annotations
@@ -728,16 +730,19 @@ def _build_swp(data: bytes, load: int, base: int, swp_off: int) -> SWMFile:
         )
     seq_amount = subtunes * SID_CHANNELS
 
-    # The SWM1 header, when present, supplies the lossy metadata and the
-    # chord/tempo-table lengths. It is optional for packed tunes.
+    # [chord][tempo][8B RESTEMP][subtunes]; SWM1 header is not trusted for lengths
+    chord_len = offs["tempo_table"] - offs["chord_table"]
+    tempo_len = offs["subtunes"] - offs["tempo_table"] - _RESTEMP_SHIFT
+    if chord_len < 0 or tempo_len < 0:
+        raise _LayoutError(
+            f"implausible SWP chord/tempo lengths: chord={chord_len}, tempo={tempo_len}"
+        )
+
     swm_pos = data.find(SWM_MAGIC, base)
     if 0 <= swm_pos and swm_pos + TUNE_HEADER_SIZE <= len(data):
         swm_header: Optional[bytes] = data[swm_pos : swm_pos + TUNE_HEADER_SIZE]
-        chord_len = swm_header[CHORD_LENGTH_POS]
-        tempo_len = swm_header[TEMPO_LENGTH_POS]
     else:
         swm_header = None
-        chord_len = tempo_len = 0
 
     inst_lo = swp_base + offs["inst_lo"]
     inst_hi = swp_base + offs["inst_hi"]
@@ -766,7 +771,7 @@ def _build_swp(data: bytes, load: int, base: int, swp_off: int) -> SWMFile:
     chord_table = chunk(swp_base + offs["chord_table"], chord_len) if chord_len else b""
     tempo_table = chunk(swp_base + offs["tempo_table"], tempo_len) if tempo_len else b""
 
-    return _assemble(
+    swm = _assemble(
         swm_header,
         load,
         sequences,
@@ -776,6 +781,11 @@ def _build_swp(data: bytes, load: int, base: int, swp_off: int) -> SWMFile:
         tempo_table,
         subtune_tempos,
     )
+    # The tune's real author is in the SWP1 block; the SWM1 header's is the template's.
+    auth_end = swp_off + AUTHOR_POS + AUTHOR_LEN
+    if auth_end <= len(data) and data[swp_off + AUTHOR_POS : auth_end].rstrip(b" \x00"):
+        swm.author = bytes(data[swp_off + AUTHOR_POS : auth_end])
+    return swm
 
 
 def _resolve_ptr(raw, ptr_base, load, end, reloc_delta):
