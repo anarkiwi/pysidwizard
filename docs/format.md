@@ -50,8 +50,9 @@ Both plain and **packed (`SWP`)** exports are decoded. "Packed" is a misnomer â€
 the tune data is not compressed; it is the same runtime layout with *relative*
 pointer tables located via an offset-table in the `SWP1` header. Some packed
 exports ship a stale player-template `SWM1` header or omit it, so for `SWP` tunes
-the structural counts come from the table extents and the lossy metadata
-defaults when no real header is present. No exomizer/cruncher is involved; the
+the structural counts come from the table extents and the chord/tempo tables
+and author come from the `SWP1` offset-table and block (a shipped `SWM1` header
+only supplies the frame speed / driver / tuning, if anything). No exomizer/cruncher is involved; the
 embedded tune data is always stored fully expanded (the only surviving
 compression is the player's native NOP-RLE inside patterns, `$70..$77`).
 

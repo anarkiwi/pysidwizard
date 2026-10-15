@@ -30,7 +30,7 @@ from pysidwizard import (
     parse_sid,
     read_sid,
 )
-from pysidwizard.constants import SWM_MAGIC, TUNE_HEADER_SIZE
+from pysidwizard.constants import AUTHOR_LEN, AUTHOR_POS, SWM_MAGIC, TUNE_HEADER_SIZE
 from pysidwizard.model import encode_sequence, pack_pattern
 from pysidwizard.player import FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
 from pysidwizard.sidreader import _freq_table_tail
@@ -306,11 +306,10 @@ def _build_swp_image(subtunes=1, with_header=True, with_chord=True):
     chord_table = bytes([0x00, 0x03, 0x07, 0x0C, 0x7F]) if with_chord else b""
     chord_len = len(chord_table)
 
-    # Optional SWM1 header (metadata + chord/tempo lengths). Stale seq/pat/inst
-    # counts (99/99) so the test fails if the reader trusts them.
+    # Stale SWM1 template header (99/99/99 + template author) the reader must ignore
     if with_header:
         swm_pos = LOAD + 0x20
-        put(swm_pos, _swm_header(99, 99, 99, chord_len, 0, author=b"SWPTESTER"))
+        put(swm_pos, _swm_header(99, 99, 99, 99, 99, author=b"SIW-WIZARD"))
 
     # --- bodies: sequences, patterns, instruments (all above swp_base) ---
     cursor = swp_base + 0x40
@@ -371,15 +370,14 @@ def _build_swp_image(subtunes=1, with_header=True, with_chord=True):
         put(cursor, inst.encode() + b"\xff")
         cursor += len(inst.encode()) + 1
 
-    # Chord table sits below the subtune table (so it is excluded from the
-    # subtune-extent count probe).
+    # Layout [chord][tempo][8B RESTEMP][subtunes] the reader derives lengths from
     chord_addr = cursor
     if chord_len:
         put(chord_addr, chord_table)
-        cursor += chord_len
+    tempo_addr = chord_addr + chord_len
+    sub_addr = tempo_addr + 8
 
-    # --- tables (contiguous; counts are read from these extents) ---
-    sub_addr = cursor
+    # --- pointer tables above the subtunes (contiguous; counts from extents) ---
     tempopt_addr = sub_addr + 8 * subtunes  # immediate successor of subtunes
     chordpt_addr = tempopt_addr + 1
     inst_lo_addr = chordpt_addr + 1
@@ -404,7 +402,7 @@ def _build_swp_image(subtunes=1, with_header=True, with_chord=True):
         image[ptn_lo_addr + k] = rel & 0xFF
         image[ptn_hi_addr + k] = (rel >> 8) & 0xFF
 
-    # --- SWP1 header offset-table (offsets relative to swp_base) ---
+    # --- SWP1 header: offset-table (+ the tune's real author at +AUTHOR_POS) ---
     put(swp_base, b"SWP1")
     offsets = {
         "subtunes": sub_addr - swp_base,
@@ -414,18 +412,20 @@ def _build_swp_image(subtunes=1, with_header=True, with_chord=True):
         "inst_hi": inst_hi_addr - swp_base,
         "chord_table": chord_addr - swp_base,
         "chord_ptr": chordpt_addr - swp_base,
-        "tempo_table": chord_addr - swp_base,  # tl=0, value unused
+        "tempo_table": tempo_addr - swp_base,  # top of chord table
         "tempo_ptr": tempopt_addr - swp_base,
     }
     for name, pos in _SWP_OFFSET_POS.items():
         put(swp_base + pos, offsets[name].to_bytes(2, "little"))
+    put(swp_base + AUTHOR_POS, (b"SWPTESTER").ljust(AUTHOR_LEN, b" "))
 
     expected = {
         "seq_amount": seq_amount,
         "pat_amount": pat_amount,
         "inst_amount": inst_amount,
         "subtune_count": subtunes,
-        "chord_table": chord_table if (with_header and with_chord) else b"",
+        "chord_table": chord_table if with_chord else b"",
+        "author": b"SWPTESTER",
         "subtune_tempos": subtune_tempos,
         "pat_rows": pat_rows,
         "insts": insts,
@@ -472,14 +472,15 @@ def test_parse_swp_result_plays():
 
 
 def test_parse_swp_without_swm1_header():
-    # Packed exports may omit the SWM1 header entirely; the reader must still
-    # resolve the tables (using model defaults for the lossy metadata).
-    sid, exp = _build_swp_image(with_header=False, with_chord=False)
+    # No SWM1 header: chord length and author must still come from the SWP1 block
+    sid, exp = _build_swp_image(with_header=False, with_chord=True)
     assert b"SWM1" not in sid[0x7E:]
     swm = parse_sid(sid)
     assert len(swm.patterns) == exp["pat_amount"]
     assert len(swm.instruments) == exp["inst_amount"]
-    assert swm.chord_table == b""
+    assert swm.chord_table == exp["chord_table"]
+    assert swm.chord_table
+    assert swm.author.startswith(b"SWPTESTER")
     SWMPlayer(swm).play_frame()
 
 
