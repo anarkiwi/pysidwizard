@@ -446,8 +446,8 @@ class SWMPlayer(MemPlayer):
     compares against.
 
     This is a pure-Python transcription of SID-Wizard's 6502 player: the
-    inherited 64 KiB memory image is used only as the ``$D400`` SID register
-    file that :meth:`_frame` writes into and :meth:`snapshot` reads back.
+    inherited memory image is used only as the ``$D400`` SID register file
+    that :meth:`_frame` writes into and :meth:`snapshot` reads back.
     """
 
     def __init__(self, swm: SWMFile, features: Optional[PlayerFeatures] = None) -> None:
@@ -1614,13 +1614,7 @@ class SWMPlayer(MemPlayer):
         # once for SLIDEVIB >= $20 and a second time for SLIDEVIB <
         # $20 (the NORMVIB quarter-timer path).
         v.vibrato_freq_counter = freq_nibble >> 1
-        # Calculated-vibrato FREQMOD lookup. Player.asm SETVAMP does
-        # ``and #$F0; lsr`` -> A = amp_nibble*8; SETFMOD's ``beq wrFmodL``
-        # then zeroes FREQMOD when amp_nibble == 0 (no lookup happens).
-        # Mirror that — earlier code unconditionally looked up
-        # NOTE_FREQ[play_note], producing a phantom FREQMOD on
-        # vibrato-disabled instruments (vibrato byte $00). Hidden until
-        # the VIBRACNT bail on vibrato_period==0 was removed.
+        # SETFMOD's ``beq wrFmodL`` zeroes FREQMOD when amp_nibble == 0 (vibrato byte $00).
         if amp_nibble == 0:
             v.vibrato_freqmod_lo = 0
             v.vibrato_freqmod_hi = 0
@@ -2362,7 +2356,7 @@ class SWMPlayer(MemPlayer):
         if v.hr_timer > 0:
             # During the HR test-bit frame the player writes the FULL
             # post-HR ADSR (AD + SR with small-fx overrides) along with
-            # CTRL = first_waveform AND ptn_gate. The HR-SR value lives
+            # CTRL = effective_first_waveform (SWM1's $00->$09 depacker default) AND ptn_gate. The HR-SR value lives
             # in the AD/SR slots already, having been written by the
             # pre-HR phase ``PRE_HR_LEAD_FRAMES`` frames earlier — see
             # ``_maybe_emit_pre_hr``. So this frame is the "release the
@@ -2389,7 +2383,7 @@ class SWMPlayer(MemPlayer):
                 # Flag off: the ``and #8`` test is compiled out and STRTSND unconditionally does ``lda #$09 ; sta WFGHOST,x``.
                 v.sid_ctrl = 0x09
             elif ins.control & 0x08:
-                v.sid_ctrl = ins.first_waveform & v.ptn_gate
+                v.sid_ctrl = ins.effective_first_waveform & v.ptn_gate
                 # INSCTRL (player.asm:1839) indexes with an unmasked ``ldy DPITCH,x``;
                 # pre-1.8 drivers index by the track offset X instead.
                 if self.swm.first_frame_freq_by_track:
