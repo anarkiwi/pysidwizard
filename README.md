@@ -12,7 +12,8 @@ Also consumes `.sid` files (PSID/RSID containers) and bare `.prg` images through
 the shared [`pysidtracker`](https://github.com/anarkiwi/pysidtracker) base:
 SID-Wizard `.sid` exports (plain or packed `SWP`) are read into the same
 `SWMFile` model, packed/relocating builds are detected, and container headers
-are not trusted. The `.sid` path is read-only and lossy (see
+are not trusted. Standalone packed `.swp` files (`SWP1`) are read with the same
+decodable fidelity. The `.sid`/`.swp` paths are read-only and lossy (see
 [docs/format.md](docs/format.md)).
 
 ## Install
@@ -37,12 +38,16 @@ write_swm(swm, "out.swm")             # byte-exact round-trip
 # SID-Wizard tunes exported to .sid read into the same model:
 from pysidwizard import read_sid
 swm_from_sid = read_sid("tune.sid")   # read-only, lossy
+
+# ...as do standalone packed .swp files (SWP1):
+from pysidwizard import read_swp
+swm_from_swp = read_swp("tune.swp")   # read-only, lossy
 ```
 
 See [docs/usage.md](docs/usage.md) for building modules from scratch, playback,
 WAV rendering, raw write iteration, and the CLI, and
-[docs/format.md](docs/format.md) for the SWM/`.sid` format, data model, and
-player correctness. The [HVSC oracle survey](docs/usage.md#hvsc-oracle-survey)
+[docs/format.md](docs/format.md) for the SWM/`.sid`/`.swp` format, data model,
+and player correctness. The [HVSC oracle survey](docs/usage.md#hvsc-oracle-survey)
 runs the player against every HVSC SID-Wizard tune.
 
 ## Development

@@ -56,6 +56,13 @@ only supplies the frame speed / driver / tuning, if anything). No exomizer/crunc
 embedded tune data is always stored fully expanded (the only surviving
 compression is the player's native NOP-RLE inside patterns, `$70..$77`).
 
+A **standalone `.swp`** is that same `SWP1` tune body with no `.sid` container —
+a bare `SWP1` block, or one led by a two-byte little-endian load-address prefix.
+`parse_swp(data)` / `read_swp(path)` decode it with exactly the `SWP1` offset-table
+path above (so nothing to trust from any container header), the load prefix (if
+any) only sets the model's `load_address`, and the same read-only/lossy caveats
+as the `.sid` path apply.
+
 Scope is **single-SID** `PSID`/`RSID` tunes (plain or `SWP`) — the large majority
 of SID-Wizard tunes in HVSC. Of the 1126 tunes `sidid` labels
 `Hermit/SidWizard_V1.x`, **1076 parse and play** and the remaining 50 are
