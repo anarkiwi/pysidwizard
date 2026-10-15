@@ -1,26 +1,23 @@
 """Read SID-Wizard-authored single-SID PSID (``.sid``) files.
 
-This is a **read-only, lossy** companion to :mod:`pysidwizard.reader`. Where
-``parse_swm`` reads SID-Wizard's editor workfile (``.swm``), :func:`parse_sid`
-recovers a playable :class:`~pysidwizard.model.SWMFile` from the *runtime*
-tune image that SID-Wizard's exporter bakes into a ``.sid`` file. The result
-drives :class:`~pysidwizard.player.SWMPlayer` unchanged.
+Read-only, lossy companion to :mod:`pysidwizard.reader`: where ``parse_swm``
+reads the editor workfile (``.swm``), :func:`parse_sid` recovers a playable
+:class:`~pysidwizard.model.SWMFile` from the runtime image the exporter
+bakes into a ``.sid``.
 
-It is lossy on purpose: the exporter discards instrument names and the
-editor's per-pattern row-length is not authoritatively recoverable, so this
-module synthesises placeholder instrument names and best-effort lengths. Do
-**not** route the result back through the writer expecting a byte-exact
-round-trip.
+Usage and scope
+---------------
+Lossy on purpose: instrument names are discarded and per-pattern row-lengths
+are best-effort, so do **not** round-trip the result through the writer.
 
-Scope: single-SID ``PSID`` and ``RSID`` tunes, including SID-Wizard's
-*packed* (``SWP``) exports. Multi-subtune tunes are fully decoded (each
-subtune is reachable via :meth:`SWMFile.subtune`). Exports whose runtime
-image only materialises once the player's init has run -- packed/relocating
-drivers, alternate-driver layouts, or CIA/IRQ multispeed starters -- are
-recovered by running the tune's own player (:func:`_build_via_player`). Only
-multi-SID files are out of scope, rejected with a clear, specific error (the
-player and model are single-SID only).
+Covers single-SID ``PSID``/``RSID`` tunes, plain and packed (``SWP``),
+including multi-subtune tunes (via :meth:`SWMFile.subtune`). Exports whose
+tables only materialise under the player's init are recovered by running
+it (:func:`_build_via_player`); multi-SID files are rejected (the player and
+model are single-SID only).
 
+Layout model
+------------
 Two on-disk layouts are decoded; the byte-level decoding of patterns,
 instruments, sequences and chord/tempo tables is identical between them and
 shared. They differ only in how the pointer-table bases are located and
@@ -163,8 +160,7 @@ _RESTEMP_SHIFT = 2 + 2 * SID_CHANNELS  # 8 for one SID
 # How far below inst_lo to scan for the subtune table (covers the chord- and
 # tempo-pointer tables, whose combined size is bounded by the editor limits).
 _SUBTUNE_SCAN_WINDOW = 320
-# Per-pattern / per-instrument / per-sequence walk guards (defensive bounds).
-_INSTRUMENT_TABLE_GUARD = 0x200
+# Per-pattern / per-sequence walk guards (defensive bounds).
 _PATTERN_GUARD = 0x400
 _SEQUENCE_GUARD = 0x400
 
@@ -838,15 +834,31 @@ def _resolve_ptr(raw, ptr_base, load, end, reloc_delta):
     return addr
 
 
+def _filter_table_end(byte, start: int, bound: int) -> Optional[int]:
+    """Address of a filter table's terminating ``$FF`` row (column 0), else None.
+
+    Filter rows are 3 bytes; only column 0 is a command (player.asm
+    ``FLTPOSI``/``NOCWEEP``: ``$FF`` end, ``$FE`` jump, ``$80..$FD`` set,
+    ``$00..$7F`` sweep). ``$FF`` in the sweep-amount or keyboard-tracking
+    columns is data, so the walk steps whole rows.
+    """
+    cursor = start
+    while cursor < bound:
+        if byte(cursor) == TABLE_END:
+            return cursor
+        cursor += 3
+    return None
+
+
 def _decode_instruments(
     byte, chunk, inst_lo, inst_hi, inst_amount, load, end, ptr_base=0, reloc_delta=0
 ):
     """Decode the ``inst_amount`` instruments (1-based; index 0 is the dummy).
 
     Each instrument is a 16-byte header followed by three inline ``$FF``-
-    terminated tables (waveform / pulse-width / filter). The body runs from
-    the pointer to the filter table's terminating ``$FF`` — exactly the span
-    the player reads — and is handed to :meth:`Instrument.decode`.
+    terminated tables (waveform / pulse-width / filter). The body runs to the
+    filter table's terminating ``$FF`` row (column 0) and is handed to
+    :meth:`Instrument.decode`.
     """
     instruments: List[Instrument] = []
     for k in range(1, inst_amount + 1):
@@ -854,15 +866,9 @@ def _decode_instruments(
         addr = _resolve_ptr(raw, ptr_base, load, end, reloc_delta)
         if not (load <= addr < end):
             raise _LayoutError(f"instrument {k} pointer {addr:#06x} out of range")
-        # The filter-table pointer is relative to the instrument base; walk to
-        # its ``$FF`` terminator to find where the body ends.
-        cursor = addr + byte(addr + INST_FILTER_TABLE_PTR_POS)
-        guard = 0
-        while byte(cursor) != TABLE_END:
-            cursor += 1
-            guard += 1
-            if guard > _INSTRUMENT_TABLE_GUARD:
-                raise _LayoutError(f"instrument {k} filter table unterminated")
+        cursor = _filter_table_end(byte, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), inst_lo)
+        if cursor is None:
+            raise _LayoutError(f"instrument {k} filter table unterminated")
         try:
             instruments.append(Instrument.decode(chunk(addr, cursor - addr), name=b"INST %02d" % k))
         except _LayoutError:
@@ -1566,9 +1572,9 @@ def _decode_player_instruments(byte, chunk, inst_lo, inst_hi, amount, ceil, inra
                 raise _LayoutError(f"referenced instrument {k} is absent from the image")
             instruments.append(Instrument(name=name))
             continue
-        cursor = addr + byte(addr + INST_FILTER_TABLE_PTR_POS)
-        while cursor < ceil and byte(cursor) != TABLE_END:
-            cursor += 1
+        cursor = _filter_table_end(byte, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), ceil)
+        if cursor is None:
+            cursor = ceil
         try:
             instruments.append(Instrument.decode(chunk(addr, cursor - addr), name=name))
         except _LayoutError:
