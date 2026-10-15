@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 
 import pytest
+from pysidtracker import is_rsid
 
 from pysidwizard import (
     End,
@@ -790,7 +791,7 @@ def test_real_corpus_has_expected_coverage():
         parsed += 1
         if is_swp:
             swp_parsed += 1
-        if data[:4] == b"RSID":
+        if is_rsid(data):
             rsid_seen = True
         if swm.subtune_count > 1:
             multisubtune_seen = True
