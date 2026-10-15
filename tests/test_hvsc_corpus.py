@@ -97,7 +97,7 @@ def test_sample_is_representative():
     rsid = swp = multisubtune = 0
     for rel in SAMPLE:
         data = _read(rel)
-        if data[:4] == b"RSID":
+        if pysidtracker.is_rsid(data):
             rsid += 1
         if data.find(b"SWP1", parse_psid_header(data).data_start) >= 0:
             swp += 1

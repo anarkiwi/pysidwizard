@@ -232,3 +232,6 @@ tests/.tunecache/
 
 # pysidtracker.survey work dir: copyright-derived traces.
 .hvsc-survey/
+
+# Local git worktree checkouts.
+.worktrees/

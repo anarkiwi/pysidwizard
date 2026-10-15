@@ -5,6 +5,7 @@
 """
 
 import numpy as np
+from pysidtracker import is_rsid
 from pysidtracker.cadence import playroutine_cadence
 from pysidtracker.registers import PAL_CYCLES_PER_FRAME
 
@@ -20,7 +21,7 @@ def render(data, song, nframes):
     info = {
         "driver": swm.driver_type,
         "frame_speed": swm.frame_speed,
-        "rsid": data[:4] == b"RSID",
+        "rsid": is_rsid(data),
         "trigger": cadence.source and cadence.source.value,
         "speed": round(PAL_CYCLES_PER_FRAME / cadence.cycles_per_call),
         "dynamic": cadence.dynamic,
