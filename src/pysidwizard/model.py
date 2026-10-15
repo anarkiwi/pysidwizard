@@ -513,6 +513,17 @@ class Instrument:
     def name_str(self) -> str:
         return self.name.decode("latin-1").rstrip(" \x00")
 
+    @property
+    def effective_first_waveform(self) -> int:
+        """First-frame waveform as the player sees it: SWM1's depacker substitutes a stored
+        ``0`` with the ``$09`` default (test bit + gate) — ``packdepack.inc:693-699``,
+        ``ChangeLog.txt:285,297`` — while :attr:`first_waveform` stays raw so the writer
+        round-trips the on-disk byte exactly.
+        """
+        if self.first_waveform == 0:
+            return 0x09
+        return self.first_waveform
+
     def table_image(self) -> bytes:
         """The instrument's contiguous after-header table memory:
         ``wf_table + 0xFF + pw_table + 0xFF + filter_table``.

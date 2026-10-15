@@ -1,21 +1,8 @@
-"""Fetch + cache the four SWM test tunes on demand.
+"""Fetch + cache the SWM test tunes on demand, SHA-256 verified, never committed.
 
-The repo deliberately does NOT track ``tests/data/*.swm`` — they're
-SID-Wizard binary artifacts, redistributed as part of the SID-Wizard
-1.94 source tarball. This module downloads that tarball directly from
-CSDB (SHA-256 verified) and extracts only the four tunes the player
-test suite uses.
-
-Each tune's bytes are verified by SHA-256 against the value bundled in
-the SID-Wizard 1.94 release. A mismatch is a hard error — never let a
-test run against an unexpected SWM.
-
-Usage::
-
-    from tests._swm_cache import swm_path
-    p = swm_path("flashitback")  # Path to a verified, cached SWM.
-
-Test-only module — imported only from ``tests/``.
+CSDB sources: the SID-Wizard 1.94 source tarball (four player-test tunes, one SWP) and
+the SID-Wizard 1.7 smallpack (quickscore.swm). Any SHA-256 mismatch is a hard error.
+Test-only module, imported only from ``tests/``.
 """
 
 from __future__ import annotations
@@ -26,6 +13,7 @@ import tarfile
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -64,6 +52,12 @@ SWP_FILES: Dict[str, Tuple[str, str]] = {
 }
 
 SWP_NAMES: Tuple[str, ...] = tuple(SWP_FILES.keys())
+
+# quickscore.swm — all nine instruments store first-waveform byte $00 (the SWM1 $09-at-load default).
+SW17_ZIP_URL = "https://csdb.dk/getinternalfile.php/131083/SID-Wizard-1.7-smallpack.zip"
+SW17_ZIP_SHA256 = "c7fabb73aefa5a779d9ced7a661258c33e97ac4ee42bea22fa5ae8ee6e55167f"
+QUICKSCORE_MEMBER = "SID-Wizard-1.7-smallpack/demotunes/didnt-fit-on-disk/quickscore.swm"
+QUICKSCORE_SHA256 = "52cf7c8662aa297e7306b421f4966c5a5bacb79c5dd6dee79dca9a704d2329f0"
 
 
 def _sha256(path: Path) -> str:
@@ -185,5 +179,30 @@ def swp_path(name: str) -> Path:
     got = hashlib.sha256(data).hexdigest()
     if got != expected_sha:
         raise RuntimeError(f"{name} SHA-256 mismatch: got {got}, expected {expected_sha}")
+    _atomic_write(dest, data)
+    return dest
+
+
+def quickscore_path() -> Path:
+    """SHA-256 verified path to quickscore.swm from the SID-Wizard 1.7 smallpack."""
+    dest = swm_cache_dir() / "quickscore.swm"
+    if dest.is_file() and _sha256(dest) == QUICKSCORE_SHA256:
+        return dest
+    archive = swm_cache_dir() / "SID-Wizard-1.7-smallpack.zip"
+    if not (archive.is_file() and _sha256(archive) == SW17_ZIP_SHA256):
+        data = _download(SW17_ZIP_URL)
+        got = hashlib.sha256(data).hexdigest()
+        if got != SW17_ZIP_SHA256:
+            raise RuntimeError(
+                f"SID-Wizard-1.7-smallpack.zip SHA-256 mismatch: got {got}, expected {SW17_ZIP_SHA256}"
+            )
+        _atomic_write(archive, data)
+    with zipfile.ZipFile(archive) as zf:
+        data = zf.read(QUICKSCORE_MEMBER)
+    got = hashlib.sha256(data).hexdigest()
+    if got != QUICKSCORE_SHA256:
+        raise RuntimeError(
+            f"quickscore.swm SHA-256 mismatch: got {got}, expected {QUICKSCORE_SHA256}"
+        )
     _atomic_write(dest, data)
     return dest
