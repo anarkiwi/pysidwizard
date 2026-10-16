@@ -489,6 +489,7 @@ class Instrument:
     """
 
     name: bytes = b""
+    load_address: int | None = None  # .swi PRG load address; None inside an SWM
     control: int = 0
     hr_attack: int = 0
     hr_decay: int = 0
