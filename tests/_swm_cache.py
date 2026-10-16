@@ -212,6 +212,71 @@ def all_oob_inst_paths() -> Dict[str, Path]:
     return {name: oob_inst_path(name) for name in OOB_INST_TUNE_NAMES}
 
 
+# issue #53: native multi-SID work files (SWMS/SWT/SWMQ), all in the 1.94 tarball.
+MULTI_SID_MEMBERS: Dict[str, Tuple[str, str]] = {
+    "childhood.sws": (
+        "SID-Wizard-1.94/native/examples/childhood.sws",
+        "2316115fb12447dce36fd0dfe5339327149936efdcfa3f453b3a846e65ce067a",
+    ),
+    "egblues.sws": (
+        "SID-Wizard-1.94/native/examples/egblues.sws",
+        "a6129d0f0c49e75c94cca5eb12cf3211e97c59e43cc2039f08b28a5aef06c2eb",
+    ),
+    "chb-stickman.sws": (
+        "SID-Wizard-1.94/resources/examples/chb-stickman.sws",
+        "17dfcba14fbe5321f155442dde57c61cb12af6b2d79c8f8455ddc3c67dafa06b",
+    ),
+    "newwave.swt": (
+        "SID-Wizard-1.94/native/examples/newwave.swt",
+        "be745aa47d80f4c90364ae81cb0a366ea0df6e5eb97c580067dc07d84330020c",
+    ),
+    "techno.swt": (
+        "SID-Wizard-1.94/native/examples/techno.swt",
+        "c28bb59c0b72f4a218bb3ab98a6e32f7a38ac3f4fc7b7720adead1bf7f661e00",
+    ),
+    "thizizda.swt": (
+        "SID-Wizard-1.94/native/examples/thizizda.swt",
+        "f82eb5e0868c19f0dcc443c8449daf6df262cd577f19eb8e9601d8cacab3544c",
+    ),
+    "ramos.swt": (
+        "SID-Wizard-1.94/resources/examples/ramos.swt",
+        "1fe367720d1926020854f16388f354c38c67fcff885634a829330a5bda0d5f73",
+    ),
+    "4sid-example.swq": (
+        "SID-Wizard-1.94/resources/examples/4sid-example.swq",
+        "87155adffb1928368718f6878b06bc1b0603ce18a944a1f5bb9df89fd16de2f7",
+    ),
+}
+
+MULTI_SID_NAMES: Tuple[str, ...] = tuple(MULTI_SID_MEMBERS.keys())
+
+
+def multi_sid_path(name: str) -> Path:
+    """SHA-256 verified path to a native multi-SID file, fetched on first call."""
+    if name not in MULTI_SID_MEMBERS:
+        raise KeyError(f"unknown multi-SID fixture {name!r}; expected one of {MULTI_SID_NAMES}")
+    member, expected_sha = MULTI_SID_MEMBERS[name]
+    dest = swm_cache_dir() / name
+    if dest.is_file() and _sha256(dest) == expected_sha:
+        return dest
+    tarball = _tarball_path()
+    with tarfile.open(tarball, "r:gz") as tf:
+        src = tf.extractfile(member)
+        if src is None:
+            raise RuntimeError(f"tarball member {member!r} is not a regular file")
+        data = src.read()
+    got = hashlib.sha256(data).hexdigest()
+    if got != expected_sha:
+        raise RuntimeError(f"{name} SHA-256 mismatch: got {got}, expected {expected_sha}")
+    _atomic_write(dest, data)
+    return dest
+
+
+def all_multi_sid_paths() -> Dict[str, Path]:
+    """Materialise all issue #53 fixtures; return ``{name: path}``."""
+    return {name: multi_sid_path(name) for name in MULTI_SID_NAMES}
+
+
 def swp_path(name: str) -> Path:
     """Return a path to the cached ``SWP`` file ``name``, fetched + extracted on
     first call. SHA-256 verified. Idempotent and safe under ``pytest-xdist``."""

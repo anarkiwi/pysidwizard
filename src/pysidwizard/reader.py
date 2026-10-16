@@ -6,29 +6,12 @@ import os
 from typing import Union
 
 from .constants import (
-    AUTHOR_LEN,
-    AUTHOR_POS,
-    AUTO_POS,
-    CHORD_LENGTH_POS,
-    COLOR_THEME_POS,
-    CONFIG_BITS_POS,
-    DEFAULT_PATTERN_LEN_POS,
-    DRIVER_TYPE_POS,
-    FRAMESPEED_POS,
-    HIGHLIGHT_POS,
-    INSTRUMENT_AMOUNT_POS,
     INSTRUMENT_NAME_LEN,
-    KEYBOARD_TYPE_POS,
-    MUTE_POS,
     PACKED_MAX,
     PACKED_MIN,
-    PATTERN_AMOUNT_POS,
-    RESERVED_POS,
-    SEQUENCE_AMOUNT_POS,
-    SWM_MAGIC,
-    TEMPO_LENGTH_POS,
-    TUNE_HEADER_SIZE,
-    TUNING_TYPE_POS,
+    SWM_MAGIC_TO_FORMAT,
+    SWMFormat,
+    subtunes_for,
 )
 from .errors import SWMFormatError
 from .model import Instrument, Pattern, SWMFile, decode_sequence, unpack_pattern
@@ -36,13 +19,13 @@ from .player_images import LATEST_PLAYER_VERSION, image_for
 
 
 def apply_player_image(swm: SWMFile, player_version: str | None) -> SWMFile:
-    """Fill a bare module's FREQTBL image from the named release's build.
+    """Fill a mono module's FREQTBL image from the named release's build.
 
-    A ``.swm``/``.swp`` has no player image, so past-``FREQTBL`` lookups would
-    otherwise read a fallback; this sets the ``freq_*_image`` and first-frame
-    fields from the shipped image for the module's driver (no-op if unshipped).
+    A ``.swm`` has no player image, so past-``FREQTBL`` lookups would
+    otherwise read a fallback; this sets the ``freq_*_image`` fields from the
+    shipped image for the driver (no-op if unshipped or for multi-SID files).
     """
-    if player_version is None or (swm.freq_lo_image and swm.freq_hi_image):
+    if swm.sid_amount != 1 or player_version is None or (swm.freq_lo_image and swm.freq_hi_image):
         return swm
     image = image_for(player_version, swm.driver_type)
     if image is None:
@@ -51,27 +34,24 @@ def apply_player_image(swm: SWMFile, player_version: str | None) -> SWMFile:
     return swm
 
 
-def _detect_start(data: bytes) -> tuple[int, int | None]:
-    """Return ``(header_offset, load_address)`` for the given SWM bytes.
+def _detect_layout(data: bytes) -> tuple[int, int | None, SWMFormat]:
+    """Return ``(header_offset, load_address, format)`` for the given SWM bytes.
 
-    Accepts both bare SWM files (``b"SWM1"`` at offset 0) and PRG-wrapped
-    files (2-byte little-endian load address followed by ``b"SWM1"`` at
-    offset 2). Anything else raises :class:`SWMFormatError`.
+    Accepts a bare module (magic at offset 0) or a PRG-wrapped module
+    (2-byte little-endian load address, magic at offset 2) in any of the
+    single- or multi-SID layouts. Anything else raises :class:`SWMFormatError`.
     """
-    if len(data) >= 4 and data[0:4] == SWM_MAGIC:
-        return 0, None
-    if len(data) >= 6 and data[2:6] == SWM_MAGIC:
-        return 2, int.from_bytes(data[0:2], "little")
+    if len(data) >= 4:
+        fmt = SWM_MAGIC_TO_FORMAT.get(data[0:4])
+        if fmt is not None:
+            return 0, None, fmt
+    if len(data) >= 6:
+        fmt = SWM_MAGIC_TO_FORMAT.get(data[2:6])
+        if fmt is not None:
+            return 2, int.from_bytes(data[0:2], "little"), fmt
     raise SWMFormatError(
-        "input does not look like a SWM module (missing 'SWM1' magic at " "offset 0 or 2)"
+        "input does not look like an SWM module (expected SWM1/SWMS/SWT/SWMQ " "at offset 0 or 2)"
     )
-
-
-def _compute_subtune_count(sequence_amount: int) -> int:
-    """Number of subtunes implied by ``sequence_amount`` (mono SWM only)."""
-    if sequence_amount <= 0:
-        return 1
-    return (sequence_amount - 1) // 3 + 1
 
 
 def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -> SWMFile:
@@ -82,32 +62,45 @@ def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -
     is ignored by an image that a ``.sid`` already carries.
     """
 
-    header_offset, load_address = _detect_start(data)
-    if len(data) - header_offset < TUNE_HEADER_SIZE:
-        raise SWMFormatError("input is shorter than the 64-byte SWM header")
+    header_offset, load_address, fmt = _detect_layout(data)
+    if len(data) - header_offset < fmt.header_size:
+        raise SWMFormatError(
+            f"input is shorter than the {fmt.header_size}-byte {fmt.magic.decode()} header"
+        )
 
-    header = data[header_offset : header_offset + TUNE_HEADER_SIZE]
-    frame_speed = header[FRAMESPEED_POS]
-    highlight = header[HIGHLIGHT_POS]
-    auto_advance = header[AUTO_POS]
-    config_bits = header[CONFIG_BITS_POS]
-    mute = bytes(header[MUTE_POS : MUTE_POS + 3])
-    default_pattern_length = header[DEFAULT_PATTERN_LEN_POS]
-    sequence_amount = header[SEQUENCE_AMOUNT_POS]
-    pattern_amount = header[PATTERN_AMOUNT_POS]
-    instrument_amount = header[INSTRUMENT_AMOUNT_POS]
-    chord_length = header[CHORD_LENGTH_POS]
-    tempo_length = header[TEMPO_LENGTH_POS]
-    color_theme = header[COLOR_THEME_POS]
-    keyboard_type = header[KEYBOARD_TYPE_POS]
-    driver_type = header[DRIVER_TYPE_POS]
-    tuning_type = header[TUNING_TYPE_POS]
-    reserved = bytes(header[RESERVED_POS:AUTHOR_POS])
-    author = bytes(header[AUTHOR_POS : AUTHOR_POS + AUTHOR_LEN])
+    header = data[header_offset : header_offset + fmt.header_size]
 
-    body_start = header_offset + TUNE_HEADER_SIZE
+    def val(name: str, default: int = 0) -> int:
+        """Scalar header field; ``default`` when the layout has no such byte."""
+        pos = fmt.fields.get(name)
+        return header[pos[0]] if pos is not None else default
+
+    def valbytes(name: str) -> bytes:
+        off, width = fmt.fields[name]
+        return bytes(header[off : off + width])
+
+    frame_speed = val("frame_speed")
+    highlight = val("highlight")
+    auto_advance = val("auto_advance")
+    config_bits = val("config_bits")
+    mute = valbytes("mute")
+    default_pattern_length = val("default_pattern_length")
+    sequence_amount = val("sequence_amount")
+    pattern_amount = val("pattern_amount")
+    instrument_amount = val("instrument_amount")
+    chord_length = val("chord_length")
+    tempo_length = val("tempo_length")
+    color_theme = val("color_theme")
+    keyboard_type = val("keyboard_type")
+    driver_type = val("driver_type")
+    tuning_type = val("tuning_type")
+    sid_addresses = [header[p] for p in fmt.sid_addresses]
+    reserved = bytes(header[p] for p in fmt.reserved)
+    author = valbytes("author")
+
+    body_start = header_offset + fmt.header_size
     cursor = len(data)
-    subtune_count = _compute_subtune_count(sequence_amount)
+    subtune_count = subtunes_for(sequence_amount, fmt.channels)
 
     # 1. Subtune tempos at the very end (each is a (left, right) pair, stored
     #    on disk in that order — i.e. left byte first, right byte second).
@@ -227,6 +220,8 @@ def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -
         keyboard_type=keyboard_type,
         driver_type=driver_type,
         tuning_type=tuning_type,
+        sid_amount=fmt.sid_amount,
+        sid_addresses=sid_addresses,
         reserved=reserved,
         author=author,
         sequences=sequences,

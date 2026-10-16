@@ -5,11 +5,14 @@ file ``native/sources/SWM-spec.src``. They are reproduced here so the library
 can be used without the C source distribution.
 """
 
+from dataclasses import dataclass
 from enum import IntFlag
 
 # Magic identifiers
 SWM_MAGIC = b"SWM1"
 SWS_MAGIC = b"SWMS"
+SWMT_MAGIC = b"SWMT"
+SWMQ_MAGIC = b"SWMQ"
 
 # Header layout (offsets are relative to the SWM data start, i.e. *after* any
 # 2-byte PRG load address that may prefix the file on disk).
@@ -33,6 +36,149 @@ TUNING_TYPE_POS = 0x14
 RESERVED_POS = 0x15  # bytes 0x15..0x17
 AUTHOR_POS = 0x18
 AUTHOR_LEN = TUNE_HEADER_SIZE - AUTHOR_POS  # 40 bytes
+
+BYTE_FIELDS = frozenset({"mute", "author"})
+AMOUNT_FIELDS = frozenset(
+    {"sequence_amount", "pattern_amount", "instrument_amount", "chord_length", "tempo_length"}
+)
+
+
+@dataclass(frozen=True)
+class SWMFormat:
+    """One SID-Wizard native work-file layout (1–4 SIDs)."""
+
+    sid_amount: int
+    magic: bytes
+    header_size: int
+    fields: dict[str, tuple[int, int]]  # SWMFile attr -> (header offset, width)
+    reserved: tuple[int, ...]  # header byte offsets no named field addresses
+    sid_addresses: tuple[int, ...]  # SID 2..N address-id byte offsets
+
+    @property
+    def channels(self) -> int:
+        """SID channels (three per chip)."""
+        return 3 * self.sid_amount
+
+    @property
+    def expected_mute(self) -> int:
+        """Mute-block width in bytes (three per chip)."""
+        return self.fields["mute"][1]
+
+    @property
+    def expected_reserved(self) -> int:
+        """Number of reserved header bytes."""
+        return len(self.reserved)
+
+
+SWM1_FORMAT = SWMFormat(
+    sid_amount=1,
+    magic=SWM_MAGIC,
+    header_size=64,
+    fields={
+        "frame_speed": (0x04, 1),
+        "highlight": (0x05, 1),
+        "auto_advance": (0x06, 1),
+        "config_bits": (0x07, 1),
+        "mute": (0x08, 3),
+        "default_pattern_length": (0x0B, 1),
+        "sequence_amount": (0x0C, 1),
+        "pattern_amount": (0x0D, 1),
+        "instrument_amount": (0x0E, 1),
+        "chord_length": (0x0F, 1),
+        "tempo_length": (0x10, 1),
+        "color_theme": (0x11, 1),
+        "keyboard_type": (0x12, 1),
+        "driver_type": (0x13, 1),
+        "tuning_type": (0x14, 1),
+        "author": (0x18, 40),
+    },
+    reserved=(0x15, 0x16, 0x17),
+    sid_addresses=(),
+)
+
+SWMS_FORMAT = SWMFormat(
+    sid_amount=2,
+    magic=SWS_MAGIC,
+    header_size=64,
+    fields={
+        "frame_speed": (0x04, 1),
+        "mute": (0x05, 6),
+        "default_pattern_length": (0x0B, 1),
+        "sequence_amount": (0x0C, 1),
+        "pattern_amount": (0x0D, 1),
+        "instrument_amount": (0x0E, 1),
+        "chord_length": (0x0F, 1),
+        "tempo_length": (0x10, 1),
+        "driver_type": (0x13, 1),
+        "tuning_type": (0x14, 1),
+        "highlight": (0x15, 1),
+        "author": (0x18, 40),
+    },
+    reserved=(0x11, 0x12, 0x17),
+    sid_addresses=(0x16,),
+)
+
+SWMT_FORMAT = SWMFormat(
+    sid_amount=3,
+    magic=SWMT_MAGIC,
+    header_size=65,
+    fields={
+        "frame_speed": (0x04, 1),
+        "default_pattern_length": (0x05, 1),
+        "sequence_amount": (0x06, 1),
+        "pattern_amount": (0x07, 1),
+        "instrument_amount": (0x08, 1),
+        "chord_length": (0x09, 1),
+        "tempo_length": (0x0A, 1),
+        "driver_type": (0x0B, 1),
+        "tuning_type": (0x0C, 1),
+        "highlight": (0x0D, 1),
+        "mute": (0x10, 9),
+        "author": (0x19, 40),
+    },
+    reserved=(),
+    sid_addresses=(0x0E, 0x0F),
+)
+
+SWMQ_FORMAT = SWMFormat(
+    sid_amount=4,
+    magic=SWMQ_MAGIC,
+    header_size=69,
+    fields={
+        "frame_speed": (0x04, 1),
+        "default_pattern_length": (0x05, 1),
+        "sequence_amount": (0x06, 1),
+        "pattern_amount": (0x07, 1),
+        "instrument_amount": (0x08, 1),
+        "chord_length": (0x09, 1),
+        "tempo_length": (0x0A, 1),
+        "driver_type": (0x0B, 1),
+        "tuning_type": (0x0C, 1),
+        "highlight": (0x0D, 1),
+        "mute": (0x11, 12),
+        "author": (0x1D, 40),
+    },
+    reserved=(),
+    sid_addresses=(0x0E, 0x0F, 0x10),
+)
+
+SWM_FORMATS: dict[int, SWMFormat] = {
+    1: SWM1_FORMAT,
+    2: SWMS_FORMAT,
+    3: SWMT_FORMAT,
+    4: SWMQ_FORMAT,
+}
+SWM_MAGIC_TO_FORMAT: dict[bytes, SWMFormat] = {
+    fmt.magic: fmt for fmt in (SWM1_FORMAT, SWMS_FORMAT, SWMT_FORMAT, SWMQ_FORMAT)
+}
+
+
+def subtunes_for(sequence_amount: int, channels: int) -> int:
+    """Subtunes implied by ``sequence_amount`` grouped into ``channels``."""
+    if sequence_amount <= 0:
+        return 1
+    return (sequence_amount - 1) // channels + 1
+
 
 # Hardware limits (used for validation, not enforced strictly in parsing).
 SID_CHANNELS = 3

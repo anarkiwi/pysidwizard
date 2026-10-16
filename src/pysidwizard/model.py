@@ -55,6 +55,7 @@ from .constants import (
     SEQUENCE_TEMPO_MAX,
     SEQUENCE_TRANSPOSE_BASE,
     TABLE_END,
+    subtunes_for,
 )
 from .errors import SWMFormatError
 
@@ -688,6 +689,8 @@ class SWMFile:
     keyboard_type: int = 0  # obsolete
     driver_type: int = 0
     tuning_type: int = 0
+    sid_amount: int = 1
+    sid_addresses: List[int] = field(default_factory=list)
     reserved: bytes = b"\x00\x00\x00"
     author: bytes = b""
     sequences: List[List[SequenceCommand]] = field(default_factory=list)
@@ -715,33 +718,21 @@ class SWMFile:
     def subtune_count(self) -> int:
         """Number of subtunes implied by :attr:`sequences`.
 
-        SID-Wizard groups sequences into subtunes of three (one per SID
-        channel). An empty module still has one subtune.
+        Sequences are grouped into subtunes of ``3 * sid_amount`` channels.
         """
-        n = len(self.sequences)
-        if n == 0:
-            return 1
-        return (n - 1) // 3 + 1
+        return subtunes_for(len(self.sequences), 3 * self.sid_amount)
 
     def subtune(self, index: int) -> SWMFile:
         """Return a single-subtune view of this module for playback.
 
-        SID-Wizard groups :attr:`sequences` into subtunes of three (one
-        orderlist per SID channel) and keeps a funktempo pair per subtune
-        in :attr:`subtune_tempos`. :class:`~pysidwizard.player.SWMPlayer`
-        only ever plays the first three sequences with ``subtune_tempos[0]``,
-        so to audition subtune ``index`` of a multi-subtune tune, wrap it as
-        ``SWMPlayer(swm.subtune(index))``.
-
-        The returned :class:`SWMFile` shares this module's patterns,
-        instruments, and chord / tempo tables (they are global to the tune)
-        but exposes only the three sequences and the single tempo pair of the
-        requested subtune. ``index`` is 0-based and must be in
-        ``range(self.subtune_count)``.
+        SID-Wizard groups :attr:`sequences` into subtunes of ``3 * sid_amount``
+        orderlists (one per channel) with a funktempo pair in
+        :attr:`subtune_tempos`, so the view exposes only that block.
         """
         if not (0 <= index < self.subtune_count):
             raise IndexError(f"subtune {index} out of range 0..{self.subtune_count - 1}")
-        start = index * 3
+        channels = 3 * self.sid_amount
+        start = index * channels
         tempos = [self.subtune_tempos[index]] if index < len(self.subtune_tempos) else []
         return SWMFile(
             frame_speed=self.frame_speed,
@@ -754,9 +745,11 @@ class SWMFile:
             keyboard_type=self.keyboard_type,
             driver_type=self.driver_type,
             tuning_type=self.tuning_type,
+            sid_amount=self.sid_amount,
+            sid_addresses=list(self.sid_addresses),
             reserved=self.reserved,
             author=self.author,
-            sequences=self.sequences[start : start + 3],
+            sequences=self.sequences[start : start + channels],
             patterns=self.patterns,
             instruments=self.instruments,
             chord_table=self.chord_table,
