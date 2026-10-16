@@ -96,6 +96,12 @@ NOTE_FREQ_HI = bytes.fromhex(_NOTE_FREQ_HI_HEX)
 assert len(NOTE_FREQ_LO) == 96
 assert len(NOTE_FREQ_HI) == 96
 
+
+def _empty_instrument() -> Instrument:
+    """Return the depacker's blank instrument (``dummyihdr``, empty tables)."""
+    return Instrument(control=0x1A, hr_decay=0xF, sustain=0xF, default_chord=1, first_waveform=0x09)
+
+
 # Keyboard-track slope after ENDFREQTBH (player.asm:2980-2982), assembled only when CALCVIBRATO / PWKEYBTRACK / FILTKBTRACK is on.
 FREQTBH_SLOPE = bytes([0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF, 0xFF])
 
@@ -511,6 +517,7 @@ class SWMPlayer(MemPlayer):
         # instrument 1 (packdepack.inc:621-633). PLAYERZP points at it whenever
         # a path loads CURINS=0 without testing it (HRENDER, MULCNTP).
         self._dummy: Optional[Instrument] = swm.instruments[0] if swm.instruments else None
+        self._empty = _empty_instrument()
         # $D418 and its pending SEQVOLU nibble must exist before INITER's
         # orderlist walk, which can run a MainVolume seq-fx.
         self.filter_mode_vol = 0x0F  # $D418
@@ -1007,6 +1014,14 @@ class SWMPlayer(MemPlayer):
         v.pattern = None
         v.sequence_ended = True
 
+    def _resolve_instrument(self, ref: int) -> Optional[Instrument]:
+        """Map a 1..0x3E reference to an instrument; past the count -> the empty one."""
+        if 1 <= ref <= len(self.swm.instruments):
+            return self.swm.instruments[ref - 1]
+        if 1 <= ref <= 0x3E:
+            return self._empty
+        return None
+
     def _apply_row(self, v: VoiceState, row) -> None:
         """Apply one Row's columns to the voice."""
         note = row.note
@@ -1048,8 +1063,8 @@ class SWMPlayer(MemPlayer):
         # ``fx`` for the small-FX range below.
         if instrument is not None and 1 <= instrument <= 0x3E:
             v.instrument_idx = instrument
-            if 1 <= instrument <= len(self.swm.instruments):
-                ins = self.swm.instruments[instrument - 1]
+            ins = self._resolve_instrument(instrument)
+            if ins is not None:
                 v.instrument = ins
                 v.octave_shift = ins.octave_shift if self.features.octaveshift else 0
         # Inst-column small-FX (CURIFX $40..$7F) applies INDEPENDENTLY
@@ -1831,12 +1846,9 @@ class SWMPlayer(MemPlayer):
             # (``ldy SLIDEVIB,x ; iny ; beq NONEWNO``) — HR doesn't fire.
             return None
         ins = v.instrument
-        if (
-            row.instrument is not None
-            and 1 <= row.instrument <= 0x3E
-            and 1 <= row.instrument <= len(self.swm.instruments)
-        ):
-            ins = self.swm.instruments[row.instrument - 1]
+        ref = row.instrument
+        if ref is not None and 1 <= ref <= 0x3E:
+            ins = self._resolve_instrument(ref) or ins
         return ins
 
     def _apply_tick(self, tempo: int) -> int:

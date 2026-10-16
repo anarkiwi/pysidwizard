@@ -59,6 +59,32 @@ SW17_ZIP_SHA256 = "c7fabb73aefa5a779d9ced7a661258c33e97ac4ee42bea22fa5ae8ee6e551
 QUICKSCORE_MEMBER = "SID-Wizard-1.7-smallpack/demotunes/didnt-fit-on-disk/quickscore.swm"
 QUICKSCORE_SHA256 = "52cf7c8662aa297e7306b421f4966c5a5bacb79c5dd6dee79dca9a704d2329f0"
 
+# issue #57: editor-saved modules that reference an instrument above the count, all in the 1.94 tarball.
+OOB_INST_TUNE_MEMBERS: Dict[str, Tuple[str, str]] = {
+    "vn-drdudas": (
+        "SID-Wizard-1.94/native/examples/swm-more/vn-drdudas.swm",
+        "b7af603d90a8ffdda02842138869e7c7734820688a8e356f4eb926b19fca2d9b",
+    ),
+    "vn-pimasz": (
+        "SID-Wizard-1.94/native/examples/swm-more/vn-pimasz.swm",
+        "4ad6a49b325ea4e4f250f75e9cfb4b1cafbc91748b0187ad7dc6d786ba309887",
+    ),
+    "np-sw19-emu": (
+        "SID-Wizard-1.94/resources/examples/np-sw19-emu.swm",
+        "fddde8c65f0f57154023bf4cd2218346db1e432af4a10a1427cd2ec8a4e18d33",
+    ),
+    "gurza-dream": (
+        "SID-Wizard-1.94/resources/examples/gurza-dream.swm",
+        "aafa3f8fffc40ce3d1104a97ebefee9eb81248bac525a314cc361a63486cc23b",
+    ),
+    "uraniumfever": (
+        "SID-Wizard-1.94/resources/examples/uraniumfever.swm",
+        "2581f052f7b13675d05c9b8237ab5b339d845044ea646b5b4e9c0caba629edf0",
+    ),
+}
+
+OOB_INST_TUNE_NAMES: Tuple[str, ...] = tuple(OOB_INST_TUNE_MEMBERS.keys())
+
 
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -157,6 +183,33 @@ def swm_path(tune: str) -> Path:
 def all_swm_paths() -> Dict[str, Path]:
     """Materialise all four tunes; return ``{tune: path}``."""
     return {tune: swm_path(tune) for tune in TUNE_NAMES}
+
+
+def oob_inst_path(name: str) -> Path:
+    """Issue #57 fixture (instrument ref above the count); SHA-256 verified, xdist-safe."""
+    if name not in OOB_INST_TUNE_MEMBERS:
+        raise KeyError(f"unknown fixture {name!r}; expected one of {OOB_INST_TUNE_NAMES}")
+    member, expected_sha = OOB_INST_TUNE_MEMBERS[name]
+    dest = swm_cache_dir() / f"{name}.swm"
+    # Fast path: already extracted + verified.
+    if dest.is_file() and _sha256(dest) == expected_sha:
+        return dest
+    tarball = _tarball_path()
+    with tarfile.open(tarball, "r:gz") as tf:
+        src = tf.extractfile(member)
+        if src is None:
+            raise RuntimeError(f"tarball member {member!r} is not a regular file")
+        data = src.read()
+    got = hashlib.sha256(data).hexdigest()
+    if got != expected_sha:
+        raise RuntimeError(f"{name}.swm SHA-256 mismatch: got {got}, expected {expected_sha}")
+    _atomic_write(dest, data)
+    return dest
+
+
+def all_oob_inst_paths() -> Dict[str, Path]:
+    """Materialise all issue #57 fixtures; return ``{name: path}``."""
+    return {name: oob_inst_path(name) for name in OOB_INST_TUNE_NAMES}
 
 
 def swp_path(name: str) -> Path:

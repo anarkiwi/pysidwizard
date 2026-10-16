@@ -17,6 +17,7 @@ from pysidwizard import (
     SWMFile,
     SWMUnsupportedEffectWarning,
     Waveform,
+    parse_swm,
     straight_tempo,
 )
 from pysidwizard.features import features_for_driver
@@ -85,6 +86,20 @@ def _wf_arp_swm(note: int, arp: int, tail: bytes = b"") -> SWMFile:
 def _zp_freq(swm: SWMFile) -> tuple:
     v = _play(swm, frames=SETUP_FRAMES + 4).voices[0]
     return v.zp_freq_hi, v.zp_freq_lo
+
+
+def test_oob_instrument_slot_resolves_to_the_depacker_blank_instrument(oob_sample_bytes: bytes):
+    """issue #57: a slot above the count loads the depacker's blank instrument (``dummyihdr``)."""
+    swm = parse_swm(oob_sample_bytes)
+    p = SWMPlayer(swm)
+    # packdepack.inc dummyihdr: control $1A, HR-ADSR $0F, sustain $F, chord 1, wf $09, no tables.
+    assert p._empty == Instrument(
+        control=0x1A, hr_decay=0xF, sustain=0xF, default_chord=1, first_waveform=0x09
+    )
+    assert p._resolve_instrument(1) is swm.instruments[0]
+    assert p._resolve_instrument(len(swm.instruments) + 1) is p._empty
+    assert p._resolve_instrument(0) is None
+    assert p._resolve_instrument(0x3F) is None
 
 
 def test_wf_arp_relative_step_masks_the_note_index_instead_of_clamping():
