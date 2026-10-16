@@ -52,16 +52,13 @@ def _pad_fixed(buf: bytes, size: int, field_name: str) -> bytes:
     return buf.ljust(size, b"\x00")
 
 
-def _validate_cross_refs(swm: SWMFile) -> None:
-    """Catch obvious inter-component mistakes before we start writing."""
+def _validate_cross_refs(swm: SWMFile, strict: bool = False) -> None:
+    """Catch inter-component mistakes; with ``strict`` also cap instrument refs at the count."""
     pattern_count = len(swm.patterns)
-    instrument_count = len(swm.instruments)
     for s_idx, commands in enumerate(swm.sequences):
         for c_idx, cmd in enumerate(commands):
             if isinstance(cmd, PlayPattern):
-                # 0 is the reserved empty-pattern slot; user patterns are
-                # numbered 1..len(patterns).
-                if cmd.pattern == 0:
+                if cmd.pattern == 0:  # 0 is the reserved empty-pattern placeholder.
                     continue
                 if not (1 <= cmd.pattern <= pattern_count):
                     raise SWMFormatError(
@@ -74,12 +71,15 @@ def _validate_cross_refs(swm: SWMFile) -> None:
                 f"sequences[{s_idx}] does not contain an End, Loop or SubtuneJump "
                 "terminator; the C64 player would walk off the end"
             )
+    if not strict:
+        return
+    instrument_count = len(swm.instruments)
     for p_idx, ptn in enumerate(swm.patterns):
         for r_idx, row in enumerate(ptn.rows):
             inst = row.instrument
-            # Instrument-column FX (0x3F..0x7F) live in the same column
-            # as instrument selections, so don't treat them as references.
-            if inst is None or inst >= 0x3F:
+            if inst is None:  # no instrument column.
+                continue
+            if inst >= 0x3F:  # >= 0x3F is instrument-column FX, not a reference.
                 continue
             if not (1 <= inst <= instrument_count):
                 raise SWMFormatError(
@@ -89,16 +89,15 @@ def _validate_cross_refs(swm: SWMFile) -> None:
                 )
 
 
-def build_swm(swm: SWMFile) -> bytes:
+def build_swm(swm: SWMFile, strict: bool = False) -> bytes:
     """Serialise a :class:`SWMFile` to a bytes object.
 
-    If ``swm.load_address`` is not ``None`` the result is prefixed with
-    that address as a little-endian word, producing a ``.prg``-loadable
-    file (the form SID-Wizard itself emits). Set it to ``None`` to get
-    the bare module payload without a PRG wrapper.
+    ``strict=True`` rejects instrument-column references past the module's
+    instrument count; the default round-trips editor-stored refs verbatim.
+    ``load_address`` set prefixes a little-endian word (the ``.prg`` form).
     """
 
-    _validate_cross_refs(swm)
+    _validate_cross_refs(swm, strict)
     out = bytearray()
 
     if swm.load_address is not None:

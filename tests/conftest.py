@@ -21,7 +21,13 @@ _SRC = _ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from tests._swm_cache import TUNE_NAMES, all_swm_paths, swm_path  # noqa: E402
+from tests._swm_cache import (  # noqa: E402
+    OOB_INST_TUNE_NAMES,
+    TUNE_NAMES,
+    all_swm_paths,
+    oob_inst_path,
+    swm_path,
+)
 
 
 def pytest_addoption(parser, pluginmanager):
@@ -64,3 +70,14 @@ def sample_path(request) -> Path:
 @pytest.fixture
 def sample_bytes(sample_path: Path) -> bytes:
     return sample_path.read_bytes()
+
+
+@pytest.fixture(params=OOB_INST_TUNE_NAMES)
+def oob_sample_path(request) -> Path:
+    """An issue #57 module whose rows reference an instrument above the count."""
+    return oob_inst_path(request.param)
+
+
+@pytest.fixture
+def oob_sample_bytes(oob_sample_path: Path) -> bytes:
+    return oob_sample_path.read_bytes()

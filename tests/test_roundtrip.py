@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pysidwizard import build_swm, parse_swm, read_swm
+import pytest
+
+from pysidwizard import SWMFormatError, build_swm, parse_swm, read_swm
 
 
 def test_read_then_build_is_byte_exact(sample_path: Path, sample_bytes: bytes):
@@ -45,3 +47,14 @@ def test_round_trip_preserves_subtune_tempos(sample_path: Path):
     swm = read_swm(sample_path)
     rebuilt = parse_swm(build_swm(swm))
     assert rebuilt.subtune_tempos == swm.subtune_tempos
+
+
+def test_oob_instrument_round_trips(oob_sample_bytes: bytes):
+    # issue #57: refs above the instrument count must round-trip byte-exactly.
+    assert build_swm(parse_swm(oob_sample_bytes)) == oob_sample_bytes
+
+
+def test_oob_instrument_strict_still_raises(oob_sample_bytes: bytes):
+    # the default is lenient; explicit strict validation must still reject them.
+    with pytest.raises(SWMFormatError, match="uses instrument"):
+        build_swm(parse_swm(oob_sample_bytes), strict=True)

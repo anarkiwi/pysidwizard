@@ -95,11 +95,18 @@ def test_build_swm_rejects_play_pattern_out_of_range():
         build_swm(swm)
 
 
-def test_build_swm_rejects_pattern_row_with_unknown_instrument():
+def test_build_swm_rejects_pattern_row_with_unknown_instrument_in_strict_mode():
     swm = _minimal_swm()
     swm.patterns[0].rows[0] = Row(note=0x31, instrument=42)
     with pytest.raises(SWMFormatError, match="instrument 42"):
-        build_swm(swm)
+        build_swm(swm, strict=True)
+
+
+def test_build_swm_allows_unknown_instrument_ref_by_default():
+    # editor-stored refs above the count round-trip; strict=True rejects them.
+    swm = _minimal_swm()
+    swm.patterns[0].rows[0] = Row(note=0x31, instrument=42)
+    assert build_swm(swm) == build_swm(swm, strict=False)
 
 
 def test_build_swm_allows_instrument_column_fx_without_instrument_def():
