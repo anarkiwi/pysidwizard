@@ -21,6 +21,11 @@ _SRC = _ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from tests._swi_cache import (  # noqa: E402
+    SWI_NAMES,
+    nepzenek_path,
+    swi_path,
+)
 from tests._swm_cache import (  # noqa: E402
     MULTI_SID_NAMES,
     OOB_INST_TUNE_NAMES,
@@ -89,6 +94,25 @@ def oob_sample_bytes(oob_sample_path: Path) -> bytes:
 def multi_sample_path(request) -> Path:
     """A native multi-SID work file (SWMS/SWT/SWMQ), fetched + verified."""
     return multi_sid_path(request.param)
+
+
+@pytest.fixture(params=SWI_NAMES)
+def swi_file(request) -> Path:
+    """A curated ``.swi`` single-instrument fixture (issue #54), SHA-256 verified."""
+    return swi_path(request.param)
+
+
+@pytest.fixture
+def swi_bytes(swi_file: Path) -> bytes:
+    """Raw bytes of a curated ``.swi`` fixture (issue #54)."""
+    return swi_file.read_bytes()
+
+
+@pytest.fixture(scope="session")
+def nepzenek_file() -> Path:
+    """The SID-Wizard 1.97 ``nepzenek.swm`` whose ``CIMBALOM`` instrument matches
+    the curated ``cimbalom.swi`` fixture (issue #54 cross-check)."""
+    return nepzenek_path()
 
 
 @pytest.fixture

@@ -12,6 +12,9 @@ Public surfaces:
 * :func:`parse_sid` / :func:`read_sid` and :func:`parse_swp` /
   :func:`read_swp` — read SID-Wizard ``.sid`` exports (plain or ``SWP``-packed)
   and standalone ``.swp`` packed tunes into the same :class:`SWMFile`.
+* :func:`parse_swi` / :func:`read_swi` and :func:`build_swi` /
+  :func:`write_swi` — read the editor's single-instrument ``.swi`` files and
+  write them back; round-trip byte-exactly.
 * :func:`write_swm` / :func:`build_swm` — serialise an :class:`SWMFile`
   back to disk or bytes; round-trips byte-exactly.
 * :class:`SWMPlayer` (in :mod:`pysidwizard.player`) — per-frame
@@ -66,6 +69,14 @@ from .sidreader import (
     read_sid,
     read_swp,
 )
+from .swi import (
+    SWI_DEFAULT_LOAD_ADDRESS,
+    build_swi,
+    insert_instrument,
+    parse_swi,
+    read_swi,
+    write_swi,
+)
 from .writer import build_swm, write_swm
 
 __all__ = [
@@ -88,28 +99,34 @@ __all__ = [
     "SequenceCommand",
     "SubtuneJump",
     "SidWizardSidParser",
+    "SWI_DEFAULT_LOAD_ADDRESS",
     "TempoOverride",
     "Transpose",
     "Waveform",
     "attack_decay",
+    "build_swi",
     "build_swm",
     "decode_sequence",
     "encode_sequence",
+    "insert_instrument",
     "is_sidwizard_sid",
     "iter_register_writes",
     "pack_pattern",
     "parse_psid_header",
     "parse_sid",
     "parse_sid_song",
+    "parse_swi",
     "parse_swp",
     "parse_swm",
     "read_reglog",
     "read_sid",
     "read_swm",
     "read_swp",
+    "read_swi",
     "straight_tempo",
     "sustain_release",
     "unpack_pattern",
     "write_reglog",
+    "write_swi",
     "write_swm",
 ]
