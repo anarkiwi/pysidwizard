@@ -22,9 +22,11 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from tests._swm_cache import (  # noqa: E402
+    MULTI_SID_NAMES,
     OOB_INST_TUNE_NAMES,
     TUNE_NAMES,
     all_swm_paths,
+    multi_sid_path,
     oob_inst_path,
     swm_path,
 )
@@ -81,3 +83,14 @@ def oob_sample_path(request) -> Path:
 @pytest.fixture
 def oob_sample_bytes(oob_sample_path: Path) -> bytes:
     return oob_sample_path.read_bytes()
+
+
+@pytest.fixture(params=MULTI_SID_NAMES)
+def multi_sample_path(request) -> Path:
+    """A native multi-SID work file (SWMS/SWT/SWMQ), fetched + verified."""
+    return multi_sid_path(request.param)
+
+
+@pytest.fixture
+def multi_sample_bytes(multi_sample_path: Path) -> bytes:
+    return multi_sample_path.read_bytes()

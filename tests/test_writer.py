@@ -140,6 +140,30 @@ def test_build_swm_rejects_bad_reserved_length():
         build_swm(swm)
 
 
+def test_build_swm_rejects_unknown_sid_amount():
+    swm = _minimal_swm()
+    swm.sid_amount = 5
+    with pytest.raises(SWMFormatError, match="sid_amount"):
+        build_swm(swm)
+
+
+def test_build_swm_rejects_bad_mute_length_for_multi_sid():
+    swm = _minimal_swm()
+    swm.sid_amount = 2
+    swm.mute = b"\xff\xff\xff"  # a 2-SID module needs six mute bytes
+    with pytest.raises(SWMFormatError, match="mute"):
+        build_swm(swm)
+
+
+def test_build_swm_rejects_wrong_sid_addresses_count():
+    swm = _minimal_swm()
+    swm.sid_amount = 2
+    swm.mute = b"\xff\xff\xff\xff\xff\xff"
+    swm.sid_addresses = [1, 2]  # a 2-SID module stores exactly one address id
+    with pytest.raises(SWMFormatError, match="sid_addresses"):
+        build_swm(swm)
+
+
 def test_build_swm_rejects_oversized_byte_fields():
     swm = _minimal_swm()
     swm.frame_speed = 999

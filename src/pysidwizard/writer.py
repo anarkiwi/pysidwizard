@@ -6,27 +6,9 @@ import os
 from typing import Union
 
 from .constants import (
-    AUTHOR_LEN,
-    AUTHOR_POS,
-    AUTO_POS,
-    CHORD_LENGTH_POS,
-    COLOR_THEME_POS,
-    CONFIG_BITS_POS,
-    DEFAULT_PATTERN_LEN_POS,
-    DRIVER_TYPE_POS,
-    FRAMESPEED_POS,
-    HIGHLIGHT_POS,
-    INSTRUMENT_AMOUNT_POS,
+    AMOUNT_FIELDS,
     INSTRUMENT_NAME_LEN,
-    KEYBOARD_TYPE_POS,
-    MUTE_POS,
-    PATTERN_AMOUNT_POS,
-    RESERVED_POS,
-    SEQUENCE_AMOUNT_POS,
-    SWM_MAGIC,
-    TEMPO_LENGTH_POS,
-    TUNE_HEADER_SIZE,
-    TUNING_TYPE_POS,
+    SWM_FORMATS,
 )
 from .errors import SWMFormatError
 from .model import (
@@ -98,6 +80,11 @@ def build_swm(swm: SWMFile, strict: bool = False) -> bytes:
     """
 
     _validate_cross_refs(swm, strict)
+
+    fmt = SWM_FORMATS.get(swm.sid_amount)
+    if fmt is None:
+        raise SWMFormatError(f"swm.sid_amount={swm.sid_amount} is not a supported SID count (1..4)")
+
     out = bytearray()
 
     if swm.load_address is not None:
@@ -105,46 +92,54 @@ def build_swm(swm: SWMFile, strict: bool = False) -> bytes:
             raise SWMFormatError(f"load_address={swm.load_address} does not fit in a word")
         out += swm.load_address.to_bytes(2, "little")
 
-    sequence_amount = len(swm.sequences)
-    pattern_amount = len(swm.patterns)
-    instrument_amount = len(swm.instruments)
-    chord_length = len(swm.chord_table)
-    tempo_length = len(swm.tempo_table)
+    amounts = {
+        "sequence_amount": len(swm.sequences),
+        "pattern_amount": len(swm.patterns),
+        "instrument_amount": len(swm.instruments),
+        "chord_length": len(swm.chord_table),
+        "tempo_length": len(swm.tempo_table),
+    }
+    amount_labels = {
+        "sequence_amount": "sequences",
+        "pattern_amount": "patterns",
+        "instrument_amount": "instruments",
+        "chord_length": "chord_table",
+        "tempo_length": "tempo_table",
+    }
+    for name in sorted(amounts):
+        if amounts[name] > 0xFF:
+            raise SWMFormatError(
+                f"{amount_labels[name]} has {amounts[name]} entries; "
+                "max 255 fit in the SWM header"
+            )
 
-    for amount, label in (
-        (sequence_amount, "sequences"),
-        (pattern_amount, "patterns"),
-        (instrument_amount, "instruments"),
-        (chord_length, "chord_table"),
-        (tempo_length, "tempo_table"),
-    ):
-        if amount > 0xFF:
-            raise SWMFormatError(f"{label} has {amount} entries; max 255 fit in the SWM header")
+    if len(swm.mute) != fmt.expected_mute:
+        raise SWMFormatError(f"mute must be {fmt.expected_mute} bytes (got {len(swm.mute)})")
+    if len(swm.reserved) != fmt.expected_reserved:
+        raise SWMFormatError(
+            f"reserved must be {fmt.expected_reserved} " f"bytes (got {len(swm.reserved)})"
+        )
+    if len(swm.sid_addresses) != len(fmt.sid_addresses):
+        raise SWMFormatError(
+            f"sid_addresses must have {len(fmt.sid_addresses)} entries "
+            f"(got {len(swm.sid_addresses)})"
+        )
 
-    if len(swm.mute) != 3:
-        raise SWMFormatError(f"mute must be 3 bytes (got {len(swm.mute)})")
-    if len(swm.reserved) != 3:
-        raise SWMFormatError(f"reserved must be 3 bytes (got {len(swm.reserved)})")
-
-    header = bytearray(TUNE_HEADER_SIZE)
-    header[0:4] = SWM_MAGIC
-    header[FRAMESPEED_POS] = _byte(swm.frame_speed, "frame_speed")
-    header[HIGHLIGHT_POS] = _byte(swm.highlight, "highlight")
-    header[AUTO_POS] = _byte(swm.auto_advance, "auto_advance")
-    header[CONFIG_BITS_POS] = _byte(swm.config_bits, "config_bits")
-    header[MUTE_POS : MUTE_POS + 3] = swm.mute
-    header[DEFAULT_PATTERN_LEN_POS] = _byte(swm.default_pattern_length, "default_pattern_length")
-    header[SEQUENCE_AMOUNT_POS] = sequence_amount
-    header[PATTERN_AMOUNT_POS] = pattern_amount
-    header[INSTRUMENT_AMOUNT_POS] = instrument_amount
-    header[CHORD_LENGTH_POS] = chord_length
-    header[TEMPO_LENGTH_POS] = tempo_length
-    header[COLOR_THEME_POS] = _byte(swm.color_theme, "color_theme")
-    header[KEYBOARD_TYPE_POS] = _byte(swm.keyboard_type, "keyboard_type")
-    header[DRIVER_TYPE_POS] = _byte(swm.driver_type, "driver_type")
-    header[TUNING_TYPE_POS] = _byte(swm.tuning_type, "tuning_type")
-    header[RESERVED_POS:AUTHOR_POS] = swm.reserved
-    header[AUTHOR_POS : AUTHOR_POS + AUTHOR_LEN] = _pad_fixed(swm.author, AUTHOR_LEN, "author")
+    header = bytearray(fmt.header_size)
+    header[0:4] = fmt.magic
+    for name, (off, width) in fmt.fields.items():
+        if name in AMOUNT_FIELDS:
+            header[off] = amounts[name]
+        elif name == "mute":
+            header[off : off + width] = swm.mute
+        elif name == "author":
+            header[off : off + width] = _pad_fixed(swm.author, width, "author")
+        else:
+            header[off] = _byte(getattr(swm, name), name)
+    for off, sid_addr in zip(fmt.sid_addresses, swm.sid_addresses, strict=True):
+        header[off] = _byte(sid_addr, "sid_address")
+    for off, byte in zip(fmt.reserved, swm.reserved, strict=True):
+        header[off] = byte
     out += bytes(header)
 
     # Sequences: encode each command list to bytes, then write body

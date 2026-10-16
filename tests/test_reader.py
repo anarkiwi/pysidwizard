@@ -11,40 +11,42 @@ from pysidwizard import (
     parse_swm,
     read_swm,
 )
-from pysidwizard.constants import SWM_MAGIC
-from pysidwizard.reader import _compute_subtune_count, _detect_start
+from pysidwizard.constants import SWM_MAGIC, subtunes_for
+from pysidwizard.reader import _detect_layout
 
 
-def test_detect_start_recognises_bare_swm():
+def test_detect_layout_recognises_bare_swm():
     payload = SWM_MAGIC + b"\x00" * 60
-    offset, addr = _detect_start(payload)
+    offset, addr, fmt = _detect_layout(payload)
     assert offset == 0
     assert addr is None
+    assert fmt.sid_amount == 1
 
 
-def test_detect_start_recognises_prg_wrapped_swm():
+def test_detect_layout_recognises_prg_wrapped_swm():
     payload = b"\xf8\x1f" + SWM_MAGIC + b"\x00" * 60
-    offset, addr = _detect_start(payload)
+    offset, addr, fmt = _detect_layout(payload)
     assert offset == 2
     assert addr == 0x1FF8
+    assert fmt.sid_amount == 1
 
 
-def test_detect_start_rejects_unknown_format():
+def test_detect_layout_rejects_unknown_format():
     with pytest.raises(SWMFormatError):
-        _detect_start(b"NOT A SWM" + b"\x00" * 60)
+        _detect_layout(b"NOT A SWM" + b"\x00" * 60)
 
 
-def test_detect_start_rejects_truncated_input():
+def test_detect_layout_rejects_truncated_input():
     with pytest.raises(SWMFormatError):
-        _detect_start(b"")
+        _detect_layout(b"")
 
 
-def test_compute_subtune_count_handles_empty_and_partial_groups():
-    assert _compute_subtune_count(0) == 1
-    assert _compute_subtune_count(3) == 1
-    assert _compute_subtune_count(4) == 2
-    assert _compute_subtune_count(6) == 2
-    assert _compute_subtune_count(7) == 3
+def test_subtunes_for_handles_empty_and_partial_groups():
+    assert subtunes_for(0, 3) == 1
+    assert subtunes_for(3, 3) == 1
+    assert subtunes_for(4, 3) == 2
+    assert subtunes_for(6, 3) == 2
+    assert subtunes_for(7, 3) == 3
 
 
 def test_parse_swm_rejects_short_header():
