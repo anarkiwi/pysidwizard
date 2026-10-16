@@ -259,3 +259,62 @@ def quickscore_path() -> Path:
         )
     _atomic_write(dest, data)
     return dest
+
+
+# issue #56: the 1.97 release's native .swm and its .sid export (the per-
+# (version, driver) FREQTBL image is derived from the .sid exports).
+SW197_TARBALL_URL = (
+    "https://csdb.dk/getinternalfile.php/281063/SID-Wizard-1.97-sources-examples.tar.gz"
+)
+SW197_TARBALL_SHA256 = "aeb265f4a778b2acb5aad13e8e98af882888292f749f29f4d18cbf49850e57bc"
+_SW197_TARBALL_NAME = "SID-Wizard-1.97-sources-examples.tar.gz"
+_SW197_ROOT = "SID-Wizard-1.97-sources-examples"
+
+SW197_MEMBERS: Dict[str, Tuple[str, str]] = {
+    "bronkosaurus": (
+        _SW197_ROOT + "/native/examples/bronkosaurus.swm",
+        "96862c8fddf77cf3abbf2ff2010b761bcef4ea0968b5843a9408d1aec99e3591",
+    ),
+    "bronkosaurus.sid": (
+        _SW197_ROOT + "/native/examples/sid-exports/bronkosaurus.sid",
+        "0f65d71e4ef81a67f79f0cf808e7600f083cddeaa8c5dbc9ba905ec2c7ae16e6",
+    ),
+    "glacialblues": (
+        _SW197_ROOT + "/native/examples/swm-more/extra/glacialblues.swm",
+        "caf55c69b599d92dabea6084ffc9a824456f983c2a8a197e8aa926d169cd1c81",
+    ),
+    "glacialblues.sid": (
+        _SW197_ROOT + "/native/examples/sid-exports/glacialblues.sid",
+        "494e3ca6e937c9d1904bcb001cbcbb2d20a84d997679caa4a51dab7abebfb18e",
+    ),
+}
+
+SW197_NAMES: Tuple[str, ...] = tuple(SW197_MEMBERS.keys())
+
+
+def _sw197_tarball_path() -> Path:
+    """Ensure the 1.97 release tarball is downloaded and SHA-256 verified."""
+    tarball = swm_cache_dir() / _SW197_TARBALL_NAME
+    if tarball.is_file() and _sha256(tarball) == SW197_TARBALL_SHA256:
+        return tarball
+    data = _download(SW197_TARBALL_URL)
+    if hashlib.sha256(data).hexdigest() != SW197_TARBALL_SHA256:
+        raise RuntimeError(f"{_SW197_TARBALL_NAME} SHA-256 mismatch")
+    _atomic_write(tarball, data)
+    return tarball
+
+
+def sw197_path(name: str) -> Path:
+    """SHA-256 verified path to a 1.97 release member (``.swm`` or ``.sid``)."""
+    if name not in SW197_MEMBERS:
+        raise KeyError(f"unknown 1.97 fixture {name!r}; expected one of {SW197_NAMES}")
+    member, expected = SW197_MEMBERS[name]
+    dest = swm_cache_dir() / f"sw197-{name}"
+    if dest.is_file() and _sha256(dest) == expected:
+        return dest
+    with tarfile.open(_sw197_tarball_path(), "r:gz") as tf:
+        data = tf.extractfile(member).read()
+    if hashlib.sha256(data).hexdigest() != expected:
+        raise RuntimeError(f"{name} SHA-256 mismatch")
+    _atomic_write(dest, data)
+    return dest

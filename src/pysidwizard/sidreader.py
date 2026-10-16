@@ -127,6 +127,7 @@ from .model import (
     unpack_pattern,
 )
 from .player import FREQ_TABLE_SPAN, FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
+from .reader import LATEST_PLAYER_VERSION, apply_player_image
 from .sidfile import find_player_signature, parse_psid_header
 
 # SID-Wizard's "packed" (``SWP``) export keeps an ``SWP1`` magic (the ``SWM1``
@@ -532,18 +533,12 @@ def read_sid(path: Union[str, os.PathLike[str]]) -> SWMFile:
         return parse_sid(fh.read())
 
 
-def parse_swp(data: bytes) -> SWMFile:
-    """Decode a standalone SID-Maker-SWP packed tune (``SWP1``) into :class:`SWMFile`.
+def parse_swp(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -> SWMFile:
+    """Decode a standalone SID-Maker-SWP (``SWP1``) packed tune to :class:`SWMFile`.
 
-    A ``.swp`` is relocatable music data: the ``SWP1`` magic may sit bare at
-    offset 0 or follow a 2-byte little-endian load-address PRG prefix (offset 2).
-    The table pointers are relative to the magic, so the load address only sets
-    :attr:`~SWMFile.load_address` and does not affect the decode. There is no
-    container and no ``SWM1`` header, so the chord/tempo-table lengths and the
-    author come from the ``SWP1`` offset-table and block (see :func:`_build_swp`).
-
-    Raises :class:`SIDFormatError` when no ``SWP1`` magic is present at offset 0
-    or 2, or the offset-table / tables do not resolve to a coherent tune.
+    ``SWP1`` magic sits at offset 0 or after a 2-byte PRG load prefix; with no
+    ``SWM1`` header the lengths and author come from the ``SWP1`` block. The
+    ``player_version`` picks the bare module's FREQTBL image as in parse_swm.
     """
     if len(data) >= 4 and data[0:4] == SWP_MAGIC:
         magic, load = 0, 0
@@ -552,15 +547,18 @@ def parse_swp(data: bytes) -> SWMFile:
     else:
         raise SIDFormatError("input is not an SWP module (no 'SWP1' magic at offset 0 or 2)")
     try:
-        return _build_swp(data, load, 0, magic)
+        swm = _build_swp(data, load, 0, magic)
     except _LayoutError as exc:
         raise SIDFormatError(f"SWP tables did not resolve: {exc}") from exc
+    return apply_player_image(swm, player_version)
 
 
-def read_swp(path: Union[str, os.PathLike[str]]) -> SWMFile:
+def read_swp(
+    path: Union[str, os.PathLike[str]], player_version: str | None = LATEST_PLAYER_VERSION
+) -> SWMFile:
     """Read a standalone SID-Wizard ``.swp`` file from ``path`` into a :class:`SWMFile`."""
     with open(path, "rb") as fh:
-        return parse_swp(fh.read())
+        return parse_swp(fh.read(), player_version)
 
 
 class SidWizardSidParser(BaseSidParser):
@@ -1280,7 +1278,7 @@ def _build_codescan(data: bytes, load: int, base: int) -> SWMFile:
 
 
 def _image_accessors(image: SidImage):
-    """``(byte, chunk)`` reading the materialised 64 KiB image by absolute addr."""
+    """``(byte, chunk)`` accessors reading the materialised image by address."""
     mem = image.mem
 
     def byte(addr: int) -> int:
