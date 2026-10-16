@@ -32,6 +32,23 @@ from .constants import (
 )
 from .errors import SWMFormatError
 from .model import Instrument, Pattern, SWMFile, decode_sequence, unpack_pattern
+from .player_images import LATEST_PLAYER_VERSION, image_for
+
+
+def apply_player_image(swm: SWMFile, player_version: str | None) -> SWMFile:
+    """Fill a bare module's FREQTBL image from the named release's build.
+
+    A ``.swm``/``.swp`` has no player image, so past-``FREQTBL`` lookups would
+    otherwise read a fallback; this sets the ``freq_*_image`` and first-frame
+    fields from the shipped image for the module's driver (no-op if unshipped).
+    """
+    if player_version is None or (swm.freq_lo_image and swm.freq_hi_image):
+        return swm
+    image = image_for(player_version, swm.driver_type)
+    if image is None:
+        return swm
+    swm.freq_lo_image, swm.freq_hi_image, swm.first_frame_freq_by_track = image
+    return swm
 
 
 def _detect_start(data: bytes) -> tuple[int, int | None]:
@@ -57,8 +74,13 @@ def _compute_subtune_count(sequence_amount: int) -> int:
     return (sequence_amount - 1) // 3 + 1
 
 
-def parse_swm(data: bytes) -> SWMFile:
-    """Parse a SWM module from a bytes object and return a :class:`SWMFile`."""
+def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -> SWMFile:
+    """Parse a SWM module and return a :class:`SWMFile`.
+
+    ``player_version`` selects the release whose player image a bare
+    (image-less) module plays with (see :mod:`pysidwizard.player_images`); it
+    is ignored by an image that a ``.sid`` already carries.
+    """
 
     header_offset, load_address = _detect_start(data)
     if len(data) - header_offset < TUNE_HEADER_SIZE:
@@ -194,7 +216,7 @@ def parse_swm(data: bytes) -> SWMFile:
             f"offset {body_start} but stopped at {cursor}"
         )
 
-    return SWMFile(
+    swm = SWMFile(
         frame_speed=frame_speed,
         highlight=highlight,
         auto_advance=auto_advance,
@@ -215,9 +237,12 @@ def parse_swm(data: bytes) -> SWMFile:
         subtune_tempos=subtune_tempos,
         load_address=load_address,
     )
+    return apply_player_image(swm, player_version)
 
 
-def read_swm(path: Union[str, os.PathLike[str]]) -> SWMFile:
-    """Read a SWM module from a filesystem path and return a :class:`SWMFile`."""
+def read_swm(
+    path: Union[str, os.PathLike[str]], player_version: str | None = LATEST_PLAYER_VERSION
+) -> SWMFile:
+    """Read a SWM module from a filesystem path into a :class:`SWMFile`."""
     with open(path, "rb") as fh:
-        return parse_swm(fh.read())
+        return parse_swm(fh.read(), player_version)

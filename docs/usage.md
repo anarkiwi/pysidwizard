@@ -65,9 +65,11 @@ A `.sid` also carries its player image, so `parse_sid` captures
 96-note `FREQTBL`. SID-Wizard's arp pitch lookup *masks* its note index
 (`and #$7F`, `player.asm:2525`) rather than clamping it, so a relative arp step
 or transpose summing past 95 reads those bytes and one summing past 127 wraps
-back into the table. A module built in memory or read from a bare `.swm` has no
-image, and the player falls back to the shipped 1.94 build's first past-table
-byte — which only matters for tunes that arp beyond the note range.
+back into the table. A module built in memory (an `SWMFile` with no image) keeps
+that fallback. A module read from a bare `.swm`/`.swp` via `parse_swm` / `read_swm`
+(or `parse_swp` / `read_swp`) now defaults to the latest release's player image
+for its driver, so it renders as that editor's `.sid` export: pass
+`player_version=None` to keep the bare fallback, or name a release (e.g. `"1.7"`).
 
 A `.sid` header song is only the accumulator the tune's init receives. Wrappers
 remap it to another subtune, patch the tune data, or call one of several
