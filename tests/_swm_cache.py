@@ -8,6 +8,7 @@ Test-only module, imported only from ``tests/``.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import os
 import tarfile
 import time
@@ -128,7 +129,12 @@ def _download(url: str, *, retries: int = 4) -> bytes:
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:  # nosec B310 (https)
                 return resp.read()
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            http.client.HTTPException,
+        ) as exc:
             last_err = exc
         if attempt + 1 < retries:
             time.sleep(min(2**attempt, 5))
@@ -383,3 +389,58 @@ def sw197_path(name: str) -> Path:
         raise RuntimeError(f"{name} SHA-256 mismatch")
     _atomic_write(dest, data)
     return dest
+
+
+# issue #61: quickscore .P00 container + .prg twin from the SID-Wizard 1.4 release (csdb 115599).
+SW14_ZIP_URL = "https://csdb.dk/getinternalfile.php/113613/SID-Wizard-1.4-with-source.zip"
+SW14_ZIP_SHA256 = "6cd2e4c482f872a4e12a5ca2989039c6f3df079cab96a55562276a6973364ecc"
+_SW14_ROOT = "SID-Wizard-1.4-with-source"
+
+P00_PAIR_MEMBERS: Dict[str, Tuple[str, str]] = {
+    "quickscore.swm.P00": (
+        _SW14_ROOT + "/demotunes/quickscore.swm.P00",
+        "fc4e260c8ab4666232e08fe97e8f0532eb240126629eaeaf89a27ba811a3fb08",
+    ),
+    "quickscore.swm.prg": (
+        _SW14_ROOT + "/demotunes/quickscore.swm.prg",
+        "52cf7c8662aa297e7306b421f4966c5a5bacb79c5dd6dee79dca9a704d2329f0",
+    ),
+}
+
+P00_PAIR_NAMES: Tuple[str, ...] = tuple(P00_PAIR_MEMBERS.keys())
+
+
+def _sw14_zip_path() -> Path:
+    """Ensure the SID-Wizard 1.4 zip is downloaded + SHA-256 verified."""
+    archive = swm_cache_dir() / "SID-Wizard-1.4-with-source.zip"
+    if archive.is_file() and _sha256(archive) == SW14_ZIP_SHA256:
+        return archive
+    data = _download(SW14_ZIP_URL)
+    if hashlib.sha256(data).hexdigest() != SW14_ZIP_SHA256:
+        raise RuntimeError("SID-Wizard-1.4-with-source.zip SHA-256 mismatch")
+    _atomic_write(archive, data)
+    return archive
+
+
+def p00_pair_path(name: str) -> Path:
+    """SHA-256 verified path to a 1.4 ``.P00``/``.prg`` pair member (issue #61)."""
+    if name not in P00_PAIR_MEMBERS:
+        raise KeyError(f"unknown issue #61 fixture {name!r}; expected one of {P00_PAIR_NAMES}")
+    member, expected = P00_PAIR_MEMBERS[name]
+    dest = swm_cache_dir() / name
+    if dest.is_file() and _sha256(dest) == expected:
+        return dest
+    with zipfile.ZipFile(_sw14_zip_path()) as zf:
+        data = zf.read(member)
+    if hashlib.sha256(data).hexdigest() != expected:
+        raise RuntimeError(f"{name} SHA-256 mismatch")
+    _atomic_write(dest, data)
+    return dest
+
+
+def p00_pair() -> Tuple[Path, Path]:
+    """Return ``(p00, prg)`` — the 1.4 quickscore module wrapped and bare (issue #61)."""
+    return (
+        p00_pair_path("quickscore.swm.P00"),
+        p00_pair_path("quickscore.swm.prg"),
+    )

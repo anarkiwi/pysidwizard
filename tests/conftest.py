@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Tuple
 
 import pytest
 
@@ -33,6 +34,7 @@ from tests._swm_cache import (  # noqa: E402
     all_swm_paths,
     multi_sid_path,
     oob_inst_path,
+    p00_pair,
     swm_path,
 )
 
@@ -118,3 +120,10 @@ def nepzenek_file() -> Path:
 @pytest.fixture
 def multi_sample_bytes(multi_sample_path: Path) -> bytes:
     return multi_sample_path.read_bytes()
+
+
+@pytest.fixture
+def p00_pair_file() -> Tuple[Path, Path]:
+    """The 1.4 quickscore module as a PC64 ``.P00`` container and its ``.prg``
+    twin (issue #61); both SHA-256 verified."""
+    return p00_pair()

@@ -17,18 +17,20 @@ from pysidwizard.reader import _detect_layout
 
 def test_detect_layout_recognises_bare_swm():
     payload = SWM_MAGIC + b"\x00" * 60
-    offset, addr, fmt = _detect_layout(payload)
+    offset, addr, fmt, p00_name = _detect_layout(payload)
     assert offset == 0
     assert addr is None
     assert fmt.sid_amount == 1
+    assert p00_name is None
 
 
 def test_detect_layout_recognises_prg_wrapped_swm():
     payload = b"\xf8\x1f" + SWM_MAGIC + b"\x00" * 60
-    offset, addr, fmt = _detect_layout(payload)
+    offset, addr, fmt, p00_name = _detect_layout(payload)
     assert offset == 2
     assert addr == 0x1FF8
     assert fmt.sid_amount == 1
+    assert p00_name is None
 
 
 def test_detect_layout_rejects_unknown_format():

@@ -710,6 +710,8 @@ class SWMFile:
     freq_hi_image: bytes = b""
     # SID registers ($D400-$D418) as the ``.sid``'s init left them; empty for a bare ``.swm`` (all zero).
     sid_init: bytes = b""
+    # ".P00" wrapper name (16-byte PETSCII field from disk); transport metadata, excluded from equality.
+    p00_name: bytes = field(default=b"", compare=False)
 
     @property
     def sequence_count(self) -> int:
