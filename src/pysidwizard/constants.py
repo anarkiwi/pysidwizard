@@ -14,6 +14,13 @@ SWS_MAGIC = b"SWMS"
 SWMT_MAGIC = b"SWMT"
 SWMQ_MAGIC = b"SWMQ"
 
+# PC64/VICE .P00 wrapper per SWMconvert.c: "C64File"\0, 16-byte PETSCII name, 2 pad bytes, then the PRG payload.
+P00_MAGIC = b"C64File\x00"
+P00_NAME_OFFSET = 0x08
+P00_NAME_LEN = 16
+P00_HEADER_SIZE = 0x1A
+SWM_CONTAINERS = ("prg", "p00")
+
 # Header layout (offsets are relative to the SWM data start, i.e. *after* any
 # 2-byte PRG load address that may prefix the file on disk).
 TUNE_HEADER_SIZE = 0x40  # 64 bytes

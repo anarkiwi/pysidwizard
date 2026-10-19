@@ -12,9 +12,27 @@ same `SWMFile` model for playback.
 
 ### SWM module (native)
 
-`read_swm` auto-detects both bare SWM payloads and PRG-wrapped files (2-byte
-little-endian load address, then the `SWM1` magic at offset 2). The writer emits
-the PRG wrapper by default; set `swm.load_address = None` for a bare payload.
+`read_swm` auto-detects bare SWM payloads, PRG-wrapped files (2-byte
+little-endian load address, then the `SWM1` magic at offset 2), and PC64
+`.P00`-wrapped modules (below). The writer emits the PRG wrapper by default;
+set `swm.load_address = None` for a bare payload.
+
+### PC64 `.P00` wrapper (read + write)
+
+Releases 1.0 RC through 1.7 shipped most demo tunes as VICE PC64 files
+(`<tune>.swm.P00`): a 26-byte header — `"C64File\0"`, a 16-byte PETSCII name,
+2 pad bytes — in front of the PRG-wrapped SWM (SWMconvert.c:
+`VICE_P00_OFFSET 0x1A`, `WriteP00header`), so the module magic sits at offset
+0x1C after the 2-byte load address.
+
+- `read_swm` / `parse_swm` detect the `C64File` magic, parse the module from
+  0x1C, and record the 16-byte name in `swm.p00_name`. The wrapper is transport
+  metadata, not module identity: `read_swm(x.P00) == read_swm(x.prg)`.
+- `build_swm(swm, container="p00")` (and `write_swm(..., container="p00")`)
+  re-emits the wrapper byte-exactly from `swm.p00_name` (zero-padded to 16);
+  the default `container="prg"` preserves the existing PRG/bare behavior.
+  A `.P00` whose payload is not an SWM module (the GM soundset instrument
+  files in the same releases) is still rejected with `SWMFormatError`.
 
 ### SID-Wizard `.sid` export (read-only, lossy)
 

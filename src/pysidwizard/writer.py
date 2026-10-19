@@ -8,6 +8,9 @@ from typing import Union
 from .constants import (
     AMOUNT_FIELDS,
     INSTRUMENT_NAME_LEN,
+    P00_MAGIC,
+    P00_NAME_LEN,
+    SWM_CONTAINERS,
     SWM_FORMATS,
 )
 from .errors import SWMFormatError
@@ -71,14 +74,18 @@ def _validate_cross_refs(swm: SWMFile, strict: bool = False) -> None:
                 )
 
 
-def build_swm(swm: SWMFile, strict: bool = False) -> bytes:
+def build_swm(swm: SWMFile, strict: bool = False, container: str = "prg") -> bytes:
     """Serialise a :class:`SWMFile` to a bytes object.
 
-    ``strict=True`` rejects instrument-column references past the module's
-    instrument count; the default round-trips editor-stored refs verbatim.
-    ``load_address`` set prefixes a little-endian word (the ``.prg`` form).
+    ``strict=True`` rejects out-of-count instrument refs; ``container`` is "prg"
+    (the ``.prg`` form, default) or "p00", which prepends the PC64 header and
+    re-emits the ``.P00`` wrapper byte-exactly for a name read by ``read_swm``.
     """
 
+    if container not in SWM_CONTAINERS:
+        raise SWMFormatError(
+            f"container={container!r} is not a known SWM container ({', '.join(SWM_CONTAINERS)})"
+        )
     _validate_cross_refs(swm, strict)
 
     fmt = SWM_FORMATS.get(swm.sid_amount)
@@ -86,6 +93,14 @@ def build_swm(swm: SWMFile, strict: bool = False) -> bytes:
         raise SWMFormatError(f"swm.sid_amount={swm.sid_amount} is not a supported SID count (1..4)")
 
     out = bytearray()
+
+    if container == "p00":
+        name = swm.p00_name
+        if len(name) > P00_NAME_LEN:
+            raise SWMFormatError(f"p00_name is {len(name)} bytes; max {P00_NAME_LEN}")
+        out += P00_MAGIC
+        out += name.ljust(P00_NAME_LEN, b"\x00")
+        out += b"\x00\x00"  # pad between the name and the PRG payload
 
     if swm.load_address is not None:
         if not (0 <= swm.load_address <= 0xFFFF):
@@ -206,8 +221,8 @@ def build_swm(swm: SWMFile, strict: bool = False) -> bytes:
     return bytes(out)
 
 
-def write_swm(swm: SWMFile, path: Union[str, os.PathLike[str]]) -> None:
-    """Serialise ``swm`` and write it to ``path``."""
-    payload = build_swm(swm)
+def write_swm(swm: SWMFile, path: Union[str, os.PathLike[str]], container: str = "prg") -> None:
+    """Serialise ``swm`` and write it to ``path`` (see :func:`build_swm` for ``container``)."""
+    payload = build_swm(swm, container=container)
     with open(path, "wb") as fh:
         fh.write(payload)

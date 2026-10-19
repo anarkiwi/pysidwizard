@@ -7,6 +7,10 @@ from typing import Union
 
 from .constants import (
     INSTRUMENT_NAME_LEN,
+    P00_HEADER_SIZE,
+    P00_MAGIC,
+    P00_NAME_LEN,
+    P00_NAME_OFFSET,
     PACKED_MAX,
     PACKED_MIN,
     SWM_MAGIC_TO_FORMAT,
@@ -34,23 +38,42 @@ def apply_player_image(swm: SWMFile, player_version: str | None) -> SWMFile:
     return swm
 
 
-def _detect_layout(data: bytes) -> tuple[int, int | None, SWMFormat]:
-    """Return ``(header_offset, load_address, format)`` for the given SWM bytes.
+def _detect_layout(data: bytes) -> tuple[int, int | None, SWMFormat, bytes | None]:
+    """Return ``(header_offset, load_address, format, p00_name)`` for SWM bytes.
 
-    Accepts a bare module (magic at offset 0) or a PRG-wrapped module
-    (2-byte little-endian load address, magic at offset 2) in any of the
-    single- or multi-SID layouts. Anything else raises :class:`SWMFormatError`.
+    Accepts a bare module (magic at offset 0), a PRG-wrapped module (2-byte
+    load address, magic at offset 2), or a PC64 ``.P00`` file (``C64File``
+    header, magic at 0x1C, ``p00_name`` set; ``None`` otherwise).
     """
+    if len(data) >= 8 and data[:8] == P00_MAGIC:
+        magic_pos = P00_HEADER_SIZE + 2
+        if len(data) < magic_pos + 4:
+            raise SWMFormatError(
+                "input looks like a PC64 .P00 file but is too short to hold a SWM module"
+            )
+        fmt = SWM_MAGIC_TO_FORMAT.get(data[magic_pos : magic_pos + 4])
+        if fmt is None:
+            raise SWMFormatError(
+                "PC64 .P00 header present but no SWM1/SWMS/SWT/SWMQ magic at offset 0x1C"
+            )
+        load_address = int.from_bytes(data[P00_HEADER_SIZE : P00_HEADER_SIZE + 2], "little")
+        return (
+            magic_pos,
+            load_address,
+            fmt,
+            data[P00_NAME_OFFSET : P00_NAME_OFFSET + P00_NAME_LEN],
+        )
     if len(data) >= 4:
         fmt = SWM_MAGIC_TO_FORMAT.get(data[0:4])
         if fmt is not None:
-            return 0, None, fmt
+            return 0, None, fmt, None
     if len(data) >= 6:
         fmt = SWM_MAGIC_TO_FORMAT.get(data[2:6])
         if fmt is not None:
-            return 2, int.from_bytes(data[0:2], "little"), fmt
+            return 2, int.from_bytes(data[0:2], "little"), fmt, None
     raise SWMFormatError(
-        "input does not look like an SWM module (expected SWM1/SWMS/SWT/SWMQ " "at offset 0 or 2)"
+        "input does not look like an SWM module (expected SWM1/SWMS/SWT/SWMQ at "
+        "offset 0, 2, or a PC64 .P00 header)"
     )
 
 
@@ -62,7 +85,7 @@ def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -
     is ignored by an image that a ``.sid`` already carries.
     """
 
-    header_offset, load_address, fmt = _detect_layout(data)
+    header_offset, load_address, fmt, p00_name = _detect_layout(data)
     if len(data) - header_offset < fmt.header_size:
         raise SWMFormatError(
             f"input is shorter than the {fmt.header_size}-byte {fmt.magic.decode()} header"
@@ -231,6 +254,7 @@ def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -
         tempo_table=tempo_table,
         subtune_tempos=subtune_tempos,
         load_address=load_address,
+        p00_name=p00_name or b"",
     )
     return apply_player_image(swm, player_version)
 
