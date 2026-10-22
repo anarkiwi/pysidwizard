@@ -2,25 +2,21 @@
 
 CSDB sources: the SID-Wizard 1.94 source tarball (four player-test tunes, one SWP) and
 the SID-Wizard 1.7 smallpack (quickscore.swm). Any SHA-256 mismatch is a hard error.
-Test-only module, imported only from ``tests/``.
+Each file is one member of a pinned release archive, fetched by the shared
+:func:`pysidtracker.testing.fetch_archive_member`. Test-only module, imported only
+from ``tests/``.
 """
 
 from __future__ import annotations
 
-import hashlib
-import http.client
 import os
-import tarfile
-import time
-import urllib.error
-import urllib.request
-import zipfile
 from pathlib import Path
 from typing import Dict, Tuple
 
+from pysidtracker.testing import fetch_archive_member
+
 TARBALL_URL = "https://csdb.dk/getinternalfile.php/276275/SID-Wizard-1.94-with-sources.tar.gz"
 TARBALL_SHA256 = "544e36aff3fe14b7e4cf81a04c680a6883191a222754b2f0489e15349a89b559"
-_TARBALL_NAME = "SID-Wizard-1.94-with-sources.tar.gz"
 
 # Tune name -> (tarball member path, expected SHA-256 of the SWM bytes).
 TUNE_MEMBERS: Dict[str, Tuple[str, str]] = {
@@ -86,138 +82,6 @@ OOB_INST_TUNE_MEMBERS: Dict[str, Tuple[str, str]] = {
 
 OOB_INST_TUNE_NAMES: Tuple[str, ...] = tuple(OOB_INST_TUNE_MEMBERS.keys())
 
-
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fp:
-        for chunk in iter(lambda: fp.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def swm_cache_dir() -> Path:
-    """Local cache directory for the tarball and extracted SWM bytes."""
-    env = os.environ.get("SIDWIZARD_TUNECACHE")
-    out = Path(env) if env else Path(__file__).resolve().parent / ".swmcache"
-    out.mkdir(parents=True, exist_ok=True)
-    return out
-
-
-def _atomic_write(dest: Path, data: bytes) -> None:
-    """Write ``data`` to ``dest`` atomically so a concurrent reader never
-    observes a half-written file: write to a temp file in the same dir and
-    ``os.replace()`` it into place (atomic on same-fs, xdist-safe)."""
-    tmp = dest.with_name(f".{dest.name}.{os.getpid()}.tmp")
-    try:
-        with open(tmp, "wb") as fp:
-            fp.write(data)
-            fp.flush()
-            os.fsync(fp.fileno())
-        os.replace(tmp, dest)
-    finally:
-        try:
-            tmp.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def _download(url: str, *, retries: int = 4) -> bytes:
-    """Download ``url``, retrying transient failures with exponential backoff."""
-    req = urllib.request.Request(url, headers={"User-Agent": "pysidwizard/fetch"})
-    last_err = None
-    for attempt in range(retries):
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:  # nosec B310 (https)
-                return resp.read()
-        except (
-            urllib.error.URLError,
-            TimeoutError,
-            OSError,
-            http.client.HTTPException,
-        ) as exc:
-            last_err = exc
-        if attempt + 1 < retries:
-            time.sleep(min(2**attempt, 5))
-    raise RuntimeError(f"{url}: unreachable after {retries} attempts ({last_err})")
-
-
-def _tarball_path() -> Path:
-    """Ensure the SID-Wizard 1.94 source tarball is downloaded + SHA-256
-    verified, then return its cached filesystem path.
-
-    Atomic ``os.replace`` makes this xdist-safe without a lock: a worker
-    that loses the race simply finds the verified tarball already in place."""
-    tarball = swm_cache_dir() / _TARBALL_NAME
-    if tarball.is_file() and _sha256(tarball) == TARBALL_SHA256:
-        return tarball
-    data = _download(TARBALL_URL)
-    got = hashlib.sha256(data).hexdigest()
-    if got != TARBALL_SHA256:
-        raise RuntimeError(
-            f"{_TARBALL_NAME} SHA-256 mismatch: got {got}, expected {TARBALL_SHA256}"
-        )
-    _atomic_write(tarball, data)
-    return tarball
-
-
-def swm_path(tune: str) -> Path:
-    """Return a filesystem path to ``{tune}.swm``, fetching + extracting
-    on first call. SHA-256 verified against the expected SID-Wizard 1.94
-    bytes. Idempotent and safe under ``pytest-xdist`` (writes are atomic)."""
-    if tune not in TUNE_MEMBERS:
-        raise KeyError(f"unknown tune {tune!r}; expected one of {TUNE_NAMES}")
-    member, expected_sha = TUNE_MEMBERS[tune]
-    dest = swm_cache_dir() / f"{tune}.swm"
-    # Fast path: already extracted + verified.
-    if dest.is_file() and _sha256(dest) == expected_sha:
-        return dest
-
-    tarball = _tarball_path()
-    with tarfile.open(tarball, "r:gz") as tf:
-        src = tf.extractfile(member)
-        if src is None:
-            raise RuntimeError(f"tarball member {member!r} is not a regular file")
-        data = src.read()
-
-    got = hashlib.sha256(data).hexdigest()
-    if got != expected_sha:
-        raise RuntimeError(f"{tune}.swm SHA-256 mismatch: got {got}, expected {expected_sha}")
-    _atomic_write(dest, data)
-    return dest
-
-
-def all_swm_paths() -> Dict[str, Path]:
-    """Materialise all four tunes; return ``{tune: path}``."""
-    return {tune: swm_path(tune) for tune in TUNE_NAMES}
-
-
-def oob_inst_path(name: str) -> Path:
-    """Issue #57 fixture (instrument ref above the count); SHA-256 verified, xdist-safe."""
-    if name not in OOB_INST_TUNE_MEMBERS:
-        raise KeyError(f"unknown fixture {name!r}; expected one of {OOB_INST_TUNE_NAMES}")
-    member, expected_sha = OOB_INST_TUNE_MEMBERS[name]
-    dest = swm_cache_dir() / f"{name}.swm"
-    # Fast path: already extracted + verified.
-    if dest.is_file() and _sha256(dest) == expected_sha:
-        return dest
-    tarball = _tarball_path()
-    with tarfile.open(tarball, "r:gz") as tf:
-        src = tf.extractfile(member)
-        if src is None:
-            raise RuntimeError(f"tarball member {member!r} is not a regular file")
-        data = src.read()
-    got = hashlib.sha256(data).hexdigest()
-    if got != expected_sha:
-        raise RuntimeError(f"{name}.swm SHA-256 mismatch: got {got}, expected {expected_sha}")
-    _atomic_write(dest, data)
-    return dest
-
-
-def all_oob_inst_paths() -> Dict[str, Path]:
-    """Materialise all issue #57 fixtures; return ``{name: path}``."""
-    return {name: oob_inst_path(name) for name in OOB_INST_TUNE_NAMES}
-
-
 # issue #53: native multi-SID work files (SWMS/SWT/SWMQ), all in the 1.94 tarball.
 MULTI_SID_MEMBERS: Dict[str, Tuple[str, str]] = {
     "childhood.sws": (
@@ -256,89 +120,12 @@ MULTI_SID_MEMBERS: Dict[str, Tuple[str, str]] = {
 
 MULTI_SID_NAMES: Tuple[str, ...] = tuple(MULTI_SID_MEMBERS.keys())
 
-
-def multi_sid_path(name: str) -> Path:
-    """SHA-256 verified path to a native multi-SID file, fetched on first call."""
-    if name not in MULTI_SID_MEMBERS:
-        raise KeyError(f"unknown multi-SID fixture {name!r}; expected one of {MULTI_SID_NAMES}")
-    member, expected_sha = MULTI_SID_MEMBERS[name]
-    dest = swm_cache_dir() / name
-    if dest.is_file() and _sha256(dest) == expected_sha:
-        return dest
-    tarball = _tarball_path()
-    with tarfile.open(tarball, "r:gz") as tf:
-        src = tf.extractfile(member)
-        if src is None:
-            raise RuntimeError(f"tarball member {member!r} is not a regular file")
-        data = src.read()
-    got = hashlib.sha256(data).hexdigest()
-    if got != expected_sha:
-        raise RuntimeError(f"{name} SHA-256 mismatch: got {got}, expected {expected_sha}")
-    _atomic_write(dest, data)
-    return dest
-
-
-def all_multi_sid_paths() -> Dict[str, Path]:
-    """Materialise all issue #53 fixtures; return ``{name: path}``."""
-    return {name: multi_sid_path(name) for name in MULTI_SID_NAMES}
-
-
-def swp_path(name: str) -> Path:
-    """Return a path to the cached ``SWP`` file ``name``, fetched + extracted on
-    first call. SHA-256 verified. Idempotent and safe under ``pytest-xdist``."""
-    if name not in SWP_FILES:
-        raise KeyError(f"unknown SWP file {name!r}; expected one of {SWP_NAMES}")
-    member, expected_sha = SWP_FILES[name]
-    dest = swm_cache_dir() / name
-    if dest.is_file() and _sha256(dest) == expected_sha:
-        return dest
-
-    tarball = _tarball_path()
-    with tarfile.open(tarball, "r:gz") as tf:
-        src = tf.extractfile(member)
-        if src is None:
-            raise RuntimeError(f"tarball member {member!r} is not a regular file")
-        data = src.read()
-
-    got = hashlib.sha256(data).hexdigest()
-    if got != expected_sha:
-        raise RuntimeError(f"{name} SHA-256 mismatch: got {got}, expected {expected_sha}")
-    _atomic_write(dest, data)
-    return dest
-
-
-def quickscore_path() -> Path:
-    """SHA-256 verified path to quickscore.swm from the SID-Wizard 1.7 smallpack."""
-    dest = swm_cache_dir() / "quickscore.swm"
-    if dest.is_file() and _sha256(dest) == QUICKSCORE_SHA256:
-        return dest
-    archive = swm_cache_dir() / "SID-Wizard-1.7-smallpack.zip"
-    if not (archive.is_file() and _sha256(archive) == SW17_ZIP_SHA256):
-        data = _download(SW17_ZIP_URL)
-        got = hashlib.sha256(data).hexdigest()
-        if got != SW17_ZIP_SHA256:
-            raise RuntimeError(
-                f"SID-Wizard-1.7-smallpack.zip SHA-256 mismatch: got {got}, expected {SW17_ZIP_SHA256}"
-            )
-        _atomic_write(archive, data)
-    with zipfile.ZipFile(archive) as zf:
-        data = zf.read(QUICKSCORE_MEMBER)
-    got = hashlib.sha256(data).hexdigest()
-    if got != QUICKSCORE_SHA256:
-        raise RuntimeError(
-            f"quickscore.swm SHA-256 mismatch: got {got}, expected {QUICKSCORE_SHA256}"
-        )
-    _atomic_write(dest, data)
-    return dest
-
-
 # issue #56: the 1.97 release's native .swm and its .sid export (the per-
 # (version, driver) FREQTBL image is derived from the .sid exports).
 SW197_TARBALL_URL = (
     "https://csdb.dk/getinternalfile.php/281063/SID-Wizard-1.97-sources-examples.tar.gz"
 )
 SW197_TARBALL_SHA256 = "aeb265f4a778b2acb5aad13e8e98af882888292f749f29f4d18cbf49850e57bc"
-_SW197_TARBALL_NAME = "SID-Wizard-1.97-sources-examples.tar.gz"
 _SW197_ROOT = "SID-Wizard-1.97-sources-examples"
 
 SW197_MEMBERS: Dict[str, Tuple[str, str]] = {
@@ -362,35 +149,6 @@ SW197_MEMBERS: Dict[str, Tuple[str, str]] = {
 
 SW197_NAMES: Tuple[str, ...] = tuple(SW197_MEMBERS.keys())
 
-
-def _sw197_tarball_path() -> Path:
-    """Ensure the 1.97 release tarball is downloaded and SHA-256 verified."""
-    tarball = swm_cache_dir() / _SW197_TARBALL_NAME
-    if tarball.is_file() and _sha256(tarball) == SW197_TARBALL_SHA256:
-        return tarball
-    data = _download(SW197_TARBALL_URL)
-    if hashlib.sha256(data).hexdigest() != SW197_TARBALL_SHA256:
-        raise RuntimeError(f"{_SW197_TARBALL_NAME} SHA-256 mismatch")
-    _atomic_write(tarball, data)
-    return tarball
-
-
-def sw197_path(name: str) -> Path:
-    """SHA-256 verified path to a 1.97 release member (``.swm`` or ``.sid``)."""
-    if name not in SW197_MEMBERS:
-        raise KeyError(f"unknown 1.97 fixture {name!r}; expected one of {SW197_NAMES}")
-    member, expected = SW197_MEMBERS[name]
-    dest = swm_cache_dir() / f"sw197-{name}"
-    if dest.is_file() and _sha256(dest) == expected:
-        return dest
-    with tarfile.open(_sw197_tarball_path(), "r:gz") as tf:
-        data = tf.extractfile(member).read()
-    if hashlib.sha256(data).hexdigest() != expected:
-        raise RuntimeError(f"{name} SHA-256 mismatch")
-    _atomic_write(dest, data)
-    return dest
-
-
 # issue #61: quickscore .P00 container + .prg twin from the SID-Wizard 1.4 release (csdb 115599).
 SW14_ZIP_URL = "https://csdb.dk/getinternalfile.php/113613/SID-Wizard-1.4-with-source.zip"
 SW14_ZIP_SHA256 = "6cd2e4c482f872a4e12a5ca2989039c6f3df079cab96a55562276a6973364ecc"
@@ -409,38 +167,58 @@ P00_PAIR_MEMBERS: Dict[str, Tuple[str, str]] = {
 
 P00_PAIR_NAMES: Tuple[str, ...] = tuple(P00_PAIR_MEMBERS.keys())
 
-
-def _sw14_zip_path() -> Path:
-    """Ensure the SID-Wizard 1.4 zip is downloaded + SHA-256 verified."""
-    archive = swm_cache_dir() / "SID-Wizard-1.4-with-source.zip"
-    if archive.is_file() and _sha256(archive) == SW14_ZIP_SHA256:
-        return archive
-    data = _download(SW14_ZIP_URL)
-    if hashlib.sha256(data).hexdigest() != SW14_ZIP_SHA256:
-        raise RuntimeError("SID-Wizard-1.4-with-source.zip SHA-256 mismatch")
-    _atomic_write(archive, data)
-    return archive
+SW194 = (TARBALL_URL, TARBALL_SHA256)
+SW197 = (SW197_TARBALL_URL, SW197_TARBALL_SHA256)
+SW17 = (SW17_ZIP_URL, SW17_ZIP_SHA256)
+SW14 = (SW14_ZIP_URL, SW14_ZIP_SHA256)
 
 
-def p00_pair_path(name: str) -> Path:
-    """SHA-256 verified path to a 1.4 ``.P00``/``.prg`` pair member (issue #61)."""
-    if name not in P00_PAIR_MEMBERS:
-        raise KeyError(f"unknown issue #61 fixture {name!r}; expected one of {P00_PAIR_NAMES}")
-    member, expected = P00_PAIR_MEMBERS[name]
-    dest = swm_cache_dir() / name
-    if dest.is_file() and _sha256(dest) == expected:
-        return dest
-    with zipfile.ZipFile(_sw14_zip_path()) as zf:
-        data = zf.read(member)
-    if hashlib.sha256(data).hexdigest() != expected:
-        raise RuntimeError(f"{name} SHA-256 mismatch")
-    _atomic_write(dest, data)
-    return dest
+def swm_cache_dir() -> Path:
+    """Local cache directory for the release archives and extracted files."""
+    env = os.environ.get("SIDWIZARD_TUNECACHE")
+    return Path(env) if env else Path(__file__).resolve().parent / ".swmcache"
+
+
+def release_member(release: Tuple[str, str], member: str, sha256: str, name: str) -> Path:
+    """``member`` of the pinned ``(url, sha256)`` ``release`` archive, cached as ``name``."""
+    return fetch_archive_member(*release, member, sha256, cache_dir=swm_cache_dir(), name=name)
+
+
+def swm_path(tune: str) -> Path:
+    """Path to the SID-Wizard 1.94 example ``{tune}.swm``."""
+    return release_member(SW194, *TUNE_MEMBERS[tune], f"{tune}.swm")
+
+
+def all_swm_paths() -> Dict[str, Path]:
+    """Materialise all four tunes; return ``{tune: path}``."""
+    return {tune: swm_path(tune) for tune in TUNE_NAMES}
+
+
+def oob_inst_path(name: str) -> Path:
+    """Issue #57 fixture (instrument ref above the count)."""
+    return release_member(SW194, *OOB_INST_TUNE_MEMBERS[name], f"{name}.swm")
+
+
+def multi_sid_path(name: str) -> Path:
+    """Path to a native multi-SID work file (issue #53)."""
+    return release_member(SW194, *MULTI_SID_MEMBERS[name], name)
+
+
+def swp_path(name: str) -> Path:
+    """Path to the packed ``SWP`` file ``name``."""
+    return release_member(SW194, *SWP_FILES[name], name)
+
+
+def quickscore_path() -> Path:
+    """Path to quickscore.swm from the SID-Wizard 1.7 smallpack."""
+    return release_member(SW17, QUICKSCORE_MEMBER, QUICKSCORE_SHA256, "quickscore.swm")
+
+
+def sw197_path(name: str) -> Path:
+    """Path to a 1.97 release member (``.swm`` or ``.sid``)."""
+    return release_member(SW197, *SW197_MEMBERS[name], f"sw197-{name}")
 
 
 def p00_pair() -> Tuple[Path, Path]:
     """Return ``(p00, prg)`` — the 1.4 quickscore module wrapped and bare (issue #61)."""
-    return (
-        p00_pair_path("quickscore.swm.P00"),
-        p00_pair_path("quickscore.swm.prg"),
-    )
+    return tuple(release_member(SW14, *P00_PAIR_MEMBERS[n], n) for n in P00_PAIR_NAMES)

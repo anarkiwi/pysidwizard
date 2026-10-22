@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from pysidtracker import SidParseError
+from pysidtracker import SidParseError, cadence
 from pysidtracker.cadence import Cadence
 from pysidtracker.registers import PAL_CLOCK_HZ, PAL_CYCLES_PER_FRAME
 from pysidtracker.sidid import sidid_signatures
@@ -64,7 +64,7 @@ def test_render_matches_player_and_reports_build(relpath, info):
 def test_render_reports_unknown_trigger(monkeypatch):
     data = _tune("DEMOS/0-9/8-Bit_Bard.sid")
     unknown = Cadence(PAL_CYCLES_PER_FRAME, None, PAL_CLOCK_HZ)
-    monkeypatch.setattr(oracle_hvsc, "playroutine_cadence", lambda *_, **__: unknown)
+    monkeypatch.setattr(cadence, "playroutine_cadence", lambda *_, **__: unknown)
     grid, info = oracle_hvsc.render(data, 1, 20)
     np.testing.assert_array_equal(grid, _native(data, 0, 20))
     assert (info["trigger"], info["speed"]) == (None, 1)

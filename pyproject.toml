@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pysidwizard"
-version = "0.3.3"
+version = "0.3.4"
 description = "Pure-Python reader, writer, and player for SID-Wizard SWM modules"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,8 +24,10 @@ dependencies = [
     # ``run_init``, which the ``.sid`` reader uses to run a tune's own init
     # (see pysidwizard.sidreader._build_via_player). 0.20 explains oracle mismatches
     # and chases the state behind them (``python -m pysidtracker.whydiff TUNE
-    # --format sidwizard --state``).
-    "pysidtracker>=0.20.1",
+    # --format sidwizard --state``). 0.24 adds the survey renderer's
+    # ``cadence_info``, the oracle-free ``survey scope`` and the pinned-archive
+    # fixture fetch (``fetch_archive_member``) the test suite uses.
+    "pysidtracker>=0.24.0",
 ]
 
 [project.optional-dependencies]
