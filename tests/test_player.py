@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import warnings
 
 import pytest
@@ -1367,3 +1368,16 @@ def test_calcvibrato_off_makes_the_vibrato_amplitude_pitch_independent():
     assert low._freqmod(0x40, 20) == low._freqmod(0x40, 90)
     calc = SWMPlayer(_toy_swm())
     assert calc._freqmod(0x40, 20) != calc._freqmod(0x40, 90)
+
+
+@pytest.mark.parametrize("portavibra,offset", [(False, -0x400 + 0x21), (True, 0)])
+def test_a_pending_note_fx_portamento_slides_unless_portavibra(portavibra, offset):
+    """SLIDES (player.asm:2091-2098): a note-FX portamento's SLIDEVIB=$FF runs PORTAME
+    each frame, or TARGETN with PORTAVIBRA_ON."""
+    p = _play(_fx_swm(0x02, 0x10), frames=SETUP_FRAMES + 1)
+    p.features = dataclasses.replace(p.features, portavibra=portavibra)
+    v = p.voices[0]
+    v.slide_vib, v.vibrato_offset = 0xFF, (-0x400) & 0xFFFF
+    v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = 0x20, 0
+    p._tick_vibrato(v)  # pylint: disable=protected-access
+    assert v.vibrato_offset == offset & 0xFFFF and v.slide_vib == 0xFF
