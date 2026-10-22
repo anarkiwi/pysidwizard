@@ -1025,7 +1025,12 @@ class SWMPlayer(MemPlayer):
         return None
 
     def _apply_row(self, v: VoiceState, row) -> None:
-        """Apply one Row's columns to the voice."""
+        """Apply one Row's columns to the voice.
+
+        Mirrors TICK_2: the note column (pitch and note-FX) applies only with a
+        selected instrument — ``ldy CURINS,x; bne STRTINS`` else LEGATOO
+        (player.asm:1326) — so NGATEON/NGATEOF leave PTNGATE at INITER's 0.
+        """
         note = row.note
         instrument = row.instrument
         fx = row.fx
@@ -1087,7 +1092,7 @@ class SWMPlayer(MemPlayer):
         # has portamento big-fx ($03) or legato instrument ($3F);
         # only the discrete pitch (v.note) updates and the existing
         # WF / PW / Filter table walks continue. Mirror that here.
-        if note is not None and note != 0:
+        if note is not None and note != 0 and v.instrument is not None:
             if note < NOTE_FX_MIN:
                 if fx == 0x03:
                     # Portamento big-fx: skip HR / table reset and
