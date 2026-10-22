@@ -653,6 +653,13 @@ class SWMPlayer(MemPlayer):
             # pinned (player.asm ``dec SPDCNT,x``); the held note's
             # tables keep running on subsequent frames.
             self._advance_row(v)
+        if pre_incr_sc == min(1, self._apply_tick(current_tempo)) and self._ends_here(v):
+            # PTN_SEQ (player.asm:1653): the tick after the row read looks
+            # ahead for the pattern's $FF; an orderlist $FE then pins SPDCNT
+            # at TICK_1, so the row read at TICK_0 never reaches TICK_2.
+            v.pending_row = None
+            v.pattern = None
+            v.sequence_ended = True
         v.speed_counter += 1
         if v.speed_counter >= current_tempo:
             # advTprg (player.asm:1385): the counter reaching the tempo both
@@ -950,6 +957,30 @@ class SWMPlayer(MemPlayer):
         # the first non-empty row even if _apply_row hasn't run yet.
         if row.note is not None or row.instrument is not None or row.fx is not None:
             v.triggered = True
+
+    def _ends_here(self, v: VoiceState) -> bool:
+        """Whether ``v``'s pattern is exhausted and its orderlist reaches its
+        terminator before another pattern (SEQ-FX and loops walked, nothing
+        applied)."""
+        if v.sequence_ended or v.pattern is None or v.pattern_row < len(v.pattern.rows):
+            return False
+        sequence, pos, seen = v.sequence, v.seq_pos, set()
+        while pos < len(sequence) and (id(sequence), pos) not in seen:
+            seen.add((id(sequence), pos))
+            cmd = sequence[pos]
+            pos += 1
+            if isinstance(cmd, PlayPattern):
+                return False
+            if isinstance(cmd, End):
+                return True
+            if isinstance(cmd, Loop):
+                pos = cmd.position
+            elif isinstance(cmd, SubtuneJump):
+                target = cmd.subtune * 3 + v.channel
+                if target >= len(self.swm.sequences):
+                    return True
+                sequence, pos = self.swm.sequences[target], 0
+        return True
 
     def _advance_sequence(self, v: VoiceState) -> None:
         """Walk the orderlist forward, applying every Transpose /

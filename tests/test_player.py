@@ -14,8 +14,10 @@ from pysidwizard import (
     Pattern,
     PlayPattern,
     Row,
+    SubtuneJump,
     SWMFile,
     SWMUnsupportedEffectWarning,
+    Transpose,
     Waveform,
     parse_swm,
     straight_tempo,
@@ -63,8 +65,9 @@ def _toy_swm() -> SWMFile:
             Row(),  # NOP
             Row(note=0x7E),  # gate-off
             Row(note=53, instrument=1),  # different pitch
+            Row(),  # the last row, which the orderlist's End leaves unplayed
         ],
-        length=4,
+        length=5,
     )
     return SWMFile(
         sequences=[[PlayPattern(1), End()]] * 3,
@@ -196,6 +199,54 @@ def test_player_terminates_when_sequence_ends():
         if p.finished:
             break
     assert p.finished
+
+
+def _closing_gate_off(sequence: list, subtunes: int = 1) -> list:
+    """Voice 0's control register per frame for a note then a gate-off row,
+    tempo 3, every voice playing ``sequence`` (``subtunes`` orderlist sets)."""
+    inst = Instrument(name=b"GATE    ", sustain=0xF, first_waveform=0x41, wf_table=b"\x41\x80\xff")
+    swm = SWMFile(
+        sequences=[sequence] * 3 * subtunes,
+        patterns=[Pattern(rows=[Row(note=49, instrument=1), Row(note=0x7E)], length=2)],
+        instruments=[inst],
+        subtune_tempos=[(straight_tempo(3), straight_tempo(3))] * subtunes,
+    )
+    return [row[4] for row in SWMPlayer(swm).render_grid(16)]
+
+
+# The gate-off row applies on its TICK_2: row 1's TICK_0 is call 3.
+GATE_OFF_CALL = SETUP_FRAMES + 3
+
+
+@pytest.mark.parametrize(
+    "sequence,subtunes",
+    [
+        ([PlayPattern(1), End()], 1),
+        ([PlayPattern(1), Transpose(2), End()], 1),
+        ([PlayPattern(1)], 1),
+        ([PlayPattern(1), Loop(position=1)], 1),
+        ([PlayPattern(1), SubtuneJump(byte=0x85)], 1),
+        ([PlayPattern(1), End(), SubtuneJump(byte=0x81)], 2),
+    ],
+)
+def test_orderlist_end_leaves_the_last_row_unplayed(sequence, subtunes):
+    """PTN_SEQ meets the orderlist's end on the tick after the last row's read
+    and pins SPDCNT at TICK_1, so that row never reaches TICK_2."""
+    ctrl = _closing_gate_off(sequence, subtunes)
+    assert all(c & 1 for c in ctrl[GATE_OFF_CALL - 1 :]), ctrl
+
+
+@pytest.mark.parametrize(
+    "sequence,subtunes",
+    [
+        ([PlayPattern(1), PlayPattern(1), End()], 1),
+        ([PlayPattern(1), Loop(position=0)], 1),
+        ([PlayPattern(1), SubtuneJump(byte=0x81)], 2),
+    ],
+)
+def test_last_row_plays_when_the_orderlist_goes_on(sequence, subtunes):
+    ctrl = _closing_gate_off(sequence, subtunes)
+    assert ctrl[GATE_OFF_CALL - 1] & 1 and not ctrl[GATE_OFF_CALL] & 1, ctrl
 
 
 @pytest.mark.parametrize(
@@ -575,7 +626,7 @@ def test_untriggered_voice_emits_no_register_writes():
         first_waveform=0x41,
         wf_table=bytes([0x41, 0x80, 0x00, 0xFF]),
     )
-    pattern_active = Pattern(rows=[Row(note=49, instrument=1)], length=1)
+    pattern_active = Pattern(rows=[Row(note=49, instrument=1), Row()], length=2)
     pattern_silent = Pattern(rows=[Row()], length=1)  # note=None instrument=None
     swm = SWMFile(
         sequences=[
@@ -661,7 +712,6 @@ def test_subtune_jump_terminator_continues_in_target_subtune():
     """A $FF terminator followed by a high-bit byte is a per-channel jump to
     another subtune (player.asm LOOPSEQ line 1683 -> SETSEQA, then position 0),
     not a loop position and not the end of playback."""
-    from pysidwizard import SubtuneJump
 
     inst = Instrument(name=b"SJ      ", sustain=0xF, first_waveform=0x41)
     swm = SWMFile(
