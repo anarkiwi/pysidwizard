@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from pysidtracker.oracle import cached_sidtrace, sidtrace_grid
+from pysidtracker.oracle import cached_sidtrace, register_grid, sidtrace_grid
 from pysidtracker.testing import (
     TuneFetchError,
     assert_oracle_match,
@@ -211,3 +211,16 @@ def test_song_render_matches_oracle(song_id):
     )
     expected = sidtrace_grid(rows)[:FRAMES]
     assert expected == oracle_hvsc.render(Path(path).read_bytes(), song, len(expected))[0].tolist()
+
+
+@pytest.mark.oracle
+def test_orderlist_end_leaves_the_last_row_unplayed_on_the_6502():
+    """PREX song 4 (the Light build) ends voice 3 on a gate-off row that the
+    6502 never applies. Its sidtrace grid stops at the last register change,
+    before that row, so the jennings grid is the reference."""
+    path = resolve_tune("GAMES/M-R/PREX.sid", cache_dir=_CACHE / "hvsc", local_env="HVSC")
+    if path is None:
+        raise TuneFetchError("GAMES/M-R/PREX.sid unavailable (offline, not cached)")
+    data = Path(path).read_bytes()
+    expected = register_grid(data, 2 * FRAMES, subtune=3)
+    assert oracle_hvsc.render(data, 4, 2 * FRAMES)[0].tolist() == expected
