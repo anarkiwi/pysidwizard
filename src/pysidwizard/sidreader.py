@@ -575,11 +575,16 @@ class SidWizardSidParser(BaseSidParser):
 
     error_class = SIDFormatError
 
-    def parse(self, data: bytes, **kwargs: Any) -> SWMFile:
+    def parse(self, data: bytes, subtune: Optional[int] = None, **kwargs: Any) -> SWMFile:
+        """The tune's module, or with ``subtune`` the single-subtune module 0-based ``subtune``
+        plays (the container's song ``subtune + 1``, :func:`parse_sid_song`)."""
         # A standalone packed tune (SWP1 at offset 0 or after a 2-byte load prefix) has no container.
         if data[:4] == SWP_MAGIC or (len(data) >= 6 and data[2:6] == SWP_MAGIC):
-            return parse_swp(data, **kwargs)
-        return parse_sid(data, **kwargs)
+            swm = parse_swp(data, **kwargs)
+            return swm if subtune is None else swm.subtune(subtune)
+        if subtune is None:
+            return parse_sid(data, **kwargs)
+        return parse_sid_song(data, subtune + 1)
 
     def recognize(self, image: SidImage) -> object:
         pos = image.find(SWM_MAGIC)

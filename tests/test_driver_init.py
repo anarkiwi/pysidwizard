@@ -17,6 +17,7 @@ from pysidwizard import (
     straight_tempo,
 )
 from pysidwizard.features import features_for_driver
+from pysidwizard.formats import FORMAT
 from pysidwizard.player import NOTE_FREQ_HI, NOTE_FREQ_LO, TRACK_STRIDE, SWMPlayer, freq_tables
 from pysidwizard.sidreader import _first_frame_freq_by_track, _player_bases
 from tests._hvsc_fetch import resolve
@@ -161,6 +162,17 @@ def test_song_runs_init_to_pick_the_subtune():
     whole = parse_sid(data)
     for song in (1, 2, 3):
         assert parse_sid_song(data, song).sequences == whole.subtune(song).sequences
+
+
+def test_format_plays_the_selected_subtune():
+    """The registered format's ``subtune`` is the 0-based song: PREX's song 4 is its second player."""
+    data = _tune("GAMES/M-R/PREX.sid")
+    model = FORMAT.parser.parse(data, subtune=3)
+    assert model.sequences == parse_sid_song(data, 4).sequences
+    assert FORMAT.parser.parse(data).sequences == parse_sid(data).sequences
+    expected = SWMPlayer(parse_sid_song(data, 4)).render_grid(200)
+    assert FORMAT.player(model).render_grid(200) == expected
+    assert expected != SWMPlayer(parse_sid_song(data, 1)).render_grid(200)
 
 
 def test_song_selects_the_module_of_the_player_it_enters():
