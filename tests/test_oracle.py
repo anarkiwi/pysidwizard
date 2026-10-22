@@ -152,6 +152,24 @@ def test_diverging_tune_explains_itself():
     )
 
 
+@pytest.mark.oracle
+def test_gate_off_without_instrument_selects_legatoo_route():
+    """Gate-off note-FX without a selected instrument goes to LEGATOO, not NGATEOF.
+
+    TICK_2's ``ldy CURINS,x; bne STRTINS`` (player.asm:1326) skips the whole
+    note column otherwise; without that guard this tune first diverges at
+    frame 264, past the default 250-frame window above.
+    """
+    assert_oracle_match(
+        "MUSICIANS/B/Batsman/Propaganda.sid",
+        _player,
+        hvsc_cache=_CACHE / "hvsc",
+        oracle_cache=_CACHE / "csv",
+        frames=FRAMES + 50,
+        report_dir=_CACHE / "why",
+    )
+
+
 # WF-arp relative steps whose sum leaves the 96-note table (masked indices 97 / 107 / 109 / 117).
 # The tune's own RSID raster IRQ ($0948) calls a play routine that first copies the
 # previous call's ghost registers ($0800-$0818) to the SID, so each driver frame
