@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from pysidtracker.oracle import cached_sidtrace, register_grid, sidtrace_grid
+from pysidtracker.oracle import register_grid
 from pysidtracker.testing import (
     TuneFetchError,
     assert_oracle_match,
@@ -203,14 +203,15 @@ SONGS = {
 @pytest.mark.parametrize("song_id", list(SONGS))
 def test_song_render_matches_oracle(song_id):
     relpath, song = SONGS[song_id]
-    path = resolve_tune(relpath, cache_dir=_CACHE / "hvsc", local_env="HVSC")
-    if path is None:
-        raise TuneFetchError(f"{relpath} unavailable (offline, not cached)")
-    rows = cached_sidtrace(
-        path, _CACHE / "csv" / f"{song_id}.csv.zst", seconds=FRAMES // 50 + 2, song=song
+    assert_oracle_match(
+        relpath,
+        lambda data: SWMPlayer(parse_sid_song(data, song)),
+        hvsc_cache=_CACHE / "hvsc",
+        oracle_cache=_CACHE / "csv",
+        frames=FRAMES,
+        song=song,
+        report_dir=_CACHE / "why",
     )
-    expected = sidtrace_grid(rows)[:FRAMES]
-    assert expected == oracle_hvsc.render(Path(path).read_bytes(), song, len(expected))[0].tolist()
 
 
 @pytest.mark.oracle

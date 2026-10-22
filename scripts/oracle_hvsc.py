@@ -5,9 +5,7 @@
 """
 
 import numpy as np
-from pysidtracker import is_rsid
-from pysidtracker.cadence import playroutine_cadence
-from pysidtracker.registers import PAL_CYCLES_PER_FRAME
+from pysidtracker.cadence import cadence_info
 
 from pysidwizard import SWMPlayer, parse_sid_song
 
@@ -17,14 +15,7 @@ PLAYER = "sidwizard"
 def render(data, song, nframes):
     """Render 1-based ``song`` of a SID-Wizard ``.sid`` and the build options it decoded."""
     swm = parse_sid_song(data, song)
-    cadence = playroutine_cadence(data, subtune=song - 1)
-    info = {
-        "driver": swm.driver_type,
-        "frame_speed": swm.frame_speed,
-        "rsid": is_rsid(data),
-        "trigger": cadence.source and cadence.source.value,
-        "speed": round(PAL_CYCLES_PER_FRAME / cadence.cycles_per_call),
-        "dynamic": cadence.dynamic,
-    }
+    info = {"driver": swm.driver_type, "frame_speed": swm.frame_speed}
+    info.update(cadence_info(data, song))
     grid = SWMPlayer(swm).render_grid(nframes)
     return np.asarray(grid, np.int16), info

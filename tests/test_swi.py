@@ -7,6 +7,7 @@ byte-exact round-trip over a SHA-256-pinned spread of the editor's real
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -23,7 +24,7 @@ from pysidwizard import (
     read_swm,
     write_swi,
 )
-from tests._swi_cache import _bytes_sha256, swi_path
+from tests._swi_cache import swi_path
 
 AGOGO_SHA256 = "9f0834bc00153de1cae5e9b9b556ff41e5b7ea08fa13bf63ce41a923925975cd"
 CROSS_CHECK_NAME = b"CIMBALOM"
@@ -211,7 +212,7 @@ def test_native_swi_size_byte_matches_body_and_name_is_eight(swi_bytes: bytes):
 def test_native_agogo_matches_issue_canonical_bytes():
     """Anchor the byte-exact guarantee to the issue's pinned agogo.swi SHA-256."""
     data = swi_path("agogo").read_bytes()
-    assert _bytes_sha256(data) == AGOGO_SHA256
+    assert hashlib.sha256(data).hexdigest() == AGOGO_SHA256
     assert parse_swi(data).load_address == 0x04A1
     assert build_swi(parse_swi(data)) == data
 

@@ -7,14 +7,10 @@ tarball; any SHA-256 mismatch is a hard error.
 
 from __future__ import annotations
 
-import hashlib
-import tarfile
 from pathlib import Path
 from typing import Dict, Tuple
 
-from pysidtracker.testing import _atomic_write  # shared atomic-write primitive
-
-from tests._swm_cache import _sha256, _sw197_tarball_path, swm_cache_dir
+from tests._swm_cache import SW197, release_member
 
 _ROOT = "SID-Wizard-1.97-sources-examples"
 _INST = f"{_ROOT}/native/examples/instruments"
@@ -73,46 +69,11 @@ NEPZENEK_MEMBER = (
 SWI_NAMES: Tuple[str, ...] = tuple(SWI_MEMBERS.keys())
 
 
-def _bytes_sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 def swi_path(name: str) -> Path:
     """Return a verified path to the curated ``.swi`` fixture ``name``."""
-    if name not in SWI_MEMBERS:
-        raise KeyError(f"unknown .swi fixture {name!r}; expected one of {SWI_NAMES}")
-    member, expected = SWI_MEMBERS[name]
-    dest = swm_cache_dir() / f"swi-{name}.swi"
-    if dest.is_file() and _sha256(dest) == expected:
-        return dest
-    with tarfile.open(_sw197_tarball_path(), "r:gz") as tf:
-        src = tf.extractfile(member)
-        if src is None:
-            raise RuntimeError(f"tarball member {member!r} is not a regular file")
-        data = src.read()
-    if _bytes_sha256(data) != expected:
-        raise RuntimeError(f"{name}.swi SHA-256 mismatch: got {_bytes_sha256(data)}")
-    _atomic_write(dest, data)
-    return dest
-
-
-def all_swi_paths() -> Dict[str, Path]:
-    """Materialise every curated ``.swi`` fixture; return ``{name: path}``."""
-    return {name: swi_path(name) for name in SWI_NAMES}
+    return release_member(SW197, *SWI_MEMBERS[name], f"swi-{name}.swi")
 
 
 def nepzenek_path() -> Path:
     """Verified path to the ``nepzenek.swm`` cross-check fixture (1.97)."""
-    member, expected = NEPZENEK_MEMBER
-    dest = swm_cache_dir() / "swi-cross-nepzenek.swm"
-    if dest.is_file() and _sha256(dest) == expected:
-        return dest
-    with tarfile.open(_sw197_tarball_path(), "r:gz") as tf:
-        src = tf.extractfile(member)
-        if src is None:
-            raise RuntimeError(f"tarball member {member!r} is not a regular file")
-        data = src.read()
-    if _bytes_sha256(data) != expected:
-        raise RuntimeError(f"nepzenek.swm SHA-256 mismatch: got {_bytes_sha256(data)}")
-    _atomic_write(dest, data)
-    return dest
+    return release_member(SW197, *NEPZENEK_MEMBER, "swi-cross-nepzenek.swm")

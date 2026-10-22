@@ -200,16 +200,20 @@ whole-song comparison against the `sidtrace` oracle (Docker), over every subtune
 of every HVSC SID-Wizard tune. Its `info` reports the export's `driver` build and
 `frame_speed`, `rsid`, the play `trigger` (`pal_video` / `ntsc_video` /
 `cia_timer`, or `null` when unknown), `speed` (play calls per PAL frame) and
-`dynamic` (variable timer). Tunes `parse_sid` rejects (multi-SID, unresolved
-layouts) raise `SIDFormatError`, a `pysidtracker.SidParseError`, so the survey
-counts them as `not_decompiled`.
+`dynamic` (variable timer), the last four from
+`pysidtracker.cadence.cadence_info`. Tunes `parse_sid` rejects (multi-SID,
+unresolved layouts) raise `SIDFormatError`, a `pysidtracker.SidParseError`, so the survey
+counts them as `not_decompiled`; `survey scope` lists that bucket (and any
+`library_error`) without Docker.
 
 ```bash
-pip install "pysidtracker[survey]>=0.12.0"
+pip install "pysidtracker[survey]>=0.24.0"
 python -m pysidtracker.survey find $HVSC --player sidwizard --out .hvsc-survey/tunes.csv
 PYTHONPATH=scripts python -m pysidtracker.survey run $HVSC .hvsc-survey/tunes.csv \
     --work .hvsc-survey --render oracle_hvsc:render --jobs 32
 python -m pysidtracker.survey report .hvsc-survey/results.csv
+python -m pysidtracker.survey scope $HVSC .hvsc-survey/tunes.csv \
+    --render scripts/oracle_hvsc.py --out .hvsc-survey/scope.csv
 python -m pysidtracker.survey triage .hvsc-survey
 PYTHONPATH=scripts python -m pysidtracker.survey diff $HVSC .hvsc-survey/tunes.csv <md5>_<song> \
     --work .hvsc-survey --render oracle_hvsc:render
