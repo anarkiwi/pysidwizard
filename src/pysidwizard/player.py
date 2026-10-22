@@ -1733,8 +1733,13 @@ class SWMPlayer(MemPlayer):
         """
         if v.instrument is None:
             return
-        if v.slide_vib == 0x83:
+        if v.slide_vib == 0x83 or (v.slide_vib == 0xFF and not self.features.portavibra):
+            # SLIDES: a note-FX portamento's $FF falls through to PORTAME
+            # unless PORTAVIBRA_ON sends it to TARGETN (player.asm:2096-2098).
             self._tick_portamento(v)
+            return
+        if v.slide_vib == 0xFF:
+            v.vibrato_offset = 0
             return
         if v.slide_vib == 0x81:
             # SLIDES path with SLIDEVIB=$81 (player.asm line 1644):
