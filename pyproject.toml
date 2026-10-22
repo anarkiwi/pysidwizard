@@ -22,8 +22,8 @@ dependencies = [
     # The ``MemPlayer`` base (``SWMPlayer`` subclasses it), the ``SidFormat``
     # registry + generic CLI, the sidtrace oracle test factory, and
     # ``run_init``, which the ``.sid`` reader uses to run a tune's own init
-    # (see pysidwizard.sidreader._build_via_player).
-    "pysidtracker>=0.17.0",
+    # (see pysidwizard.sidreader._build_via_player). 0.18 explains oracle mismatches.
+    "pysidtracker>=0.18.0",
 ]
 
 [project.optional-dependencies]

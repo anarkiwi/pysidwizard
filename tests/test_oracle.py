@@ -24,7 +24,15 @@ from pathlib import Path
 
 import pytest
 from pysidtracker.oracle import cached_sidtrace, sidtrace_grid
-from pysidtracker.testing import TuneFetchError, make_oracle_fixtures, oracle_grid, resolve_tune
+from pysidtracker.testing import (
+    TuneFetchError,
+    assert_oracle_match,
+    make_oracle_fixtures,
+    oracle_grid,
+    resolve_tune,
+)
+
+from pysidwizard import SWMPlayer, parse_sid_song
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -103,13 +111,19 @@ def _render(data, nframes):
     return oracle_hvsc.render(data, 1, nframes)[0].tolist()
 
 
+def _player(data):
+    return SWMPlayer(parse_sid_song(data, 1))
+
+
+# A mismatch fails with pysidtracker's whydiff report, also saved under ``why/``.
 tune_id, oracle_match = make_oracle_fixtures(
     TUNES,
     hvsc_cache=_CACHE / "hvsc",
     oracle_cache=_CACHE / "csv",
-    render=_render,
+    player=_player,
     frames=FRAMES,
     max_lead=0,
+    report_dir=_CACHE / "why",
 )
 
 
@@ -117,6 +131,25 @@ tune_id, oracle_match = make_oracle_fixtures(
 def test_native_render_matches_oracle(oracle_match):  # noqa: F811
     """The native render equals the oracle grid from the first play call on."""
     oracle_match()
+
+
+# #50 detune-carry class: the 6502's WF-table jump compare leaves C set into the
+# frequency add, where the model's carry is clear.
+DIVERGING_TUNE = "GAMES/S-Z/Your_Fathers_Nightmare.sid"
+
+
+@pytest.mark.oracle
+@pytest.mark.xfail(strict=True, reason="#50: WF-table jump leaves the 6502 carry set")
+def test_diverging_tune_explains_itself():
+    """Run with ``--runxfail`` (or read ``why/``) for the side-by-side explanation."""
+    assert_oracle_match(
+        DIVERGING_TUNE,
+        _player,
+        hvsc_cache=_CACHE / "hvsc",
+        oracle_cache=_CACHE / "csv",
+        frames=FRAMES,
+        report_dir=_CACHE / "why",
+    )
 
 
 # WF-arp relative steps whose sum leaves the 96-note table (masked indices 97 / 107 / 109 / 117).
