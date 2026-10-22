@@ -557,6 +557,8 @@ class SWMPlayer(MemPlayer):
         # FLSHIFT (player.asm:1110): a signed byte BIGFX1C adds to the cutoff-high
         # ghost on every $D416 write. INITER zero-initialises it (player.asm:694).
         self.filter_shift = 0x00
+        # FILTKBTRACK (player.asm SETFILT): cutoff-high keyboard-track amount, like the PW's PKBDTRK.
+        self.filter_kbd_track = 0x00
         # SID-Wizard's FilterProgram is shared across voices: only the
         # one voice currently marked as filter-controller (FLTCTRL+1
         # operand byte at $1xxx) actually walks its filter table.
@@ -2310,6 +2312,7 @@ class SWMPlayer(MemPlayer):
                 cutoff_hi = table[pos + 1] if pos + 1 < len(table) else 0
                 v.filt_hi = cutoff_hi
                 self.filter_cutoff_hi = cutoff_hi
+                self.filter_kbd_track = table[pos + 2] if pos + 2 < len(table) else 0
                 if self.features.finefiltsweep:
                     v.filt_lo = 0
                     self.filter_cutoff_lo = 0
@@ -2330,6 +2333,7 @@ class SWMPlayer(MemPlayer):
             # (low 3 bits of delta go to CTFL with overflow into CTFH,
             # high 5 bits via ``LSR LSR LSR`` add to CTFH).
             if self.filter_sweep_count >= byte0:
+                self.filter_kbd_track = table[pos + 2] if pos + 2 < len(table) else 0
                 v.filt_pos += FILT_ROW_STRIDE
                 self.filter_sweep_count = 0
                 return
@@ -2456,25 +2460,14 @@ class SWMPlayer(MemPlayer):
         # bits 4-6 of the SID register MAY be non-zero — mirror that.
         pw_hi_sid = v.pw_hi & 0x7F
         if v.pw_kbd_track != 0 and self.features.pwkeybtrack:
-            # PW keyboard tracking (player.asm WRPULS line 1914-1924):
-            #   clc ; lda PKBDTRK ; beq combiKT
-            #   adc DPITCH ; tay
-            #   lda EXPTABH,y ; sbc EXPTABH-1,y
-            # combiKT: adc PWHIGHO ; sta SIDG.PLSW+1
-            # EXPTAB is an 11-byte zero prefix followed by NOTE_FREQ_HI.
-            # The adc DPITCH starts with carry CLEAR; assuming no overflow
-            # (DPITCH+PKBDTRK <= $FF) it stays CLEAR going into the sbc.
-            # The sbc result + sbc's outgoing carry become the +adj that
-            # goes into PWHIGHO.
+            # WRPULS keyboard tracking: the EXPTABH step at DPITCH+PKBDTRK, its sbc borrow, into PWHIGHO.
             dpitch = (v.note + v.octave_shift + v.transpose) & 0x7F
-            y = (dpitch + v.pw_kbd_track) & 0xFF
-            e_y = EXPTABH[y] if y < len(EXPTABH) else 0
-            e_ym = EXPTABH[y - 1] if 1 <= y <= len(EXPTABH) else 0
-            # sbc EXPTABH-1,y with carry-in 0 (from clc + adc-no-overflow):
-            # A = e_y - e_ym - 1 (mod 256), carry SET iff e_y >= e_ym + 1.
-            sbc_a = (e_y - e_ym - 1) & 0xFF
-            sbc_c = 1 if e_y >= e_ym + 1 else 0
-            pw_hi_sid = (sbc_a + pw_hi_sid + sbc_c) & 0xFF
+            carry = (dpitch + v.pw_kbd_track) >> 8
+            idx = (dpitch + v.pw_kbd_track) & 0xFF
+            e_y = EXPTABH[idx] if 0 <= idx < len(EXPTABH) else 0
+            e_ym = EXPTABH[idx - 1] if 0 <= idx - 1 < len(EXPTABH) else 0
+            term = e_y - e_ym - 1 + carry
+            pw_hi_sid = (pw_hi_sid + (term & 0xFF) + (1 if term >= 0 else 0)) & 0xFF
         v.sid_pw_hi = pw_hi_sid
         v.sid_pw_lo = v.pw_lo
 
@@ -2547,8 +2540,20 @@ class SWMPlayer(MemPlayer):
         # $D417 = RESONIB (high nibble) | FSWITCH (low nibble), player.asm:1085-1087.
         res_routing = (self.filter_resonance & 0xF0) | (self.filter_switch & 0x0F)
         self._wr(SID_REG_BASE + 0x15, self.filter_cutoff_lo & 0xFF)
-        # $D416 = CTFHGHO + FLSHIFT, an 8-bit adc (player.asm:1105-1110).
-        self._wr(SID_REG_BASE + 0x16, (self.filter_cutoff_hi + self.filter_shift) & 0xFF)
+        # $D416 = CTFH_GHO + FLSHIFT + the controller's cutoff keyboard-track term (FILTKBTRACK).
+        cutoff_hi = self.filter_cutoff_hi
+        if (
+            self.filter_kbd_track
+            and self.features.filtkbtrack
+            and self.filter_controller_voice is not None
+        ):
+            cv = self.filter_controller_voice
+            dpitch = (cv.note + cv.octave_shift + cv.transpose) & 0x7F
+            idx = (dpitch + self.filter_kbd_track) & 0xFF
+            cutoff_hi += (EXPTABH[idx] if 0 <= idx < len(EXPTABH) else 0) + (
+                (dpitch + self.filter_kbd_track) >> 8
+            )
+        self._wr(SID_REG_BASE + 0x16, (cutoff_hi + self.filter_shift + (cutoff_hi >> 8)) & 0xFF)
         self._wr(SID_REG_BASE + 0x17, res_routing & 0xFF)
         self._wr(SID_REG_BASE + 0x18, self.filter_mode_vol & 0xFF)
 
