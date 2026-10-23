@@ -325,8 +325,8 @@ def _play_gate(mem, base: int) -> tuple:
     return (match.group(1)[0], match.group(2)[0], 0 if match.group(4)[0] == _BPL else _SIGN)
 
 
-def _player_features(data: bytes, driver_type: int):
-    """The build flags of the player code the ``.sid``'s init enters, over the driver byte's build.
+def _player_code(data: bytes) -> tuple:
+    """``(code, load)`` of the player the ``.sid``'s init enters.
 
     With a single embedded player (or an init entering none) the whole image is read.
     """
@@ -337,7 +337,24 @@ def _player_features(data: bytes, driver_type: int):
     if len(bases) > 1 and entry in bases:
         following = [b for b in bases if b > entry]
         code, load = code[entry : following[0] if following else None], load + entry
+    return code, load
+
+
+def _player_features(data: bytes, driver_type: int):
+    """The build flags of the player code the init enters, over the driver byte's build."""
+    code, load = _player_code(data)
     return detect_features(code, load, features_for_driver(driver_type))
+
+
+# SETFLTP's $FF test (player.asm:1993-2008): ``cmp #$FF ; beq ; stx FLTCTRL ; sty FLTPOSI ;
+# lda FLSWTBL,x ; ora FSWITCH ; bne``, then STOPFLT's ``cpx FLTCTRL`` where the player has it.
+_SETFLTP_END = re.compile(rb"\xc9\xff\xf0.\x8e(..)\x8c..\xbd..\x0d..\xd0.(\xec\1)?", re.S)
+
+
+def _filter_stop_rewinds(code: bytes) -> bool:
+    """Whether ``code``'s SETFLTP has STOPFLT; True when no SETFLTP matches."""
+    match = _SETFLTP_END.search(code)
+    return match is None or match.group(2) is not None
 
 
 def parse_sid(data: bytes) -> SWMFile:
@@ -352,6 +369,7 @@ def parse_sid(data: bytes) -> SWMFile:
     swm.first_frame_freq_by_track = _first_frame_freq_by_track(data)
     swm.filter_init = _filter_init(data)
     swm.features = _player_features(data, swm.driver_type)
+    swm.filter_stop_rewinds = _filter_stop_rewinds(_player_code(data)[0])
     image = SidImage.from_sid(data)
     swm.play_gate = _play_gate(image.mem, image.header.init_address or image.load)
     swm.freq_lo_image, swm.freq_hi_image = _freq_table_images(data)

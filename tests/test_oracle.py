@@ -120,6 +120,9 @@ TUNES = {
     # A hand-edited PLAYER entry that returns early on alternate calls, over the PSID driver's
     # $0F volume.
     "kauas_pilvet_scrollaavat": "MUSICIANS/D/Deetsay/Kauas_pilvet_scrollaavat.sid",
+    # A pre-STOPFLT player whose filter walk runs on through the next instrument, gate-off
+    # pointers, and HARDRST's ``cpy #$03`` carry reaching WRPITCH.
+    "funkito_reloaded": "MUSICIANS/S/Sta64/Funkito_Reloaded.sid",
     # Builds other than the header's driver byte names (an edited SWP game player, a headerless export): matched once the flags were read from the player code.
     "arkanoid_remake": "MUSICIANS/C/C0zmo/Arkanoid_Remake.sid",
     "lykia_prologue": "MUSICIANS/C/C0zmo/Lykia_Prologue-Nathans_Journey.sid",

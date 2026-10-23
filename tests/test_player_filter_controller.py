@@ -23,6 +23,8 @@ both at once.
 
 from __future__ import annotations
 
+import pytest
+
 from pysidwizard import (
     End,
     Instrument,
@@ -239,3 +241,43 @@ def test_ram_that_no_longer_holds_the_instrument_is_ignored():
     ins.ram = bytes(0x100)
     p = SWMPlayer(_two_row_swm(ins, ins, Row()))
     assert p._image(ins) == ins.memory_image()  # pylint: disable=protected-access
+
+
+@pytest.mark.parametrize("rewinds", [True, False])
+def test_an_ff_first_filter_table_keeps_fltctrl_on_the_track(rewinds):
+    """SETFLTP's ``beq STOPFLT`` (player.asm:1995, 2003-2005) never clears FLTCTRL.
+
+    STOPFLT points FLTPOSI at the new instrument's $FF; a pre-1.7 player has no
+    STOPFLT, so FLTPOSI keeps walking, now through the new instrument's bytes.
+    """
+    first = _filter_instrument(0x00, bytes([0x90, 0x10, 0x00, 0x90, 0x20, 0x00]))
+    second = _filter_instrument(0x00, b"")
+    swm = _two_row_swm(first, second, Row(note=50, instrument=2))
+    swm.filter_stop_rewinds = rewinds
+    p = SWMPlayer(swm)
+    for _ in range(SETUP_FRAMES + 7):
+        p.play_frame()
+    assert p.filter_controller_voice is p.voices[0]
+    assert not p.voices[0].voice_in_filter
+    assert (p.filt_pos == _filt_start(second)) is rewinds
+
+
+def test_a_swapped_in_sweep_starts_from_the_global_cutoff():
+    """FISWEEP adds to the one CTFH_GHO / CTFL_GHO pair (player.asm:2222-2257), whoever set it."""
+    first = _filter_instrument(0x00, bytes([0x90, 0x30, 0x00]))
+    second = _filter_instrument(0x00, bytes([0x10, 0x08, 0x00]))
+    pat_v0 = Pattern(rows=[Row(note=49, instrument=1)] + [Row()] * 7, length=8)
+    pat_v1 = Pattern(rows=[Row(), Row(note=49, instrument=2)] + [Row()] * 6, length=8)
+    swm = SWMFile(
+        sequences=[[PlayPattern(1), End()], [PlayPattern(2), End()], [PlayPattern(3), End()]],
+        patterns=[pat_v0, pat_v1, Pattern(rows=[Row()] * 8, length=8)],
+        instruments=[first, second],
+        subtune_tempos=[(straight_tempo(6), straight_tempo(6))],
+    )
+    p = SWMPlayer(swm)
+    for _ in range(SETUP_FRAMES + 7):
+        p.play_frame()
+    assert p.filter_controller_voice is p.voices[1]
+    assert p.filter_cutoff_hi == 0x30
+    p.play_frame()
+    assert (p.filter_cutoff_hi, p.filter_cutoff_lo) == (0x31, 0)
