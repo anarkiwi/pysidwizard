@@ -277,6 +277,31 @@ def _first_frame_freq_by_track(data: bytes) -> bool:
     return bool(match) and match.group(1)[0] == _LDA_ABS_X
 
 
+# COMMONREGS (player.asm:748-797): ``ora #RESONIB ; sta $D417 ; ... ; clc`` then, past the
+# optional FILTKBTRACK prelude, CTFHGHO's ``lda|adc #``; CTFLGHO's ``lda # ; sta $D415``
+# follows ``sta $D416``.
+_FILTER_HI = re.compile(
+    rb"\x09(.)\x8d\x17\xd4\xa9.\x09.\x8d\x18\xd4\x18"
+    rb"(?:\xa9.\xf0.\xae..(?:\x7d..|\x75.)\xa8\xb9..\x69|\xa9)(.)",
+    re.S,
+)
+_FILTER_LO = re.compile(rb"\x8d\x16\xd4(?:\x8d..)?\xa9(.)\x8d\x15\xd4", re.S)
+_STA_FCUT_HI = b"\x8d\x16\xd4"
+
+
+def _filter_init(data: bytes) -> tuple:
+    """``(resonance, cutoff_hi, cutoff_lo)``: the filter operands the first play call writes.
+
+    Zero for a component the image has no code for (no FINEFILTSWEEP, say).
+    """
+    hi = _FILTER_HI.search(data)
+    if hi is None:
+        return (0, 0, 0)
+    pos = data.find(_STA_FCUT_HI, hi.end())
+    lo = _FILTER_LO.match(data, pos) if pos >= 0 else None
+    return (hi.group(1)[0], hi.group(2)[0], lo.group(1)[0] if lo else 0)
+
+
 def parse_sid(data: bytes) -> SWMFile:
     """Parse a single-SID SID-Wizard ``.sid`` image into a :class:`SWMFile`.
 
@@ -286,6 +311,7 @@ def parse_sid(data: bytes) -> SWMFile:
     swm = _parse_sid_layout(data)
     swm.freq_table_tail = _freq_table_tail(data)
     swm.first_frame_freq_by_track = _first_frame_freq_by_track(data)
+    swm.filter_init = _filter_init(data)
     swm.freq_lo_image, swm.freq_hi_image = _freq_table_images(data)
     return swm
 
@@ -517,7 +543,11 @@ def parse_sid_song(data: bytes, song: int) -> SWMFile:
     else:
         mem, base, subtune, swp = found
         direct = base == (header.init_address or header.real_load_address)
-        swm = parse_sid(data if direct else _module_window(data, mem, base, swp))
+        if direct:
+            swm = parse_sid(data)
+        else:
+            swm = parse_sid(_module_window(data, mem, base, swp))
+            swm.filter_init = _filter_init(mem[base:])
     if not 0 <= subtune < swm.subtune_count:
         raise SIDFormatError(
             f"song {song} selects subtune {subtune}, but the module decodes "

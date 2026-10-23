@@ -104,6 +104,8 @@ TUNES = {
     "memory_invaders": "MUSICIANS/C/Chiummo_Gaetano/Memory_Invaders.sid",
     # Extra build: an abandoned WF-table jump keeps ``cmp #$FE``'s carry, and PORTEND restores the instrument vibrato.
     "your_fathers_nightmare": "GAMES/S-Z/Your_Fathers_Nightmare.sid",
+    # Packed player whose image holds nonzero RESONIB / CTFHGHO / CTFLGHO operands, which INITER never resets.
+    "club64": "MUSICIANS/M/Mario64/Club64.sid",
 }
 
 

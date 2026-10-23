@@ -170,19 +170,6 @@
  },
  {
   "compare": "lead",
-  "frames": 9,
-  "id": "f2f15d47c252",
-  "key": "('first', '6502:edge:aaa2e4ba66528042a5ec5d79', '')",
-  "kind": "first",
-  "left": "6502",
-  "md5": "bea022de4b38d20286114c7008b61a6f",
-  "reason": "$E0F9 JSR $e173 -> $E173 || vs: pysidwizard/player.py:645 if v.speed_counter == 0 and not v.sequence_ended: -> 655: reference frame 0, register $15 fc_lo",
-  "relpath": "MUSICIANS/M/Mario64/Club64.sid",
-  "right": "format:sidwizard",
-  "song": 1
- },
- {
-  "compare": "lead",
   "frames": 26,
   "id": "f5eea67b304e",
   "key": "('first', '6502:edge:856394f69bb6aef749122d7d', '')",

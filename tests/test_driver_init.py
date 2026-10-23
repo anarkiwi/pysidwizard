@@ -97,6 +97,14 @@ def test_init_register_state_is_where_the_first_call_starts():
     assert frame[0x18] == 0x0F  # COMMONREGS writes $D418 on every call
 
 
+def test_filter_operands_the_image_holds_reach_the_first_call():
+    """INITER leaves RESONIB / CTFHGHO / CTFLGHO alone (player.asm:749-797)."""
+    swm = _swm(bytes([0x1A, 0x0F, 0x00]), row=Row())
+    swm.filter_init = (0xA0, 0x0B, 0x07)
+    assert _grid(swm, 1)[0][0x15:0x18] == [0x07, 0x0B, 0xA0]
+    assert _grid(swm.subtune(0), 1)[0][0x15:0x18] == [0x07, 0x0B, 0xA0]
+
+
 @pytest.mark.parametrize(
     "byte0, arp, light, expect_ctrl, expect_note",
     [
