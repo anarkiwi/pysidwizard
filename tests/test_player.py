@@ -56,7 +56,7 @@ def _toy_swm() -> SWMFile:
         sustain=0xF,
         release=0,
         first_waveform=Waveform.PULSE | 0x01,  # pulse + gate
-        wf_table=bytes([0x41, 0x80, 0xFF]),  # one WF row: pulse+gate, NOP arp, no detune
+        wf_table=bytes([0x41, 0x00, 0xFF]),  # one WF row: pulse+gate, arp +0, no detune
         pw_table=b"\x88\x00\x00",  # set PW to 0x800 then end-of-table
         filter_table=b"",
     )

@@ -1,19 +1,6 @@
 [
  {
   "compare": "lead",
-  "frames": 9,
-  "id": "0e276756b6f3",
-  "key": "('first', '', 'sidwizard:edge:pysidwizard/player.py:SWMPlayer._pending_row_has_new_note:882>884')",
-  "kind": "first",
-  "left": "6502",
-  "md5": "23a05cd036af9291b6ad7c60958a542a",
-  "reason": "pysidwizard/player.py:882 if row is None: -> 884: reference frame 0, register $00 v1_freq_lo",
-  "relpath": "GAMES/G-L/Immensity_preview_2.sid",
-  "right": "format:sidwizard",
-  "song": 1
- },
- {
-  "compare": "lead",
   "frames": 11,
   "id": "109816eb4ca3",
   "key": "('first', '6502:edge:a4d36fb614e78e857f26066f', '')",
@@ -35,19 +22,6 @@
   "md5": "1b03c184ca947a51bd48d40ab7ef339f",
   "reason": "pysidwizard/player.py:606 for v_idx in range(len(self.voices) - 1, -1, -1): -> 607: reference frame 0, register $02 v1_pw_lo",
   "relpath": "MUSICIANS/B/Bayliss_Richard/Sheepoid_DX.sid",
-  "right": "format:sidwizard",
-  "song": 1
- },
- {
-  "compare": "lead",
-  "frames": 9,
-  "id": "3e1d1dab9091",
-  "key": "('first', '', 'sidwizard:edge:pysidwizard/player.py:SWMPlayer._pending_row_has_new_note:884>885')",
-  "kind": "first",
-  "left": "6502",
-  "md5": "59a761dacb27f0d734b0ca2323e00f1f",
-  "reason": "pysidwizard/player.py:884 if row.note is None or row.note >= NOTE_FX_MIN: -> 885 || vs: $097A BEQ $0983 -> $097C: reference frame 0, register $15 fc_lo",
-  "relpath": "MUSICIANS/C/C0zmo/Performers_Demo_2018.sid",
   "right": "format:sidwizard",
   "song": 1
  },
