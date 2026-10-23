@@ -123,6 +123,9 @@ TUNES = {
     # A pre-STOPFLT player whose filter walk runs on through the next instrument, gate-off
     # pointers, and HARDRST's ``cpy #$03`` carry reaching WRPITCH.
     "funkito_reloaded": "MUSICIANS/S/Sta64/Funkito_Reloaded.sid",
+    # A V1.0 player: an ``asl; tay; ldx #1`` SETSTUNE, an $08 SID clear and a fixed $09 first frame.
+    "sheepoid_dx": "MUSICIANS/B/Bayliss_Richard/Sheepoid_DX.sid",
+    "pantheon": "MUSICIANS/T/Toggle/Pantheon.sid",
     # Builds other than the header's driver byte names (an edited SWP game player, a headerless export): matched once the flags were read from the player code.
     "arkanoid_remake": "MUSICIANS/C/C0zmo/Arkanoid_Remake.sid",
     "lykia_prologue": "MUSICIANS/C/C0zmo/Lykia_Prologue-Nathans_Journey.sid",
