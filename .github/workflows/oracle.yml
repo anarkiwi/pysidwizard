@@ -46,7 +46,7 @@ jobs:
         with:
           key: ${{ hashFiles('tests/test_oracle.py', 'tests/pathdiff_xfails.json') }}
           sidtrace: "true"
-          tunes: tests/test_oracle.py
+          tunes: tests/test_oracle.py tests/pathdiff_xfails.json
 
       - name: Oracle comparison (never skipped)
         run: python -m pytest -m oracle -ra -n auto

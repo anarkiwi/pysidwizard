@@ -26,9 +26,9 @@ dependencies = [
     # and chases the state behind them (``python -m pysidtracker.whydiff TUNE
     # --format sidwizard --state``). 0.24 adds the survey renderer's
     # ``cadence_info``, the oracle-free ``survey scope`` and the pinned-archive
-    # fixture fetch (``fetch_archive_member``) the test suite uses. 0.31 adds
+    # fixture fetch (``fetch_archive_member``) the test suite uses. 0.36 has
     # ``pathdiff`` and its strict-xfail manifest (tests/test_pathdiff.py).
-    "pysidtracker>=0.31.0",
+    "pysidtracker>=0.36.0",
 ]
 
 [project.optional-dependencies]

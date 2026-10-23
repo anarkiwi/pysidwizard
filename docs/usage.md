@@ -238,7 +238,9 @@ python -m pysidtracker.pathdiff xfails --work .hvsc-survey --right format:sidwiz
 `build` reads `results.csv`'s `info`, so run the survey with `--render
 scripts/oracle_hvsc.py:render` (its `driver`, `frame_speed` and cadence fields become
 `info:` build-option features), and pass `--force` after a pysidtracker upgrade
-changes the cache format. Existing case ids are kept; `--prune` drops fixed cases.
+changes the cache format. Existing case ids are kept and `--prune` drops fixed cases; delete the
+manifest first to rebuild it from the current ranking only. CI pre-fetches its tunes
+(`pysid-tune-fetch --tests tests/pathdiff_xfails.json`).
 
 `.hvsc-survey/` holds copyright-derived traces and is gitignored. When
 `.hvsc-survey/tunes.csv` (or `$PYSIDWIZARD_TUNES_CSV`) and the HVSC tree
