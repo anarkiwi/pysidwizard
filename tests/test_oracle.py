@@ -18,7 +18,6 @@ frames of the first row, so its render matches the oracle from the first play
 call: no leading frame is trimmed or excused.
 """
 
-import os
 import sys
 from pathlib import Path
 
@@ -38,9 +37,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import oracle_hvsc  # noqa: E402  (after sys.path tweak)
 
-# Cache under the workspace (a Docker-daemon-visible path, and what CI persists
-# via actions/cache). ``$PYSIDWIZARD_ORACLE_CACHE`` overrides the location.
-_CACHE = Path(os.environ.get("PYSIDWIZARD_ORACLE_CACHE", ".oracle-cache"))
+# whydiff reports for a mismatch (not a download, so outside the fetch cache).
+_WHY = Path("build/why")
 
 # Frames compared per tune.
 FRAMES = 250
@@ -115,15 +113,13 @@ def _player(data):
     return SWMPlayer(parse_sid_song(data, 1))
 
 
-# A mismatch fails with pysidtracker's whydiff report, also saved under ``why/``.
+# A mismatch fails with pysidtracker's whydiff report, also saved under ``build/why/``.
 tune_id, oracle_match = make_oracle_fixtures(
     TUNES,
-    hvsc_cache=_CACHE / "hvsc",
-    oracle_cache=_CACHE / "csv",
     player=_player,
     frames=FRAMES,
     max_lead=0,
-    report_dir=_CACHE / "why",
+    report_dir=_WHY,
 )
 
 
@@ -141,14 +137,12 @@ DIVERGING_TUNE = "GAMES/S-Z/Your_Fathers_Nightmare.sid"
 @pytest.mark.oracle
 @pytest.mark.xfail(strict=True, reason="#50: WF-table jump leaves the 6502 carry set")
 def test_diverging_tune_explains_itself():
-    """Run with ``--runxfail`` (or read ``why/``) for the side-by-side explanation."""
+    """Run with ``--runxfail`` (or read ``build/why/``) for the side-by-side explanation."""
     assert_oracle_match(
         DIVERGING_TUNE,
         _player,
-        hvsc_cache=_CACHE / "hvsc",
-        oracle_cache=_CACHE / "csv",
         frames=FRAMES,
-        report_dir=_CACHE / "why",
+        report_dir=_WHY,
     )
 
 
@@ -163,10 +157,8 @@ def test_gate_off_without_instrument_selects_legatoo_route():
     assert_oracle_match(
         "MUSICIANS/B/Batsman/Propaganda.sid",
         _player,
-        hvsc_cache=_CACHE / "hvsc",
-        oracle_cache=_CACHE / "csv",
         frames=FRAMES + 50,
-        report_dir=_CACHE / "why",
+        report_dir=_WHY,
     )
 
 
@@ -179,12 +171,10 @@ DELAYED_TUNE = "MUSICIANS/D/Deetsay/1_2_3_C64.sid"
 
 @pytest.mark.oracle
 def test_ghost_buffered_rsid_matches_oracle_one_interrupt_late():
-    path = resolve_tune(DELAYED_TUNE, cache_dir=_CACHE / "hvsc", local_env="HVSC")
+    path = resolve_tune(DELAYED_TUNE)
     if path is None:
         raise TuneFetchError(f"{DELAYED_TUNE} unavailable (offline, not cached)")
-    expected = oracle_grid(
-        path, oracle_cache=_CACHE / "csv", seconds=FRAMES // 50 + 2, frames=FRAMES + 1
-    )
+    expected = oracle_grid(path, seconds=FRAMES // 50 + 2, frames=FRAMES + 1)
     assert expected[0] == [0] * len(expected[0])
     assert expected[1:] == _render(Path(path).read_bytes(), FRAMES)
 
@@ -206,11 +196,9 @@ def test_song_render_matches_oracle(song_id):
     assert_oracle_match(
         relpath,
         lambda data: SWMPlayer(parse_sid_song(data, song)),
-        hvsc_cache=_CACHE / "hvsc",
-        oracle_cache=_CACHE / "csv",
         frames=FRAMES,
         song=song,
-        report_dir=_CACHE / "why",
+        report_dir=_WHY,
     )
 
 
@@ -219,7 +207,7 @@ def test_orderlist_end_leaves_the_last_row_unplayed_on_the_6502():
     """PREX song 4 (the Light build) ends voice 3 on a gate-off row that the
     6502 never applies. Its sidtrace grid stops at the last register change,
     before that row, so the jennings grid is the reference."""
-    path = resolve_tune("GAMES/M-R/PREX.sid", cache_dir=_CACHE / "hvsc", local_env="HVSC")
+    path = resolve_tune("GAMES/M-R/PREX.sid")
     if path is None:
         raise TuneFetchError("GAMES/M-R/PREX.sid unavailable (offline, not cached)")
     data = Path(path).read_bytes()

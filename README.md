@@ -59,8 +59,8 @@ python -m pytest -m oracle                          # sidtrace oracle; requires 
 ```
 
 The four SWM test tunes are not tracked in this repo (SID-Wizard binary
-artifacts); `tests/_swm_cache.py` fetches them on demand and SHA-256 verifies
-each one.
+artifacts); `tests/_swm_cache.py` fetches them on demand into pysidtracker's
+download cache (`.tunecache`, `$PYSID_TUNECACHE`) and SHA-256 verifies each one.
 
 ## License
 
