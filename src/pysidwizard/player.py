@@ -1805,41 +1805,37 @@ class SWMPlayer(MemPlayer):
         terminate the slide when target is reached — PORTEND just
         snaps FREQ to target via TARGETN and SLIDEVIB stays $83 until
         either a CHVIBFX note-FX (CURNOT in $60..$77) calls FORCVIB or
-        the next pitched note's STRTSND overwrites SLIDEVIB. We mirror
-        that by snapping ``vibrato_offset`` to 0 but leaving
-        ``slide_vib`` / ``vibrato_*`` untouched.
+        the next pitched note's STRTSND overwrites SLIDEVIB. With
+        PORTAVIBRA_ON, PORTEND first runs FORCVIB and SETVIB1 (player.asm:2118),
+        restoring the instrument's vibrato.
         """
         offset = v.vibrato_offset
         # Interpret as signed 16-bit.
         signed = offset - 0x10000 if offset & 0x8000 else offset
-        if signed == 0:
-            return
-        # SID-Wizard's PORTAUP/PORTADN paths use SUBTLY DIFFERENT
-        # effective deltas: snap when ``|diff| < FREQMOD`` (UP) /
-        # ``|diff| <= FREQMOD`` (DOWN) — bare ``mod`` in both
-        # conditions — but advance ZP by ``FREQMOD + 1`` because
-        # ADDFREQ / SUBFREQ inherit a carry from the preceding sbc.
-        # That +1 asymmetry makes the slide overshoot the target by
-        # one freq unit before snapping. Conflating the two
-        # ("step = mod + 1" everywhere) snaps one frame too early on
-        # the boundary case ``|signed| == FREQMOD``.
+        # PORTAME's ``sbc FREQLO`` borrows the carry SLIDES leaves: ``cpy #$82``
+        # sets it, PORTAVIBRA_ON's later ``cpy #$FF`` clears it, so the
+        # target - current difference it tests is ``-signed - borrow``.
+        # ADDFREQ / SUBFREQ inherit the test's carry and step FREQMOD + 1.
         mod = (v.vibrato_freqmod_hi << 8) | v.vibrato_freqmod_lo
+        borrow = 1 if self.features.portavibra else 0
         step = mod + 1
-        if signed > 0:
-            # DOWN: ASM snaps when |signed| <= FREQMOD (inclusive).
-            if signed <= mod:
-                v.vibrato_offset = 0
+        if signed > -borrow:
+            if signed <= mod - borrow:
+                self._portend(v)
                 return
             new_signed = signed - step
         else:
-            # UP: ASM snaps when |signed| < FREQMOD (strict). At
-            # signed = -FREQMOD the advance fires, landing at target+1;
-            # the next tick takes the DOWN path and snaps.
-            if signed + mod > 0:
-                v.vibrato_offset = 0
+            if signed + mod + borrow > 0:
+                self._portend(v)
                 return
             new_signed = signed + step
         v.vibrato_offset = new_signed & 0xFFFF
+
+    def _portend(self, v: VoiceState) -> None:
+        """PORTEND / TARGETN (player.asm:2117): the slide reached its target note."""
+        v.vibrato_offset = 0
+        if self.features.portavibra and v.instrument is not None:
+            self._apply_vibrato_byte(v, v.instrument.vibrato)
 
     def _begin_portamento(self, v: VoiceState, fx_value: int) -> None:
         """Start tone portamento (big-fx $03) toward the current
@@ -2127,7 +2123,10 @@ class SWMPlayer(MemPlayer):
                 # jump for a target >= $80; otherwise ``sta WFTPOS,x`` takes
                 # the byte verbatim as an offset from the instrument base.
                 raw = table[pos + 1] if pos + 1 < len(table) else 0
-                if raw >= 0x80 or raw >= len(table):
+                if raw >= 0x80:
+                    v.wf_pitch_carry = True  # RDWFROW's ``cmp #$FE`` carry reaches WRPITCH
+                    return
+                if raw >= len(table):
                     return
                 v.wf_pos = raw
                 continue

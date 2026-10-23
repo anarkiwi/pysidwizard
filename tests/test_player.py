@@ -1381,3 +1381,49 @@ def test_a_pending_note_fx_portamento_slides_unless_portavibra(portavibra, offse
     v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = 0x20, 0
     p._tick_vibrato(v)  # pylint: disable=protected-access
     assert v.vibrato_offset == offset & 0xFFFF and v.slide_vib == 0xFF
+
+
+@pytest.mark.parametrize(
+    "portavibra,signed,offset",
+    [(False, -0x20, 1), (True, -0x20, 0), (False, 0x20, 0), (True, 0x20, -1)],
+)
+def test_portame_tests_the_difference_with_the_carry_slides_leaves(portavibra, signed, offset):
+    """PORTAME's ``sbc FREQLO`` (player.asm:2101) borrows unless ``cpy #$82`` set the carry;
+    PORTAVIBRA_ON's ``cpy #$FF`` clears it, moving both snap boundaries one unit."""
+    p = _play(_fx_swm(0x02, 0x10), frames=SETUP_FRAMES + 1)
+    p.features = dataclasses.replace(p.features, portavibra=portavibra)
+    v = p.voices[0]
+    v.slide_vib, v.vibrato_offset = 0x83, signed & 0xFFFF
+    v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = 0x20, 0
+    p._tick_vibrato(v)  # pylint: disable=protected-access
+    assert v.vibrato_offset == offset & 0xFFFF
+
+
+@pytest.mark.parametrize("portavibra", [False, True])
+def test_portend_restores_the_instrument_vibrato_only_with_portavibra(portavibra):
+    """PORTEND's ``jsr FORCVIB ; jsr SETVIB1`` (player.asm:2118) ends the $83 slide."""
+    swm = _fx_swm(0x02, 0x10)
+    swm.instruments[0].control = 0x10
+    swm.instruments[0].vibrato = 0x46
+    p = _play(swm, frames=SETUP_FRAMES + 1)
+    p.features = dataclasses.replace(p.features, portavibra=portavibra)
+    v = p.voices[0]
+    v.slide_vib, v.vibrato_offset, v.vibrato_period = 0x83, 1, 0
+    v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = 0x20, 0
+    p._tick_vibrato(v)  # pylint: disable=protected-access
+    assert v.vibrato_offset == 0
+    assert (v.slide_vib, v.vibrato_period) == ((0x10, 12) if portavibra else (0x83, 0))
+
+
+@pytest.mark.parametrize("target,carry", [(0xDC, True), (0x09, False)])
+def test_an_abandoned_wf_jump_keeps_the_jump_compare_carry(target, carry):
+    """WFAJUMP's ``BMIauto ENDWFTB`` (player.asm:2422) reaches WRPITCH with ``cmp #$FE``'s C=1."""
+    from pysidwizard.constants import INST_WF_TABLE_POS
+
+    swm = _toy_swm()
+    swm.instruments[0].wf_table = bytes([0x41, 0x00, 0x00, 0xFE, target, 0x00])
+    p = _play(swm, frames=SETUP_FRAMES + 1)
+    v = p.voices[0]
+    v.wf_pos, v.arp_speed_counter = INST_WF_TABLE_POS + 3, 0
+    p._tick_wf_table(v)  # pylint: disable=protected-access
+    assert v.wf_pitch_carry is carry
