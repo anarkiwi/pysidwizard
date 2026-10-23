@@ -111,6 +111,8 @@ TUNES = {
     "bunker_2015": "MUSICIANS/S/Spider_Jerusalem/Bunker_2015.sid",
     # Packed player below its SWP data whose build has neither DETUNESUPPORT nor MULTISPEEDSUPP.
     "performers_demo_2018": "MUSICIANS/C/C0zmo/Performers_Demo_2018.sid",
+    # A retuned FREQTBH (FREQMOD's EXPTABH) and a WRITESR row on a voice with no instrument.
+    "lightrider": "MUSICIANS/A/Ash_9/Lightrider.sid",
     # Builds other than the header's driver byte names (an edited SWP game player, a headerless export): matched once the flags were read from the player code.
     "arkanoid_remake": "MUSICIANS/C/C0zmo/Arkanoid_Remake.sid",
     "lykia_prologue": "MUSICIANS/C/C0zmo/Lykia_Prologue-Nathans_Journey.sid",

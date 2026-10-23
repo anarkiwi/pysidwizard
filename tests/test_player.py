@@ -1164,6 +1164,48 @@ def test_lookup_freqmod_walks_the_exponent_table_exactly(index, expected):
     assert SWMPlayer(_toy_swm())._lookup_freqmod(index) == expected
 
 
+@pytest.mark.parametrize("calcvibrato", [True, False])
+def test_freqmod_reads_the_images_own_freqtbh(calcvibrato):
+    """EXPTABH,Y and FREQTBH-1,Y index the image, so a retuned FREQTBH retunes FREQMOD."""
+    swm = _toy_swm()
+    lo, hi = freq_tables(features_for_driver(0))
+    retuned = bytes((b + 1) & 0xFF for b in hi[:96]) + hi[96:]
+    swm.freq_lo_image, swm.freq_hi_image = lo, retuned
+    p = SWMPlayer(swm)
+    p.features = dataclasses.replace(p.features, calcvibrato=calcvibrato)
+    assert p.exptabh[11:] == retuned
+    if calcvibrato:
+        assert p._lookup_freqmod(39) == (retuned[28], 0)
+        assert p._freqmod(0x20, 28) == (retuned[33], 0)
+    else:
+        assert p._freqmod(5, 0) == (retuned[4], 0)
+    assert SWMPlayer(_toy_swm())._lookup_freqmod(39) == (NOTE_FREQ_HI[28], 0)
+
+
+@pytest.mark.parametrize("fx,reg", [(0x05, 5), (0x06, 6)])
+def test_write_adsr_reaches_the_sid_on_a_voice_with_no_instrument(fx, reg):
+    """CURINS=0 sends TICK_2 to LEGATOO, whose INSPTFX writes SIDG.AD/SR (player.asm:1326)."""
+    swm = _toy_swm()
+    swm.patterns[0].rows[0] = Row(note=0x7E, fx=fx, fx_value=0x9C)
+    p = _play(swm, frames=SETUP_FRAMES + 1)
+    assert p.voices[0].instrument is None
+    assert p.regs[reg] == 0x9C
+    assert p.regs[11 - reg] == 0, "only the written half of the ADSR pair changes"
+
+
+def test_write_sr_reaches_the_sid_on_a_legato_row():
+    """A legato row's LEGATOO runs INSPTFX, so WRITESR lands with only CTRL beside it."""
+    swm = _toy_swm()
+    swm.patterns[0].rows[3] = Row(note=53, instrument=0x3F, fx=0x06, fx_value=0x5A)
+    p = SWMPlayer(swm)
+    legato = []
+    for _ in range(20):
+        p.play_frame()
+        if p.voices[0].in_tick2_legato_this_frame:
+            legato.append(p.regs[6])
+    assert legato == [0x5A]
+
+
 @pytest.mark.parametrize("fx", [0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C])
 def test_big_fx_1c_shifts_the_cutoff_and_17_to_1b_alias_it(fx):
     """BIGFX1C (player.asm:3706) sets FLSHIFT, which $D416 adds to the cutoff ghost.

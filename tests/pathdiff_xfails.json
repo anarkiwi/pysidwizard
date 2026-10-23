@@ -1,19 +1,6 @@
 [
  {
   "compare": "lead",
-  "frames": 11,
-  "id": "109816eb4ca3",
-  "key": "('first', '6502:edge:a4d36fb614e78e857f26066f', '')",
-  "kind": "first",
-  "left": "6502",
-  "md5": "3a3187fac913ba46e28e7d4da36123de",
-  "reason": "$130B BNE $1310 -> $130D: reference frame 2, register $14 v3_sr",
-  "relpath": "MUSICIANS/A/Ash_9/Lightrider.sid",
-  "right": "format:sidwizard",
-  "song": 1
- },
- {
-  "compare": "lead",
   "frames": 9,
   "id": "18251908104a",
   "key": "('first', '', 'sidwizard:edge:pysidwizard/player.py:SWMPlayer._frame:606>607')",
