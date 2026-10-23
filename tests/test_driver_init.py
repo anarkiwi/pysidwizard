@@ -21,7 +21,7 @@ from pysidwizard import (
 from pysidwizard.features import features_for_driver
 from pysidwizard.formats import FORMAT
 from pysidwizard.player import NOTE_FREQ_HI, NOTE_FREQ_LO, TRACK_STRIDE, SWMPlayer, freq_tables
-from pysidwizard.sidreader import _first_frame_freq_by_track, _player_bases
+from pysidwizard.sidreader import _first_frame_freq_by_track, _play_gate, _player_bases
 from tests._hvsc_fetch import resolve
 
 
@@ -278,3 +278,54 @@ def test_song_beyond_the_decoded_subtunes_is_a_parse_error(monkeypatch):
     monkeypatch.setattr("pysidwizard.sidreader._song_entry", lambda *_: (None, b"", b""))
     with pytest.raises(SIDFormatError, match="selects subtune 1"):
         parse_sid_song(data, 2)
+
+
+def test_song_starts_from_the_psid_drivers_volume():
+    """The PSID driver writes $0F to $D418 before init; INITER's clear stops at $D417."""
+    swm = parse_sid_song(_tune("DEMOS/0-9/8-Bit_Bard.sid"), 1)
+    assert swm.sid_init[0x18] == 0x0F
+
+
+def _gate_image(branch: int, sta: int = 0x1007) -> bytes:
+    """A jump table at $1000 whose ``playsub`` enters a toggle gate at $1006."""
+    table = bytes.fromhex("4c00204c0610")
+    return table + bytes([0xA9, 0x00, 0x49, 0x80, 0x8D, sta & 0xFF, sta >> 8, branch, 0x01, 0x60])
+
+
+@pytest.mark.parametrize(
+    "mem, expect",
+    [
+        (_gate_image(0x10), (0x00, 0x80, 0x00)),
+        (_gate_image(0x30), (0x00, 0x80, 0x80)),
+        (_gate_image(0x10, sta=0x2000), ()),
+        (bytes.fromhex("4c00204c0010a5fe48a5ff48"), ()),
+        (bytes.fromhex("4c0020600000"), ()),
+    ],
+)
+def test_play_gate_decodes_a_self_toggling_player_entry(mem, expect):
+    assert _play_gate(bytes(0x1000) + mem, 0x1000) == expect
+
+
+def test_song_reads_the_play_gate_of_its_player():
+    assert parse_sid_song(
+        _tune("MUSICIANS/D/Deetsay/Kauas_pilvet_scrollaavat.sid"), 1
+    ).play_gate == (
+        0x00,
+        0x80,
+        0x00,
+    )
+    assert parse_sid(_tune("DEMOS/0-9/8-Bit_Bard.sid")).play_gate == ()
+
+
+@pytest.mark.parametrize(
+    "gate, first", [((0x00, 0x80, 0x00), 1), ((0x80, 0x80, 0x00), 0), ((0x00, 0x80, 0x80), 0)]
+)
+def test_gated_player_ticks_on_alternate_calls(gate, first):
+    """Each PLAYER tick lands on every other call; a skipped call leaves the registers be."""
+    swm = _swm(bytes([0x1A, 0x0F, 0x00]))
+    swm.sid_init = bytes([0x08] * 25)
+    ungated = _grid(swm, 20)
+    gated = _grid(replace(swm, play_gate=gate), 2 * 20 + first)
+    assert [row[:0x18] for row in gated[:first]] == [[0x08] * 0x18] * first
+    assert gated[first:] == [row for row in ungated for _ in range(2)]
+    assert _grid(replace(swm, play_gate=gate).subtune(0), 2 * 20 + first) == gated

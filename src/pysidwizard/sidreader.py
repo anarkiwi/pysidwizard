@@ -86,6 +86,7 @@ from pysidtracker import (
     run_init,
     wire_mpu,
 )
+from pysidtracker.oracle import DRIVER_VOLUME, SID_VOLUME
 from pysidtracker.registers import sid_model_for_flags
 
 from .constants import (
@@ -303,6 +304,27 @@ def _filter_init(data: bytes) -> tuple:
     return (hi.group(2)[0], hi.group(3)[0], lo.group(1)[0] if lo else 0, hi.group(1)[0])
 
 
+# A PLAYER entry gated on a self-modifying toggle: ``lda #s ; eor #m ; sta <lda operand> ;
+# bpl|bmi +1 ; rts`` before the player body, so the body runs only on calls whose toggled
+# operand has bit 7 clear (``bpl``) or set (``bmi``).
+_PLAY_GATE = re.compile(rb"\xa9(.)\x49(.)\x8d(..)([\x10\x30])\x01\x60", re.S)
+_BPL = 0x10
+_SIGN = 0x80
+
+
+def _play_gate(mem, base: int) -> tuple:
+    """``(operand, mask, play_sign)`` of the gate at ``base``'s ``playsub`` target, else ``()``."""
+    mem = bytes(mem)
+    playsub = base + _JMP_LEN
+    if mem[playsub : playsub + 1] != bytes([_JMP]):
+        return ()
+    target = int.from_bytes(mem[playsub + 1 : playsub + _JMP_LEN], "little")
+    match = _PLAY_GATE.match(mem, target)
+    if match is None or int.from_bytes(match.group(3), "little") != target + 1:
+        return ()
+    return (match.group(1)[0], match.group(2)[0], 0 if match.group(4)[0] == _BPL else _SIGN)
+
+
 def _player_features(data: bytes, driver_type: int):
     """The build flags of the player code the ``.sid``'s init enters, over the driver byte's build.
 
@@ -330,6 +352,8 @@ def parse_sid(data: bytes) -> SWMFile:
     swm.first_frame_freq_by_track = _first_frame_freq_by_track(data)
     swm.filter_init = _filter_init(data)
     swm.features = _player_features(data, swm.driver_type)
+    image = SidImage.from_sid(data)
+    swm.play_gate = _play_gate(image.mem, image.header.init_address or image.load)
     swm.freq_lo_image, swm.freq_hi_image = _freq_table_images(data)
     return swm
 
@@ -481,7 +505,8 @@ def _song_entry(data: bytes, song: int):
     what that player's SETSEQA stores (``None`` when it never runs during init)
     and ``swp`` the SWP data base INITER receives in X / Y. ``None`` when the init
     enters no player. ``sid`` is the register file the whole init wrote (the
-    chip's ``$20``-byte mirrors folded), which the first play call starts from,
+    chip's ``$20``-byte mirrors folded) over the PSID driver's maximum ``$D418``
+    volume, which the first play call starts from,
     and ``mem`` the memory the whole init left.
     """
     image = SidImage.from_sid(data)
@@ -497,6 +522,7 @@ def _song_entry(data: bytes, song: int):
     written = {}
     mem.subscribe_to_write(subtpos, lambda addr, value: written.__setitem__(subtpos[addr], value))
     sid = bytearray(SID_REGS)
+    sid[SID_VOLUME - SID_IO] = DRIVER_VOLUME
 
     def _sid_write(addr: int, value: int) -> None:
         reg = addr & SID_MIRROR_MASK
@@ -573,6 +599,8 @@ def parse_sid_song(data: bytes, song: int) -> SWMFile:
     swm.sid_init = sid
     # INITER zeroes FSWITCH only under FILT_CTRL_FX_ON (player.asm:418), so read the operands it left.
     swm.filter_init = _filter_init(after[found[1] if found else 0 :])
+    if found is not None:
+        swm.play_gate = _play_gate(after, found[1])
     return swm.subtune(subtune)
 
 

@@ -14,19 +14,6 @@
  },
  {
   "compare": "lead",
-  "frames": 11,
-  "id": "d60fe0b96505",
-  "key": "('first', '', 'sidwizard:edge:pysidwizard/player.py:SWMPlayer._tick_voice:676>677')",
-  "kind": "first",
-  "left": "6502",
-  "md5": "18eba054522d92a6508f2d8a387d0abb",
-  "reason": "pysidwizard/player.py:676 if pre_incr_sc == apply_sc and v.pending_row is not None: -> 677: reference frame 2, register $01 v1_freq_hi",
-  "relpath": "MUSICIANS/D/Deetsay/Kauas_pilvet_scrollaavat.sid",
-  "right": "format:sidwizard",
-  "song": 1
- },
- {
-  "compare": "lead",
   "frames": 26,
   "id": "f5eea67b304e",
   "key": "('first', '6502:edge:856394f69bb6aef749122d7d', '')",
