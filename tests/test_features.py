@@ -127,6 +127,10 @@ SITES = {
     "calcvibrato": ("29f04af0044a7d0000", "29f04aa8c0"),
     "fastspeedbind": ("297fc90210034c0000a902bc0000f004c06090", "a902bc0000f004c06090"),
     "delaysupport": ("a9ff9d00008a38e907", "8a38e907"),
+    "multispeedsupp": (
+        "9d0000a9ff9d00009d0000a007b1fe9d000020",
+        "9d0000a9ff9d0000a007b1fe9d000020",
+    ),
     "filt_ctrl_fx": ("48290f8d00006829f08d0000", ""),
 }
 
@@ -171,6 +175,16 @@ def test_release_exports_read_as_their_header_build(name):
     header = parse_psid_header(data)
     found = detect_flags(data[header.data_start :], header.real_load_address)
     assert set(found) == set(DETECTED_FLAGS)
+
+
+def test_a_packed_player_below_its_swp_data_reads_its_own_code():
+    """Performers Demo 2018's SWP data follows its player, so the module window starts there."""
+    path = resolve("MUSICIANS/C/C0zmo/Performers_Demo_2018.sid")
+    if path is None:
+        pytest.skip("unreachable (offline)")
+    swm = parse_sid_song(path.read_bytes(), 1)
+    assert not swm.features.detunesupport and not swm.features.multispeedsupp
+    assert swm.freq_lo_image[0x7D] == 0x22  # FREQTBL+$7D, past the 96 notes
 
 
 def test_a_packed_game_player_reads_as_its_own_build():

@@ -223,6 +223,8 @@ _SITES: Dict[str, re.Pattern[bytes]] = {
         # SETJARP: ``lda (zp),y ; cmp #$FF ; beq + ; sta DETUNER,x`` before ``iny ; tya ; sta WFTPOS,x``.
         "detunesupport": rb"\x3d..\x9d..\xc8\xb1.\xc8(?:\xc9\x7f\xf0.)?(?:\x8d..|\x48)"
         rb"(?:(\xb1.\xc9\xff\xf0\x03\x9d..)|)\xc8\x98\x9d",
+        # SETWFTP (1856): ``lda #$FF ; sta PTNGATE,x ; sta ARPSCNT,x`` before ARPSPED / INSTVIB.
+        "multispeedsupp": rb"\x9d..\xa9\xff\x9d..(?:(\x9d..)|)(?:\xa0\x07\xb1.\x9d..)?\x20",
         # WFARPTB (2396): ``dec ARPSCNT,x ; bpl SKIPWFT ; lda ARPSPED,x`` before ``and #$3F ; sta ARPSCNT,x``.
         "arpspeedsupp": rb"(?:(\xde..\x10.\xbd..)|)\x29\x3f\x9d..\xbc..\xb1.\xc9\xfe",
         # HRGTOFF (1568): HR-SR / HR-AD from the instrument (pre-1.8 walks them up), else DEFAULTHRADSR.

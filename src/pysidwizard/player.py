@@ -334,6 +334,8 @@ class VoiceState:
     # vibrato shift becomes invisible when the WF arp walks a real
     # pitch every frame.
     wf_did_pitch_write: bool = False
+    # FREQLO/HI ZP keep the last note's pitch: no RELPTCH/ABSPTCH since STRTSND.
+    pitch_held: bool = False
     # True when the current frame's WFARPTB took the SKIPWFT branch
     # (= ARPSCNT was positive after dec, bpl taken). _tick_voice
     # uses this to decide whether HARDRST's ``cpy #$3F`` carry-SET
@@ -1589,8 +1591,10 @@ class SWMPlayer(MemPlayer):
             v.wf_arp_absolute = False
             # STRTSND (player.asm line 1422) stores $FF to ARPSCNT so
             # the very first post-note WFARPTB pass falls through the
-            # BPL check and reloads from ARPSPED.
-            v.arp_speed_counter = 0xFF
+            # BPL check and reloads from ARPSPED; only MULTISPEEDSUPP_ON builds it.
+            if self.features.multispeedsupp:
+                v.arp_speed_counter = 0xFF
+            v.pitch_held = True
             # Latch ARPSPED for the WF tick's reload + multispeed flags.
             v.arp_speed_reload = v.instrument.arp_speed
             v.detune = 0
@@ -2014,8 +2018,6 @@ class SWMPlayer(MemPlayer):
         Returns ``True`` if a ``$7E`` was hit (caller should jump to
         the next WF row); ``False`` if a pitch was applied normally.
         """
-        if v.current_chord == 0:
-            return False
         table = self._chord_table
         if not (1 <= v.current_chord <= len(self._chord_starts)):
             # CURCHORD is out of bounds (e.g. euphoria's TOMDRUM has
@@ -2024,6 +2026,7 @@ class SWMPlayer(MemPlayer):
             # table; we can't replicate that exact OOB read, but we
             # also know these instruments don't actually have $7F arp
             # bytes, so this branch protects against the IndexError.
+            v.wf_did_pitch_write = True  # PLYCHRD still reaches RELPTCH
             return False
         chord_start = self._chord_starts[v.current_chord - 1]
         if v.chord_pos >= len(table):
@@ -2459,7 +2462,8 @@ class SWMPlayer(MemPlayer):
         # directly without further transposition (player.asm ABSPTCH at
         # line 2037 just AND #$7F, no DPITCH/transpose addition). For
         # relative arp, transpose and octave_shift fold in via DPITCH.
-        if not ins.wf_table and not v.zp_dummy:
+        v.pitch_held = v.pitch_held and not v.wf_did_pitch_write  # SKIPWFT / NOP since STRTSND
+        if (not ins.wf_table and not v.zp_dummy) or v.pitch_held:
             # Instrument with NO WF table: the asm's WFARPTB reads the
             # table terminator immediately (ENDWFTB) and never writes
             # FREQLO/FREQHI ZP, so the freq HOLDS the previous note's

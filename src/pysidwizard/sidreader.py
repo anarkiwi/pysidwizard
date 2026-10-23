@@ -530,10 +530,12 @@ def _module_window(data: bytes, mem: bytes, base: int, swp: int) -> bytes:
 
     The window is ``mem`` from the module start up to the next player jump
     table, with init / play pointed at ``base``. A packed player's module starts
-    at its SWP data base; a plain player's at its jump table.
+    at its SWP data base or its jump table, whichever is lower, so the window
+    holds the player code the reader takes build flags and tables from; a plain
+    player's at its jump table.
     """
     header = parse_psid_header(data)
-    start = swp if mem[swp : swp + len(SWP_MAGIC)] == SWP_MAGIC else base
+    start = min(base, swp) if mem[swp : swp + len(SWP_MAGIC)] == SWP_MAGIC else base
     following = [b for b in _player_bases(mem) if b > max(start, base)]
     stop = following[0] if following else header.real_load_address + len(data) - header.data_start
     out = bytearray(data[: header.data_offset])

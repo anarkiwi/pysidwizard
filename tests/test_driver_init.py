@@ -2,6 +2,8 @@
 
 # pylint: disable=missing-function-docstring
 
+from dataclasses import replace
+
 import pytest
 
 from pysidwizard import (
@@ -103,6 +105,43 @@ def test_filter_operands_the_init_leaves_reach_the_first_call():
     swm.filter_init = (0xA0, 0x0B, 0x07, 0x01)
     assert _grid(swm, 1)[0][0x15:0x18] == [0x07, 0x0B, 0xA1]
     assert _grid(swm.subtune(0), 1)[0][0x15:0x18] == [0x07, 0x0B, 0xA1]
+
+
+def _two_note_grid(multispeedsupp: bool, arp: int = 0x00, chord: int = 0):
+    """Notes 49 then 61, the instrument's one WF row paced by ARPSPED 5."""
+    inst = Instrument(
+        control=0x1A,
+        hr_decay=0xF,
+        wf_table=bytes([0x41, arp, 0x00]),
+        arp_speed=5,
+        default_chord=chord,
+    )
+    rows = [Row(note=49, instrument=1), Row(), Row(note=61, instrument=1), Row()]
+    swm = SWMFile(
+        sequences=[[PlayPattern(1), End()], [End()], [End()]],
+        patterns=[Pattern(rows=rows, length=4)],
+        instruments=[inst],
+        subtune_tempos=[(straight_tempo(3), straight_tempo(3))],
+    )
+    features = replace(features_for_driver(0), multispeedsupp=multispeedsupp)
+    return SWMPlayer(swm, features=features).render_grid(11)
+
+
+def test_strtsnd_without_multispeedsupp_keeps_arpscnt_and_the_last_pitch():
+    """SETWFTP's ``sta ARPSCNT,x`` is MULTISPEEDSUPP_ON only: a still-positive counter
+    SKIPWFTs the new note's first row, so WRPITCH rewrites the previous note's FREQLO/HI."""
+    on, off = _two_note_grid(True), _two_note_grid(False)
+    note = {n: [NOTE_FREQ_LO[n], NOTE_FREQ_HI[n]] for n in (49, 61)}
+    assert on[9][:2] == note[61] and on[9][4] == 0x41
+    assert off[9][:2] == note[49] and off[9][4] == 0x09
+    assert off[10][:2] == note[61] and off[10][4] == 0x41
+
+
+@pytest.mark.parametrize("chord", [0, 2])
+def test_a_chord_row_the_table_cannot_resolve_still_writes_the_pitch(chord):
+    """PLYCHRD reaches RELPTCH for any CURCHORD, so the new note's pitch is not held."""
+    grid = _two_note_grid(True, arp=0x7F, chord=chord)
+    assert grid[9][:2] == [NOTE_FREQ_LO[61], NOTE_FREQ_HI[61]]
 
 
 @pytest.mark.parametrize(
