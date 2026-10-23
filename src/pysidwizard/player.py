@@ -586,6 +586,7 @@ class SWMPlayer(MemPlayer):
         self.filter_sweep_count = 0
 
         self.frame_idx = 0
+        self._play_gate = self.swm.play_gate[0] if self.swm.play_gate else 0
         self.finished = False
 
         # Multispeed state. For ``frame_speed > 1`` the exporter's CIA player
@@ -607,6 +608,11 @@ class SWMPlayer(MemPlayer):
         the bit-6 / bit-7 multispeed flags set) without advancing
         rows or running HR setup.
         """
+        if self.swm.play_gate:
+            _, mask, play_sign = self.swm.play_gate
+            self._play_gate ^= mask
+            if self._play_gate & 0x80 != play_sign:
+                return
         is_multispeed_tick = self.swm.frame_speed > 1 and self._multispeed_phase != 0
         if self.features.retainzeropage:
             # PLAYER restores the caller's PLAYERZP on return (player.asm:1229-1235).

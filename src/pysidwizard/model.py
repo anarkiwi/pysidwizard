@@ -714,11 +714,16 @@ class SWMFile:
     # The image's own FREQTBL / FREQTBH spans (256 bytes each from each table base): PAL or NTSC, plus the bytes past each table; empty for a bare ``.swm``.
     freq_lo_image: bytes = b""
     freq_hi_image: bytes = b""
-    # SID registers ($D400-$D418) as the ``.sid``'s init left them; empty for a bare ``.swm`` (all zero).
+    # SID registers ($D400-$D418) as the ``.sid``'s init left them over the PSID driver's $0F
+    # volume; empty for a bare ``.swm`` (all zero).
     sid_init: bytes = b""
     # ``(RESONIB, CTFHGHO, CTFLGHO, FSWITCH)`` operands as the tune's init leaves them
     # (player.asm:418, 749-797), which the first call writes; zero for a bare ``.swm``.
     filter_init: Tuple[int, int, int, int] = (0, 0, 0, 0)
+    # ``(operand, mask, play_sign)`` of a PLAYER entry that toggles its own ``lda #`` operand
+    # with ``eor #mask`` each call and returns unless bit 7 equals ``play_sign``; empty when it
+    # always plays.
+    play_gate: Tuple[int, ...] = ()
     # The build flags read from a ``.sid``'s player code; None for a bare ``.swm`` (the driver byte's build).
     features: Optional[PlayerFeatures] = None
     # The instrument INSPTLO/HI slot 0 points at in a ``.sid`` image, when it is not instrument 1 (which a bare ``.swm`` and the exporter's own link imply).
@@ -776,6 +781,7 @@ class SWMFile:
             first_frame_freq_by_track=self.first_frame_freq_by_track,
             sid_init=self.sid_init,
             filter_init=self.filter_init,
+            play_gate=self.play_gate,
             features=self.features,
             freq_lo_image=self.freq_lo_image,
             freq_hi_image=self.freq_hi_image,
