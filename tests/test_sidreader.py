@@ -587,21 +587,21 @@ def test_freq_table_tail_is_empty_when_the_image_has_no_frequency_table():
 
 
 # COMMONREGS through $D418, then CTFHGHO with and without the FILTKBTRACK prelude.
-_COMMONREGS = bytes.fromhex("a90009a08d17d4a90f09008d18d418")
+_COMMONREGS = bytes.fromhex("a90109a08d17d4a90f09008d18d418")
 _KBDTRACK = bytes.fromhex("a900f00aae76997d5094a8b9119c69")
 
 
 @pytest.mark.parametrize(
     "code, expect",
     [
-        (_COMMONREGS + bytes.fromhex("a90b69008d16d4a9078d15d4"), (0xA0, 0x0B, 0x07)),
-        (_COMMONREGS + _KBDTRACK + bytes.fromhex("0b8d16d460a9078d15d4"), (0xA0, 0x0B, 0x00)),
-        (_COMMONREGS + _KBDTRACK + bytes.fromhex("0ba000f01f"), (0xA0, 0x0B, 0x00)),
-        (bytes(64), (0, 0, 0)),
+        (_COMMONREGS + bytes.fromhex("a90b69008d16d4a9078d15d4"), (0xA0, 0x0B, 0x07, 0x01)),
+        (_COMMONREGS + _KBDTRACK + bytes.fromhex("0b8d16d460a9078d15d4"), (0xA0, 0x0B, 0x00, 0x01)),
+        (_COMMONREGS + _KBDTRACK + bytes.fromhex("0ba000f01f"), (0xA0, 0x0B, 0x00, 0x01)),
+        (bytes(64), (0, 0, 0, 0)),
     ],
 )
 def test_filter_init_reads_the_operands_initer_leaves(code, expect):
-    """RESONIB / CTFHGHO / CTFLGHO (player.asm:749-797); CTFLGHO only right after ``sta $D416``."""
+    """RESONIB / CTFHGHO / CTFLGHO / FSWITCH (player.asm:749-797); CTFLGHO only right after ``sta $D416``."""
     assert _filter_init(bytes(16) + code) == expect
 
 

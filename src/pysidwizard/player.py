@@ -550,11 +550,15 @@ class SWMPlayer(MemPlayer):
         # The lower nibble of $D417 (routing) is composed each frame
         # by :meth:`_emit_writes` from per-voice ``voice_in_filter``
         # flags ORed against the per-voice routing bit table.
-        self.filter_resonance, self.filter_cutoff_hi, self.filter_cutoff_lo = swm.filter_init
+        (
+            self.filter_resonance,
+            self.filter_cutoff_hi,
+            self.filter_cutoff_lo,
+            self.filter_switch,
+        ) = swm.filter_init
         # FSWITCH (player.asm:1085): the low nibble of $D417 -- per-voice routing bits
         # maintained by STRTSND's SETFLTP (player.asm:1999-2008), plus the filter-external
-        # bit that only BIGFX1F writes. Initialised to 0 by the player's INITER (line 718).
-        self.filter_switch = 0x00
+        # bit that only BIGFX1F writes; its start is the operand the tune's init leaves.
         # FLSHIFT (player.asm:1110): a signed byte BIGFX1C adds to the cutoff-high
         # ghost on every $D416 write. INITER zero-initialises it (player.asm:694).
         self.filter_shift = 0x00

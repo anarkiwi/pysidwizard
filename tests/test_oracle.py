@@ -106,6 +106,9 @@ TUNES = {
     "your_fathers_nightmare": "GAMES/S-Z/Your_Fathers_Nightmare.sid",
     # Packed player whose image holds nonzero RESONIB / CTFHGHO / CTFLGHO operands, which INITER never resets.
     "club64": "MUSICIANS/M/Mario64/Club64.sid",
+    # Images holding a nonzero FSWITCH operand, which INITER leaves without FILT_CTRL_FX_ON.
+    "airwolf_theme": "MUSICIANS/C/C0zmo/Airwolf_Theme.sid",
+    "bunker_2015": "MUSICIANS/S/Spider_Jerusalem/Bunker_2015.sid",
     # Builds other than the header's driver byte names (an edited SWP game player, a headerless export): matched once the flags were read from the player code.
     "arkanoid_remake": "MUSICIANS/C/C0zmo/Arkanoid_Remake.sid",
     "lykia_prologue": "MUSICIANS/C/C0zmo/Lykia_Prologue-Nathans_Journey.sid",

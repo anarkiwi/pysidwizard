@@ -97,12 +97,31 @@ def test_init_register_state_is_where_the_first_call_starts():
     assert frame[0x18] == 0x0F  # COMMONREGS writes $D418 on every call
 
 
-def test_filter_operands_the_image_holds_reach_the_first_call():
-    """INITER leaves RESONIB / CTFHGHO / CTFLGHO alone (player.asm:749-797)."""
+def test_filter_operands_the_init_leaves_reach_the_first_call():
+    """RESONIB / CTFHGHO / CTFLGHO / FSWITCH as the init left them (player.asm:749-797)."""
     swm = _swm(bytes([0x1A, 0x0F, 0x00]), row=Row())
-    swm.filter_init = (0xA0, 0x0B, 0x07)
-    assert _grid(swm, 1)[0][0x15:0x18] == [0x07, 0x0B, 0xA0]
-    assert _grid(swm.subtune(0), 1)[0][0x15:0x18] == [0x07, 0x0B, 0xA0]
+    swm.filter_init = (0xA0, 0x0B, 0x07, 0x01)
+    assert _grid(swm, 1)[0][0x15:0x18] == [0x07, 0x0B, 0xA1]
+    assert _grid(swm.subtune(0), 1)[0][0x15:0x18] == [0x07, 0x0B, 0xA1]
+
+
+@pytest.mark.parametrize(
+    "relpath, song, image, expect",
+    [
+        ("MUSICIANS/M/Mario64/Club64.sid", 1, 0x07, 0x00),  # INITER zeroes it
+        (
+            "MUSICIANS/N/NecroPolo/Lights_On.sid",
+            2,
+            0x00,
+            0x01,
+        ),  # the $2000 player's image holds $01
+    ],
+)
+def test_fswitch_is_the_operand_the_init_leaves(relpath, song, image, expect):
+    """FSWITCH (player.asm:750) is read after the init, which zeroes it only under FILT_CTRL_FX_ON."""
+    data = _tune(relpath)
+    assert parse_sid(data).filter_init[3] == image
+    assert parse_sid_song(data, song).filter_init[3] == expect
 
 
 @pytest.mark.parametrize(
@@ -217,6 +236,6 @@ def test_song_beyond_the_decoded_subtunes_is_a_parse_error(monkeypatch):
     assert parse_sid_song(data, 1).sequences == parse_sid(data).sequences[:3]
     with pytest.raises(SIDFormatError, match="selects subtune"):
         parse_sid_song(data, 2)
-    monkeypatch.setattr("pysidwizard.sidreader._song_entry", lambda *_: (None, b""))
+    monkeypatch.setattr("pysidwizard.sidreader._song_entry", lambda *_: (None, b"", b""))
     with pytest.raises(SIDFormatError, match="selects subtune 1"):
         parse_sid_song(data, 2)

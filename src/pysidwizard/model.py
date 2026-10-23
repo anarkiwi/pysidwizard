@@ -711,9 +711,9 @@ class SWMFile:
     freq_hi_image: bytes = b""
     # SID registers ($D400-$D418) as the ``.sid``'s init left them; empty for a bare ``.swm`` (all zero).
     sid_init: bytes = b""
-    # ``(RESONIB, CTFHGHO, CTFLGHO)`` operands as the image holds them: INITER never
-    # resets them (player.asm:749-797), so the first call writes them; zero for a bare ``.swm``.
-    filter_init: Tuple[int, int, int] = (0, 0, 0)
+    # ``(RESONIB, CTFHGHO, CTFLGHO, FSWITCH)`` operands as the tune's init leaves them
+    # (player.asm:418, 749-797), which the first call writes; zero for a bare ``.swm``.
+    filter_init: Tuple[int, int, int, int] = (0, 0, 0, 0)
     # The build flags read from a ``.sid``'s player code; None for a bare ``.swm`` (the driver byte's build).
     features: Optional[PlayerFeatures] = None
     # ".P00" wrapper name (16-byte PETSCII field from disk); transport metadata, excluded from equality.

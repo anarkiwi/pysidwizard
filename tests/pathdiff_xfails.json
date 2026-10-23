@@ -2,19 +2,6 @@
  {
   "compare": "lead",
   "frames": 9,
-  "id": "0baa63a54f86",
-  "key": "('first', '', 'sidwizard:edge:pysidwizard/player.py:SWMPlayer._advance_row:937>950')",
-  "kind": "first",
-  "left": "6502",
-  "md5": "ab7fbbfc3b82c488dfff1a1786343e90",
-  "reason": "pysidwizard/player.py:937 if v.pattern is None or v.pattern_row >= len(v.pattern.rows): -> 950: reference frame 0, register $00 v1_freq_lo",
-  "relpath": "MUSICIANS/N/NecroPolo/Lights_On.sid",
-  "right": "format:sidwizard",
-  "song": 10
- },
- {
-  "compare": "lead",
-  "frames": 9,
   "id": "0e276756b6f3",
   "key": "('first', '', 'sidwizard:edge:pysidwizard/player.py:SWMPlayer._pending_row_has_new_note:882>884')",
   "kind": "first",
