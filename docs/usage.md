@@ -219,6 +219,13 @@ PYTHONPATH=scripts python -m pysidtracker.survey diff $HVSC .hvsc-survey/tunes.c
     --work .hvsc-survey --render oracle_hvsc:render
 ```
 
+[`scripts/feature_census.py`](../scripts/feature_census.py) lists, per build flag,
+the tunes whose player code disagrees with their header's driver byte:
+
+```bash
+python scripts/feature_census.py tunes.txt --jobs 32 --csv .hvsc-survey/features.csv
+```
+
 ### pathdiff xfails
 
 [`pysidtracker.pathdiff`](https://github.com/anarkiwi/pysidtracker/blob/main/docs/pathdiff.md)

@@ -116,6 +116,7 @@ from .constants import (
     TUNING_TYPE_POS,
 )
 from .errors import SIDFormatError
+from .features import detect_features, features_for_driver
 from .model import (
     End,
     Instrument,
@@ -302,16 +303,33 @@ def _filter_init(data: bytes) -> tuple:
     return (hi.group(1)[0], hi.group(2)[0], lo.group(1)[0] if lo else 0)
 
 
+def _player_features(data: bytes, driver_type: int):
+    """The build flags of the player code the ``.sid``'s init enters, over the driver byte's build.
+
+    With a single embedded player (or an init entering none) the whole image is read.
+    """
+    header = parse_psid_header(data)
+    code, load = data[header.data_start :], header.real_load_address
+    entry = (header.init_address or load) - load
+    bases = _player_bases(code)
+    if len(bases) > 1 and entry in bases:
+        following = [b for b in bases if b > entry]
+        code, load = code[entry : following[0] if following else None], load + entry
+    return detect_features(code, load, features_for_driver(driver_type))
+
+
 def parse_sid(data: bytes) -> SWMFile:
     """Parse a single-SID SID-Wizard ``.sid`` image into a :class:`SWMFile`.
 
     Also captures the image's :attr:`~pysidwizard.model.SWMFile.freq_table_tail`
-    so the player reproduces past-table pitch lookups exactly.
+    so the player reproduces past-table pitch lookups exactly, and the build
+    flags its player code was assembled with (:func:`~pysidwizard.features.detect_features`).
     """
     swm = _parse_sid_layout(data)
     swm.freq_table_tail = _freq_table_tail(data)
     swm.first_frame_freq_by_track = _first_frame_freq_by_track(data)
     swm.filter_init = _filter_init(data)
+    swm.features = _player_features(data, swm.driver_type)
     swm.freq_lo_image, swm.freq_hi_image = _freq_table_images(data)
     return swm
 
