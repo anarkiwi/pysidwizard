@@ -278,11 +278,11 @@ def _first_frame_freq_by_track(data: bytes) -> bool:
     return bool(match) and match.group(1)[0] == _LDA_ABS_X
 
 
-# COMMONREGS (player.asm:748-797): ``ora #RESONIB ; sta $D417 ; ... ; clc`` then, past the
+# COMMONREGS (player.asm:748-797): ``lda #FSWITCH ; ora #RESONIB ; sta $D417 ; ... ; clc`` then, past the
 # optional FILTKBTRACK prelude, CTFHGHO's ``lda|adc #``; CTFLGHO's ``lda # ; sta $D415``
 # follows ``sta $D416``.
 _FILTER_HI = re.compile(
-    rb"\x09(.)\x8d\x17\xd4\xa9.\x09.\x8d\x18\xd4\x18"
+    rb"\xa9(.)\x09(.)\x8d\x17\xd4\xa9.\x09.\x8d\x18\xd4\x18"
     rb"(?:\xa9.\xf0.\xae..(?:\x7d..|\x75.)\xa8\xb9..\x69|\xa9)(.)",
     re.S,
 )
@@ -291,16 +291,16 @@ _STA_FCUT_HI = b"\x8d\x16\xd4"
 
 
 def _filter_init(data: bytes) -> tuple:
-    """``(resonance, cutoff_hi, cutoff_lo)``: the filter operands the first play call writes.
+    """``(resonance, cutoff_hi, cutoff_lo, switch)``: the filter operands the first play call writes.
 
     Zero for a component the image has no code for (no FINEFILTSWEEP, say).
     """
     hi = _FILTER_HI.search(data)
     if hi is None:
-        return (0, 0, 0)
+        return (0, 0, 0, 0)
     pos = data.find(_STA_FCUT_HI, hi.end())
     lo = _FILTER_LO.match(data, pos) if pos >= 0 else None
-    return (hi.group(1)[0], hi.group(2)[0], lo.group(1)[0] if lo else 0)
+    return (hi.group(2)[0], hi.group(3)[0], lo.group(1)[0] if lo else 0, hi.group(1)[0])
 
 
 def _player_features(data: bytes, driver_type: int):
@@ -473,7 +473,7 @@ def _player_bases(mem) -> List[int]:
 
 
 def _song_entry(data: bytes, song: int):
-    """``(entry, sid)``: the player song ``song``'s init starts, and the SID it leaves.
+    """``(entry, sid, mem)``: the player song ``song``'s init starts, and the SID and memory it leaves.
 
     Runs the tune's init (accumulator = 0-based ``song``). ``base`` is the last
     player jump table it enters and ``mem`` a snapshot of memory at that entry
@@ -481,7 +481,8 @@ def _song_entry(data: bytes, song: int):
     what that player's SETSEQA stores (``None`` when it never runs during init)
     and ``swp`` the SWP data base INITER receives in X / Y. ``None`` when the init
     enters no player. ``sid`` is the register file the whole init wrote (the
-    chip's ``$20``-byte mirrors folded), which the first play call starts from.
+    chip's ``$20``-byte mirrors folded), which the first play call starts from,
+    and ``mem`` the memory the whole init left.
     """
     image = SidImage.from_sid(data)
     header = image.header
@@ -516,12 +517,12 @@ def _song_entry(data: bytes, song: int):
             entry = (bytes(image.mem), mpu.pc, (mpu.y << 8) | mpu.x)
         mpu.step()
     if entry is None:
-        return None, bytes(sid)
+        return None, bytes(sid), bytes(image.mem)
     snapshot, base, swp = entry
     value = written.get(base)
     has_subtunes = any(owner == base for owner in subtpos.values())
     subtune = value >> _SUBTPOS_SHIFT if value is not None else (None if has_subtunes else 0)
-    return (snapshot, base, subtune, swp), bytes(sid)
+    return (snapshot, base, subtune, swp), bytes(sid), bytes(image.mem)
 
 
 def _module_window(data: bytes, mem: bytes, base: int, swp: int) -> bytes:
@@ -555,23 +556,21 @@ def parse_sid_song(data: bytes, song: int) -> SWMFile:
     the selected subtune is not in the decoded module.
     """
     header = _single_sid_header(data)
-    found, sid = _song_entry(data, song - 1)
+    found, sid, after = _song_entry(data, song - 1)
     if found is None or found[2] is None:
         swm, subtune = parse_sid(data), song - 1
     else:
         mem, base, subtune, swp = found
         direct = base == (header.init_address or header.real_load_address)
-        if direct:
-            swm = parse_sid(data)
-        else:
-            swm = parse_sid(_module_window(data, mem, base, swp))
-            swm.filter_init = _filter_init(mem[base:])
+        swm = parse_sid(data if direct else _module_window(data, mem, base, swp))
     if not 0 <= subtune < swm.subtune_count:
         raise SIDFormatError(
             f"song {song} selects subtune {subtune}, but the module decodes "
             f"{swm.subtune_count} subtune(s)"
         )
     swm.sid_init = sid
+    # INITER zeroes FSWITCH only under FILT_CTRL_FX_ON (player.asm:418), so read the operands it left.
+    swm.filter_init = _filter_init(after[found[1] if found else 0 :])
     return swm.subtune(subtune)
 
 
