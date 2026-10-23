@@ -42,7 +42,6 @@ from typing import Any, List, Optional, Tuple
 from pysidtracker.player import MemPlayer
 from pysidtracker.registers import (
     PAL_CYCLES_PER_FRAME,
-    PW_HI_REGS,
     SID_BASE,
     SID_VOICE_OFFSET,
 )
@@ -453,8 +452,12 @@ class SWMPlayer(MemPlayer):
 
     This is a pure-Python transcription of SID-Wizard's 6502 player: the
     inherited memory image is used only as the ``$D400`` SID register file
-    that :meth:`_frame` writes into and :meth:`snapshot` reads back.
+    that :meth:`_frame` writes into and :meth:`snapshot` reads back, its
+    pulse-width-high registers nibble-masked
+    (:attr:`~pysidtracker.player.MemPlayer.MASK_PW_HI`) as the oracle grid is.
     """
+
+    MASK_PW_HI = True
 
     def __init__(self, swm: SWMFile, features: Optional[PlayerFeatures] = None) -> None:
         self.swm = swm
@@ -2597,18 +2600,3 @@ class SWMPlayer(MemPlayer):
         self._wr(SID_REG_BASE + 0x16, (cutoff_hi + self.filter_shift + (cutoff_hi >> 8)) & 0xFF)
         self._wr(SID_REG_BASE + 0x17, res_routing & 0xFF)
         self._wr(SID_REG_BASE + 0x18, self.filter_mode_vol & 0xFF)
-
-    def snapshot(self) -> List[int]:
-        """The SID register file, pulse-width-high nibble-masked.
-
-        The SID ignores the upper nibble of the pulse-width-high registers
-        (:data:`~pysidtracker.registers.PW_HI_REGS`); masking them makes the
-        per-frame grid match the sidtrace oracle's
-        :func:`~pysidtracker.oracle.grid_from_writes` convention (as
-        :meth:`pysidtracker.oracle.EmuPlayer.snapshot` does).
-        """
-        base = self.SID_BASE
-        return [
-            (self._mem[base + i] & 0x0F) if i in PW_HI_REGS else self._mem[base + i]
-            for i in range(self.REG_COUNT)
-        ]
