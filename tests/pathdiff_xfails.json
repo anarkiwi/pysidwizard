@@ -1,15 +1,1 @@
-[
- {
-  "compare": "lead",
-  "frames": 9,
-  "id": "18251908104a",
-  "key": "('first', '', 'sidwizard:edge:pysidwizard/player.py:SWMPlayer._frame:606>607')",
-  "kind": "first",
-  "left": "6502",
-  "md5": "1b03c184ca947a51bd48d40ab7ef339f",
-  "reason": "pysidwizard/player.py:606 for v_idx in range(len(self.voices) - 1, -1, -1): -> 607: reference frame 0, register $02 v1_pw_lo",
-  "relpath": "MUSICIANS/B/Bayliss_Richard/Sheepoid_DX.sid",
-  "right": "format:sidwizard",
-  "song": 1
- }
-]
+[]

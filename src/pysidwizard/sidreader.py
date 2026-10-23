@@ -180,7 +180,8 @@ _SEQUENCE_END_WITH_LOOP = 0xFF
 # :func:`_build` cannot resolve. Idioms are mapped from the vendored SID-Wizard
 # player source (``native/sources/include/player.asm``): ``p_ptnl1``/``p_ptnh1``
 # and ``p_insl3``/``p_insh3`` (``ldy CURx,x; lda PTRLO,y; sta zp; lda PTRHI,y;
-# sta zp``), ``p_subt1`` (``adc #imm; tay; lda SUBTUNES,y``), ``p_chdt1``
+# sta zp``), ``p_subt1`` (``adc #imm; tay; lda SUBTUNES,y``, or V1.0's ``asl; tay;
+# ldx #1; lda SUBTUNES,y``), ``p_chdt1``
 # (``lda CHORDS,y; cmp #$7E``), ``p_chdp1``/``p_tmpp1`` (``tay; lda TBL,y``),
 # ``p_tmpt1`` (``sec; sbc TEMPOTBL-1,y``). The magic-less player-code signature
 # that anchors detection lives in :mod:`pysidwizard.sidfile`.
@@ -193,6 +194,8 @@ _CODE_PTRTAB = CodePattern("BC ?? ?? B9 {lo:w} 85 ?? B9 {hi:w} 85 ??")
 # at init to that channel's packed sequence base (:func:`_build_via_player`).
 _CODE_SEQ_DIRECT = CodePattern("B9 {seq:w} 60")
 _CODE_SUBTUNES = CodePattern("69 ?? A8 B9 {subt:w}")
+# V1.0's SETSTUNE (1.0 player.asm): ``asl ; tay ; ldx #1 ; p_subt1 lda SUBTUNES,y``.
+_CODE_SUBTUNES_V10 = CodePattern("0A A8 A2 01 B9 {subt:w}")
 _CODE_CHORDTAB = CodePattern("BC ?? ?? B9 {chdt:w} C9 7E D0")
 _CODE_CHORDPTR = CodePattern("A8 B9 {chdp:w} 9D")
 _CODE_TEMPOPTR = CodePattern("A8 B9 {tmpp:w} 4C")
@@ -248,6 +251,8 @@ def _freq_table_tail(data: bytes) -> bytes:
 # INSCTRL's first-frame pitch (player.asm:1838-1843): ``and #8 ; beq ; ldy DPITCH,x ; lda FREQTBH,{y|x}``.
 _INSCTRL_FREQTBH = re.compile(rb"\x29\x08\xf0.\xbc..([\xb9\xbd])", re.S)
 _LDA_ABS_X = 0xBD
+# V1.0's INSCTRL: ``and #8 ; beq SETWFTP ; lda #$09 ; sta WFGHOST,x``.
+_INSCTRL_FIXED_WAVEFORM = re.compile(rb"\x29\x08\xf0.\xa9\x09\x9d", re.S)
 
 
 # ABSPTCH's pitch load (player.asm:2531-2535): ``tay ; lda FREQTBL,y ; sta FREQLO,x ; lda FREQTBH,y ; sta FREQHI,x``.
@@ -369,7 +374,9 @@ def parse_sid(data: bytes) -> SWMFile:
     swm.first_frame_freq_by_track = _first_frame_freq_by_track(data)
     swm.filter_init = _filter_init(data)
     swm.features = _player_features(data, swm.driver_type)
-    swm.filter_stop_rewinds = _filter_stop_rewinds(_player_code(data)[0])
+    code = _player_code(data)[0]
+    swm.filter_stop_rewinds = _filter_stop_rewinds(code)
+    swm.first_frame_fixed_waveform = _INSCTRL_FIXED_WAVEFORM.search(code) is not None
     image = SidImage.from_sid(data)
     swm.play_gate = _play_gate(image.mem, image.header.init_address or image.load)
     swm.freq_lo_image, swm.freq_hi_image = _freq_table_images(data)
@@ -1158,6 +1165,14 @@ def _code_operands(image: SidImage, pattern: CodePattern, key: str) -> list:
     return sorted({m.captures[key] for m in find_code_all(image, pattern)})
 
 
+def _subtune_operands(image: SidImage) -> list:
+    """The ``SUBTUNES`` table bases ``p_subt1`` reads, in either SETSTUNE form."""
+    return sorted(
+        set(_code_operands(image, _CODE_SUBTUNES, "subt"))
+        | set(_code_operands(image, _CODE_SUBTUNES_V10, "subt"))
+    )
+
+
 def _iter_subtune_bases(byte, image, inst_lo, min_pattern, load, end, seq_hint, chdp, tmpp, reloc):
     """Yield ``(subtune_base, subtunes)`` candidates for the sequence-pointer table.
 
@@ -1168,7 +1183,7 @@ def _iter_subtune_bases(byte, image, inst_lo, min_pattern, load, end, seq_hint, 
     skipped rather than mis-parsed.
     """
     seen = set()
-    for sb in _code_operands(image, _CODE_SUBTUNES, "subt"):
+    for sb in _subtune_operands(image):
         uppers = [x for x in ([inst_lo] + chdp + tmpp) if x > sb]
         if not uppers:
             continue
@@ -1338,7 +1353,7 @@ def _codescan_meta(data: bytes, base: int, image: SidImage):
     chord_len = tempo_len = 0
     chdt = _code_operands(image, _CODE_CHORDTAB, "chdt")
     tmpt = _code_operands(image, _CODE_TEMPOTAB, "tmpt")
-    subt = _code_operands(image, _CODE_SUBTUNES, "subt")
+    subt = _subtune_operands(image)
     if len(tmpt) == 1:
         tempo_base = tmpt[0] + 1
         if len(subt) == 1:
@@ -1509,7 +1524,7 @@ def _subtune_channel_bases(image: SidImage, byte, subtune: int):
     Each 8-byte block holds the subtune's three LO/HI sequence pointers
     (subtune-support driver: ``p_seqt`` is the indirect ``lda (zp),y`` form).
     """
-    subt = _code_operands(image, _CODE_SUBTUNES, "subt")
+    subt = _subtune_operands(image)
     if not subt:
         return None
     blk = subt[0] + _SUBTUNE_BLOCK * subtune
@@ -1752,7 +1767,7 @@ def _player_chord_tempo(image, chunk, swm_header, min_data):
 
 def _player_subtune_tempos(image, byte, subtunes):
     """Per-subtune funktempo ``(left, right)`` from the ``SUBTUNES`` table, when present."""
-    subt = _code_operands(image, _CODE_SUBTUNES, "subt")
+    subt = _subtune_operands(image)
     if not subt:
         return [(0, 0)] * subtunes
     base = subt[0]

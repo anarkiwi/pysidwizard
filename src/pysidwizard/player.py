@@ -350,6 +350,8 @@ class VoiceState:
     # AD/SR/CTRL/FREQ_HI ghosts; emit uses this to skip the FREQ_LO,
     # PW_LO, PW_HI writes that SID-Wizard's STRTSND doesn't touch.
     in_hr_this_frame: bool = False
+    # SETPWID wrote SIDG.PLSW this tick (player.asm:1743-1749); HARDRST's new-note ticks skip it.
+    pw_written: bool = False
     # True for TICK_2 of a legato / portamento / NPORTAM row. SID-Wizard's
     # CLEGATO path at this phase ends in ``LEGATOO jsr INSPTFX ; jmp
     # WRWFGHO`` — only $D404 (CTRL) gets written. FREQ/PW/AD/SR retain
@@ -644,6 +646,7 @@ class SWMPlayer(MemPlayer):
         v.in_tick2_legato_this_frame = False
         v.adsr_emit_required = False
         v.zp_dummy = False
+        v.pw_written = False
         # A voice that never played a note and has no pattern is a true
         # no-op. A voice that REACHED its orderlist terminator
         # (``sequence_ended``) is NOT frozen — it keeps ticking its
@@ -850,6 +853,7 @@ class SWMPlayer(MemPlayer):
         v.in_tick2_legato_this_frame = False
         v.adsr_emit_required = False
         v.zp_dummy = False
+        v.pw_written = False
         # ARPSCNT bit-7 set = just-had-STRTSND (counter still in
         # $80..$FF). MULCNTP skips this voice until the next PLAYER
         # tick has decremented + reloaded ARPSCNT into the positive
@@ -2381,6 +2385,7 @@ class SWMPlayer(MemPlayer):
     def _setpwid(self, v: VoiceState) -> None:
         """SETPWID ahead of WFARPTB: a SKIPWFT frame's WRPITCH adds the carry it leaves."""
         self._tick_pw_table(v)
+        v.pw_written = True
         if v.skipwft_this_tick:
             v.wf_pitch_carry = self._wrpuls(v)[1] if self.features.pwkeybtrack else v.pw_carry
 
@@ -2535,8 +2540,10 @@ class SWMPlayer(MemPlayer):
             # control=$12), STRTSND skips both writes and CTRL/FREQ_HI
             # retain their pre-HR values — player.asm line 1271 has
             # ``and #8 ; beq SETWFTP`` to bypass the writes.
-            if not self.features.frame1switch:
-                # Flag off: the ``and #8`` test is compiled out and STRTSND unconditionally does ``lda #$09 ; sta WFGHOST,x``.
+            if not self.features.frame1switch or (
+                ins.control & 0x08 and self.swm.first_frame_fixed_waveform
+            ):
+                # Flag off, STRTSND does ``lda #$09 ; sta WFGHOST,x`` unconditionally; V1.0 does it on bit 3.
                 v.sid_ctrl = 0x09
             elif ins.control & 0x08:
                 v.sid_ctrl = ins.effective_first_waveform & v.ptn_gate
@@ -2655,8 +2662,9 @@ class SWMPlayer(MemPlayer):
                 continue
             self._wr(base + 0, v.sid_freq_lo)
             self._wr(base + 1, v.sid_freq_hi)
-            self._wr(base + 2, v.sid_pw_lo)
-            self._wr(base + 3, v.sid_pw_hi)
+            if v.pw_written or self.features.allghostregs:
+                self._wr(base + 2, v.sid_pw_lo)
+                self._wr(base + 3, v.sid_pw_hi)
             # SID-Wizard's CNTPLY2 path (WRPULS + WRWFGHO) writes FREQ
             # + PW + CTRL but NOT AD/SR. Only write AD/SR when a code
             # path in this tick actually wrote them (STRTSND, HRGTOFF,

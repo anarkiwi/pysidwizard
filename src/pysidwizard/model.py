@@ -711,6 +711,8 @@ class SWMFile:
     freq_table_tail: bytes = b""
     # Pre-1.8 drivers index STRTSND's first-frame FREQTBH load by X (the track offset) instead of Y = DPITCH (ChangeLog.txt:101).
     first_frame_freq_by_track: bool = False
+    # V1.0's INSCTRL gives a control-bit-3 instrument a fixed $09 first frame and no FREQTBH pitch.
+    first_frame_fixed_waveform: bool = False
     # The image's own FREQTBL / FREQTBH spans (256 bytes each from each table base): PAL or NTSC, plus the bytes past each table; empty for a bare ``.swm``.
     freq_lo_image: bytes = b""
     freq_hi_image: bytes = b""
@@ -783,6 +785,7 @@ class SWMFile:
             load_address=self.load_address,
             freq_table_tail=self.freq_table_tail,
             first_frame_freq_by_track=self.first_frame_freq_by_track,
+            first_frame_fixed_waveform=self.first_frame_fixed_waveform,
             sid_init=self.sid_init,
             filter_init=self.filter_init,
             play_gate=self.play_gate,

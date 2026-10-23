@@ -26,6 +26,7 @@ from pysidwizard.sidreader import (
     _first_frame_freq_by_track,
     _play_gate,
     _player_bases,
+    _subtune_operands,
 )
 from tests._hvsc_fetch import resolve
 
@@ -351,3 +352,51 @@ def test_parse_sid_reads_stopflt_from_the_entered_player():
     """A pre-1.7 export's SETFLTP leaves FLTPOSI walking past an $FF-first filter table."""
     data = _tune("MUSICIANS/S/Sta64/Funkito_Reloaded.sid")
     assert parse_sid_song(data, 1).filter_stop_rewinds is False
+
+
+@pytest.mark.parametrize(
+    "code, base", [("69 00 a8 b9 34 12", 0x1234), ("0a a8 a2 01 b9 cf b5", 0xB5CF)]
+)
+def test_subtunes_base_is_read_from_either_setstune_form(code, base):
+    """1.2+ SETSEQA's ``adc #SUBTPOS ; tay`` or V1.0 SETSTUNE's ``asl ; tay ; ldx #1``."""
+    assert _subtune_operands(bytes(8) + bytes.fromhex(code) + bytes(8)) == [base]
+
+
+def test_v10_player_reads_every_subtune_from_its_setstune_table():
+    """Sheepoid DX's V1.0 SETSTUNE indexes SUBTUNES by ``asl ; asl ; asl``: song 1 is subtune 0."""
+    data = _tune("MUSICIANS/B/Bayliss_Richard/Sheepoid_DX.sid")
+    assert parse_sid(data).subtune_count == 10
+    swm = parse_sid_song(data, 1)
+    assert [seq[0] for seq in swm.sequences] == [PlayPattern(10), PlayPattern(11), PlayPattern(12)]
+    assert swm.first_frame_fixed_waveform is True
+    assert parse_sid_song(_tune("DEMOS/0-9/8-Bit_Bard.sid"), 1).first_frame_fixed_waveform is False
+
+
+def test_v10_first_frame_is_a_fixed_waveform_without_pitch():
+    """V1.0 INSCTRL: ``and #8 ; beq SETWFTP ; lda #$09 ; sta WFGHOST,x``."""
+    swm = _swm(bytes([0x1A, 0x0F, 0x00]))
+    swm.instruments[0].first_waveform = 0x11
+    assert _grid(swm, 3)[2][1:5:3] == [NOTE_FREQ_HI[49], 0x11]
+    swm.first_frame_fixed_waveform = True
+    grid = _grid(swm, 3)
+    assert grid[2][1:5:3] == [grid[1][1], 0x09]
+
+
+def _pw_swm():
+    swm = _swm(bytes([0x1A, 0x0F, 0x00]))
+    swm.instruments[0].pw_table = bytes([0x84, 0x40, 0x00])
+    swm.sid_init = bytes([0x08] * 25)
+    return swm
+
+
+def test_new_note_ticks_leave_the_init_pulse_width():
+    """HRENDER's ``jmp WFARPTB`` and STRTSND skip SETPWID: the chip keeps INITER's $08 clear."""
+    grid = _grid(_pw_swm(), 4)
+    assert [row[2:4] for row in grid] == [[0x08, 0x08]] * 3 + [[0x40, 0x04]]
+
+
+def test_all_ghost_registers_write_the_pulse_width_every_call():
+    """ALLGHOSTREGS' COMMONREGS copies SIDG.PLSW to the chip on every call (player.asm:603-614)."""
+    swm = _pw_swm()
+    swm.features = replace(features_for_driver(0), allghostregs=True)
+    assert _grid(swm, 1)[0][2:4] == [0x00, 0x00]
