@@ -379,8 +379,6 @@ class VoiceState:
     # Carry SETPWID's table step leaves (before ENDPWTB's keyboard track).
     pw_carry: bool = False
 
-    filt_hi: int = 0
-    filt_lo: int = 0
     voice_in_filter: bool = False
 
     # ZP-level frequency ghosts (= SID-Wizard's FREQLO,x / FREQHI,x at
@@ -797,19 +795,12 @@ class SWMPlayer(MemPlayer):
         if not in_new_note_setup:
             self._tick_vibrato(v)
         self._tick_wf_table(v)
-        # HARDRST's ``cpy #$3F`` (player.asm line 1149) leaves carry SET
-        # when CURIFX is in $40..$7F (small-FX in the inst column). The
-        # carry then propagates through ``bmi wasinst`` -> ``and (CTRL)
-        # ; beq HRENDER`` -> ``jmp WFARPTB`` -> ``dec ARPSCNT ; bpl
-        # SKIPWFT`` -> ``jmp ENDWFTB`` (none affect carry) into ``adc
-        # DETUNER`` = +1 on SID FREQ_LO. Only matters when SKIPWFT was
-        # taken (row-read's CMP #$80 / CMP #$E0 overwrites carry).
-        #
-        # The cpy #$3F runs only when HARDRST enters NEWNOTE — i.e.:
-        # CURNOT in 1..$5F (pitched note, not NOP, not note-FX),
-        # CURFX2 != $03 (not big-FX portamento), SLIDEVIB != $FF (not
-        # NPORTAM pre-flag). Any other path takes NONEWNO -> CNTPLAY
-        # and never executes cpy #$3F.
+        # HARDRST's NEWNOTE path (player.asm:1526-1543) reaches HRENDER -> WFARPTB with the
+        # carry of its last compare: ``cpy #$3F`` on CURIFX, or, when HARDRESTYPES' ``beq
+        # prevIns`` skips that for an empty instrument column, ``cpy #$03`` on CURFX2. Nothing
+        # on to SKIPWFT's ``jmp ENDWFTB`` touches it, so WRPITCH's ``adc DETUNER`` adds it.
+        # NEWNOTE runs for a pitched CURNOT ($01..$5F) without big-FX portamento, NPORTAM
+        # (SLIDEVIB $FF) or legato (CURIFX $3F).
         prow = v.pending_row
         if (
             v.skipwft_this_tick
@@ -820,10 +811,13 @@ class SWMPlayer(MemPlayer):
             and 1 <= prow.note < 0x60
             and prow.fx != 0x03
             and v.slide_vib != 0xFF
-            and prow.instrument is not None
-            and 0x40 <= prow.instrument <= 0x7F
+            and prow.instrument != 0x3F
         ):
-            v.wf_pitch_carry = True
+            ifx = prow.instrument or 0
+            if ifx or not self.features.hardrestypes:
+                v.wf_pitch_carry = ifx >= 0x3F
+            else:
+                v.wf_pitch_carry = (prow.fx or 0) >= 0x03
         if not in_new_note_setup:
             self._setpwid(v)
             self._tick_filt_table(v)
@@ -1204,17 +1198,7 @@ class SWMPlayer(MemPlayer):
                     self._start_note(v, instrument_selected)
                     started_note = True
             elif note == GATE_OFF_FX:
-                # SID-Wizard's NGATEOF (player.asm line 2495) sets
-                # PTNGATE=$FE AND immediately AND-masks WFGHOST with
-                # $FE — clearing the gate bit on the SID CTRL ghost
-                # in the SAME frame, not waiting for the next WF
-                # table tick. Critical for chord-heavy instruments
-                # paced by arp_speed where many frames may elapse
-                # between WF reads. (The gateoff_wf/gateoff_pw
-                # pointer branch isn't modelled — all four fixture
-                # instruments have those bytes at $00.)
-                v.ptn_gate = 0xFE
-                v.sid_ctrl &= 0xFE
+                self._ngateof(v)
             elif note == GATE_ON_FX:
                 # NGATEON (player.asm line 2489): PTNGATE=$FF AND
                 # immediately ORs the gate bit into WFGHOST.
@@ -1586,8 +1570,6 @@ class SWMPlayer(MemPlayer):
     def _set_cutoff_hi(self, value: int) -> None:
         """Write CTFH_GHO (player.asm:2179), the single global cutoff-high ghost."""
         self.filter_cutoff_hi = value & 0xFF
-        if self.filter_controller_voice is not None:
-            self.filter_controller_voice.filt_hi = value & 0xFF
 
     def _set_filter_routing(self, v: VoiceState, filtered: bool) -> None:
         """SETFLTP (player.asm:1999-2008): OR / AND this voice's FSWITCH routing bit."""
@@ -1596,6 +1578,28 @@ class SWMPlayer(MemPlayer):
             self.filter_switch |= bit
         else:
             self.filter_switch &= ~bit & 0xFF
+
+    def _ngateof(self, v: VoiceState) -> None:
+        """NGATEOF (player.asm:3117-3175): gate off, or jump the tables to the gate-off pointers.
+
+        Under GATEOFFPTR a nonzero WF pointer replaces the gate-off: WFTPOS
+        takes it and PTNGATE / WFGHOST stay, so the gate follows the table.
+        A zero one ANDs PTNGATE and WFGHOST with $FE in the same frame. Either
+        way nonzero PW and filter pointers then set PWTPOS, and FLTPOSI when
+        this track controls the filter.
+        """
+        ins = v.instrument
+        if not self.features.gateoffptr or not ins.gateoff_wf:
+            v.ptn_gate = 0xFE
+            v.sid_ctrl &= 0xFE
+        if not self.features.gateoffptr:
+            return
+        if ins.gateoff_wf:
+            v.wf_pos = ins.gateoff_wf
+        if ins.gateoff_pw:
+            v.pw_pos = ins.gateoff_pw
+        if ins.gateoff_filt and self.filter_controller_voice is v:
+            self.filt_pos = ins.gateoff_filt
 
     def _report_unsupported(self, v: VoiceState, column: str, code: int) -> None:
         """Record + warn (once per ``(column, code)``) that ``code`` is unmodelled."""
@@ -1692,8 +1696,10 @@ class SWMPlayer(MemPlayer):
 
         Any byte but $00 / $FF claims the filter (FLTCTRL := this track,
         FLTPOSI := the table start); $00 routes the voice through the filter
-        without touching either; $FF (or no table) unroutes it and drops
-        control if this track held it. FSWITCH is written nowhere else.
+        without touching either; $FF (or no table) unroutes it, and STOPFLT
+        points FLTPOSI at that $FF if this track holds the filter. FLTCTRL
+        stays, so keyboard tracking still follows the track. FSWITCH is
+        written nowhere else.
         """
         start = self._filt_table_start(v.instrument)
         ft = v.instrument.filter_table
@@ -1703,8 +1709,12 @@ class SWMPlayer(MemPlayer):
         if first not in (0x00, FILT_TABLE_END):
             self.filter_controller_voice = v
             self.filt_pos = start
-        elif first == FILT_TABLE_END and self.filter_controller_voice is v:
-            self.filter_controller_voice = None
+        elif (
+            first == FILT_TABLE_END
+            and self.filter_controller_voice is v
+            and self.swm.filter_stop_rewinds
+        ):
+            self.filt_pos = start
 
     def _setup_vibrato(self, v: VoiceState) -> None:
         """Initialise per-voice vibrato state from the instrument's
@@ -2450,11 +2460,9 @@ class SWMPlayer(MemPlayer):
                 # Set-mode. Extract filter band switches + resonance and
                 # commit cutoff_hi; cutoff_lo resets to 0.
                 cutoff_hi = table[pos + 1] if pos + 1 < len(table) else 0
-                v.filt_hi = cutoff_hi
                 self.filter_cutoff_hi = cutoff_hi
                 self.filter_kbd_track = table[pos + 2] if pos + 2 < len(table) else 0
                 if self.features.finefiltsweep:
-                    v.filt_lo = 0
                     self.filter_cutoff_lo = 0
                 # $D417 high nibble = resonance; low nibble (routing) is
                 # composed per-frame in _emit_writes.
@@ -2482,14 +2490,12 @@ class SWMPlayer(MemPlayer):
             if delta >= 0x80:
                 delta -= 0x100
             if self.features.finefiltsweep:
-                total11 = (v.filt_hi << 3) | (v.filt_lo & 7)
+                total11 = (self.filter_cutoff_hi << 3) | (self.filter_cutoff_lo & 7)
                 total11 = (total11 + delta) & 0x7FF
-                v.filt_lo = total11 & 7
-                v.filt_hi = (total11 >> 3) & 0xFF
-                self.filter_cutoff_lo = v.filt_lo
+                self.filter_cutoff_lo = total11 & 7
+                self.filter_cutoff_hi = total11 >> 3
             else:
-                v.filt_hi = (v.filt_hi + delta) & 0xFF
-            self.filter_cutoff_hi = v.filt_hi
+                self.filter_cutoff_hi = (self.filter_cutoff_hi + delta) & 0xFF
             return
 
     # ---- SID register assembly ---------------------------------------

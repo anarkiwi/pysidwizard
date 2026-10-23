@@ -11,18 +11,5 @@
   "relpath": "MUSICIANS/B/Bayliss_Richard/Sheepoid_DX.sid",
   "right": "format:sidwizard",
   "song": 1
- },
- {
-  "compare": "lead",
-  "frames": 26,
-  "id": "f5eea67b304e",
-  "key": "('first', '6502:edge:856394f69bb6aef749122d7d', '')",
-  "kind": "first",
-  "left": "6502",
-  "md5": "51dbe2a596bd1deecb1841c02f337a34",
-  "reason": "$1117 BEQ $1123 -> $1119: reference frame 17, register $16 fc_hi",
-  "relpath": "MUSICIANS/S/Sta64/Funkito_Reloaded.sid",
-  "right": "format:sidwizard",
-  "song": 1
  }
 ]

@@ -1698,3 +1698,64 @@ def test_a_staccato_hr_leaves_playerzp_at_the_upcoming_instrument():
     swm.patterns[0].rows[2] = Row(note=53, instrument=2)
     p = _play(swm, frames=SETUP_FRAMES + 6)
     assert p._zp is p._image(swm.instruments[1])  # pylint: disable=protected-access
+
+
+@pytest.mark.parametrize(
+    "instrument, fx, hardrestypes, carry",
+    [
+        (None, None, True, False),
+        (None, 0x02, True, False),
+        (None, 0x07, True, True),
+        (None, 0x07, False, False),
+        (0x40, None, True, True),
+        (0x01, 0x07, True, False),
+    ],
+)
+def test_hardrst_leaves_its_last_compare_carry_for_a_skipwft_wrpitch(
+    instrument, fx, hardrestypes, carry
+):
+    """NEWNOTE's ``cpy #$03`` or ``cpy #$3F`` (player.asm:1527-1537) is the carry WRPITCH adds."""
+    p = _play(_toy_swm(), frames=SETUP_FRAMES + 1)
+    p.features = dataclasses.replace(p.features, hardrestypes=hardrestypes)
+    v = p.voices[0]
+    v.hr_timer, v.arp_speed_counter, v.wf_pitch_carry = 0, 5, not carry
+    v.pending_row = Row(note=50, instrument=instrument, fx=fx)
+    p._tick_note_setup(v, 0, 2)  # pylint: disable=protected-access
+    assert v.skipwft_this_tick
+    assert v.wf_pitch_carry is carry
+
+
+def _gate_off_swm(**pointers) -> SWMFile:
+    swm = _toy_swm()
+    ins = swm.instruments[0]
+    ins.wf_table = bytes([0x41, 0x00, 0x00, 0xFE, 0x10, 0x00, 0x21, 0x00, 0x00, 0xFE, 0x16, 0x00])
+    ins.pw_table = bytes([0x88, 0x00, 0x00, 0x84, 0x00, 0x00])
+    for name, value in pointers.items():
+        setattr(ins, name, value)
+    return swm
+
+
+def test_a_gate_off_wf_pointer_jumps_the_wf_table_and_keeps_the_gate():
+    """NGATEOF's ``bne SETGOFF`` (player.asm:3121) moves WFTPOS instead of clearing PTNGATE."""
+    gated = _play(_gate_off_swm(gateoff_wf=0x16), frames=SETUP_FRAMES + 9)
+    plain = _play(_gate_off_swm(), frames=SETUP_FRAMES + 9)
+    assert gated.voices[0].ptn_gate == 0xFF
+    assert gated.regs[4] == 0x21
+    assert plain.voices[0].ptn_gate == 0xFE
+    assert plain.regs[4] == 0x40
+
+
+def test_gate_off_pw_and_filter_pointers_follow_the_wf_one():
+    """chPWgof / chFlTrk (player.asm:3127-3173) run whether or not the WF pointer was set."""
+    p = _play(_gate_off_swm(gateoff_pw=0x1A, gateoff_filt=0x30), frames=SETUP_FRAMES + 1)
+    v = p.voices[0]
+    p.filter_controller_voice, p.filt_pos = v, 0x20
+    p._ngateof(v)  # pylint: disable=protected-access
+    assert (v.ptn_gate, v.pw_pos, p.filt_pos) == (0xFE, 0x1A, 0x30)
+    p.filter_controller_voice = p.voices[1]
+    p._ngateof(v)  # pylint: disable=protected-access
+    assert p.filt_pos == 0x30
+    p.features = dataclasses.replace(p.features, gateoffptr=False)
+    v.pw_pos = 0x13
+    p._ngateof(v)  # pylint: disable=protected-access
+    assert v.pw_pos == 0x13

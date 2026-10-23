@@ -21,7 +21,12 @@ from pysidwizard import (
 from pysidwizard.features import features_for_driver
 from pysidwizard.formats import FORMAT
 from pysidwizard.player import NOTE_FREQ_HI, NOTE_FREQ_LO, TRACK_STRIDE, SWMPlayer, freq_tables
-from pysidwizard.sidreader import _first_frame_freq_by_track, _play_gate, _player_bases
+from pysidwizard.sidreader import (
+    _filter_stop_rewinds,
+    _first_frame_freq_by_track,
+    _play_gate,
+    _player_bases,
+)
 from tests._hvsc_fetch import resolve
 
 
@@ -329,3 +334,20 @@ def test_gated_player_ticks_on_alternate_calls(gate, first):
     assert [row[:0x18] for row in gated[:first]] == [[0x08] * 0x18] * first
     assert gated[first:] == [row for row in ungated for _ in range(2)]
     assert _grid(replace(swm, play_gate=gate).subtune(0), 2 * 20 + first) == gated
+
+
+@pytest.mark.parametrize(
+    "tail, rewinds",
+    [(bytes([0xEC, 0x97, 0x14, 0xD0, 0x03]), True), (bytes([0xBD, 0x88, 0x10]), False)],
+)
+def test_stopflt_is_read_from_the_player_code(tail, rewinds):
+    """SETFLTP's ``bne wriFswi`` falls into STOPFLT's ``cpx FLTCTRL`` (player.asm:2003), 1.7 on."""
+    setfltp = bytes.fromhex("c9fff00e8e97148c9b14bd87100d0711d006")
+    assert _filter_stop_rewinds(b"\x00" * 8 + setfltp + tail) is rewinds
+    assert _filter_stop_rewinds(b"\x00" * 8) is True
+
+
+def test_parse_sid_reads_stopflt_from_the_entered_player():
+    """A pre-1.7 export's SETFLTP leaves FLTPOSI walking past an $FF-first filter table."""
+    data = _tune("MUSICIANS/S/Sta64/Funkito_Reloaded.sid")
+    assert parse_sid_song(data, 1).filter_stop_rewinds is False

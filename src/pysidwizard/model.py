@@ -724,6 +724,10 @@ class SWMFile:
     # with ``eor #mask`` each call and returns unless bit 7 equals ``play_sign``; empty when it
     # always plays.
     play_gate: Tuple[int, ...] = ()
+    # Whether SETFLTP has STOPFLT (player.asm:2003-2005): a filter table starting $FF on the
+    # filter-controller track points FLTPOSI at that $FF. Without it FLTCTRL and FLTPOSI stay,
+    # so the walk goes on through whatever instrument the track plays next.
+    filter_stop_rewinds: bool = True
     # The build flags read from a ``.sid``'s player code; None for a bare ``.swm`` (the driver byte's build).
     features: Optional[PlayerFeatures] = None
     # The instrument INSPTLO/HI slot 0 points at in a ``.sid`` image, when it is not instrument 1 (which a bare ``.swm`` and the exporter's own link imply).
@@ -782,6 +786,7 @@ class SWMFile:
             sid_init=self.sid_init,
             filter_init=self.filter_init,
             play_gate=self.play_gate,
+            filter_stop_rewinds=self.filter_stop_rewinds,
             features=self.features,
             freq_lo_image=self.freq_lo_image,
             freq_hi_image=self.freq_hi_image,
