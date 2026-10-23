@@ -34,6 +34,7 @@ from pysidwizard.player import (
     NOTE_FREQ_HI,
     NOTE_FREQ_LO,
     SWMPlayer,
+    VoiceState,
     freq_tables,
 )
 
@@ -1469,3 +1470,148 @@ def test_an_abandoned_wf_jump_keeps_the_jump_compare_carry(target, carry):
     v.wf_pos, v.arp_speed_counter = INST_WF_TABLE_POS + 3, 0
     p._tick_wf_table(v)  # pylint: disable=protected-access
     assert v.wf_pitch_carry is carry
+
+
+def test_the_slot_0_instrument_is_the_one_curins_0_walks():
+    """HRENDER loads PLAYERZP from INSPTLO/HI slot 0 (player.asm:1594), which an image may point away from instrument 1."""
+    blank = Instrument(control=0x1A, hr_decay=0xF, sustain=0xF, first_waveform=0x09)
+    swm = _toy_swm()
+    swm.patterns[0].rows[0] = Row(note=49)
+    linked = SWMPlayer(swm).render_grid(1)[0]
+    swm.dummy_instrument = blank
+    own = SWMPlayer(swm).render_grid(1)[0]
+    # WFTPOS is 0, so RDWFROW reads header bytes 0..2: control, then HR-AD as a relative arp.
+    assert (linked[0], linked[1]) == (NOTE_FREQ_LO[0], NOTE_FREQ_HI[0])
+    assert (own[0], own[1]) == (NOTE_FREQ_LO[0x0F], NOTE_FREQ_HI[0x0F])
+    assert swm.subtune(0).dummy_instrument is blank
+
+
+def test_a_track_tempo_set_at_tick_2_rows_from_the_next_frame():
+    """The frame-start ``sbc TEMPOTBL`` (player.asm:1356) already sees the TICK_2 fx's tempo."""
+    swm = _fx_swm(0x13, 0x03)
+    swm.subtune_tempos = [(straight_tempo(6), straight_tempo(6))]
+    p = _play(swm, frames=SETUP_FRAMES + 1)
+    assert (p.voices[0].tempo_left, p.voices[0].pattern_row) == (3, 1)
+    p.play_frame()
+    assert p.voices[0].pattern_row == 2, "SPDCNT=3 meets the new $83 slot: TICK_0 reads row 1"
+
+
+@pytest.mark.parametrize(
+    "left_end,toggle,tempo,counter,match,next_toggle",
+    [
+        (False, 0, 4, 4, True, 1),  # funk slot reached exactly: step to the right slot
+        (False, 0, 4, 5, False, 0),  # funk slot passed: no zero, no overflow
+        (False, 1, 2, 3, True, 0),  # bit-7 right slot passed: overflow rewinds to TMPBASE
+        (True, 0, 4, 5, True, 0),  # single tempo passed
+        (True, 0, 4, 3, False, 0),
+    ],
+)
+def test_tempo_match_is_the_sbc_zero_or_overflow(
+    left_end, toggle, tempo, counter, match, next_toggle
+):
+    v = VoiceState(channel=0, tempo_left_end=left_end, tempo_toggle=toggle, speed_counter=counter)
+    assert SWMPlayer._tempo_match(v, tempo) is match  # pylint: disable=protected-access
+    assert v.tempo_toggle == next_toggle
+    assert v.speed_counter == (0 if match else counter)
+
+
+# Toy PW table base: header, three WF-table bytes and their terminator.
+_PW = 0x10 + 4
+
+
+@pytest.mark.parametrize(
+    "pw_table,pos,pw_lo,count,carry,after",
+    [
+        (b"\x10\x20\x00", _PW, 0xF0, 0, True, (0x09, 0x10, _PW)),  # PWSWEEP's adc carries
+        (b"\x10\x20\x00", _PW, 0x00, 0, False, (0x08, 0x20, _PW)),
+        (b"\x10\x20\x00", _PW, 0x00, 0x10, True, (0x08, 0x00, _PW + 3)),  # cmp PWEEPCNT equal
+        (b"\x88\x00\x00", _PW, 0x00, 0, False, (0x08, 0x00, _PW + 3)),  # SETPULW via bcc
+        (b"", _PW, 0x00, 0, True, (0x08, 0x00, _PW)),  # $FF end
+        (b"\xfe" + bytes([_PW]) + b"\x00", _PW, 0x00, 0, True, (0x08, 0x00, _PW)),  # self-jump
+        (b"\x88\x40\x00\xfe" + bytes([_PW]) + b"\x00", _PW + 3, 0, 0, False, (0x08, 0x40, _PW + 3)),
+        (b"\xfe" + bytes([_PW + 3]) + b"\x00\x10\x20\x00", _PW, 0, 0, True, (0x08, 0x00, _PW + 3)),
+    ],
+)
+def test_a_skipwft_frame_adds_the_carry_setpwid_leaves(pw_table, pos, pw_lo, count, carry, after):
+    """SKIPWFT's ``jmp ENDWFTB`` (player.asm:2409) reaches WRPITCH's ``adc DETUNER`` with SETPWID's carry."""
+    swm = _toy_swm()
+    swm.instruments[0].pw_table = pw_table
+    p = _play(swm, frames=SETUP_FRAMES + 1)
+    p.features = dataclasses.replace(p.features, pwkeybtrack=False)
+    v = p.voices[0]
+    v.pw_hi, v.pw_lo, v.pw_pos, v.pw_sweep_count = 0x08, pw_lo, pos, count
+    v.skipwft_this_tick, v.wf_pitch_carry = True, not carry
+    p._setpwid(v)  # pylint: disable=protected-access
+    assert v.wf_pitch_carry is carry
+    assert (v.pw_hi, v.pw_lo, v.pw_pos) == after
+    v.skipwft_this_tick, v.wf_pitch_carry = False, not carry
+    p._setpwid(v)  # pylint: disable=protected-access
+    assert v.wf_pitch_carry is (not carry), "a read WF row sets its own carry"
+
+
+@pytest.mark.parametrize(
+    "kbd_track,pw_hi,carry", [(0, 0xFF, False), (0x10, 0xFF, True), (0x10, 0x00, False)]
+)
+def test_pwkeybtrack_carry_is_endpwtbs_adc(kbd_track, pw_hi, carry):
+    """ENDPWTB's ``clc`` then ``adc PWHIGHO`` (player.asm:2377-2386) sets the carry under PWKEYBTRACK."""
+    swm = _toy_swm()
+    swm.instruments[0].pw_table = b""
+    p = _play(swm, frames=SETUP_FRAMES + 1)
+    p.features = dataclasses.replace(p.features, pwkeybtrack=True)
+    v = p.voices[0]
+    v.pw_hi, v.pw_kbd_track, v.pw_pos = pw_hi, kbd_track, _PW
+    v.skipwft_this_tick = True
+    p._setpwid(v)  # pylint: disable=protected-access
+    assert v.pw_carry and v.wf_pitch_carry is carry
+
+
+@pytest.mark.parametrize("arp_speed", [0x40, 0x80, 0xC0])
+def test_multispeed_walks_the_pw_table_for_either_flag(arp_speed):
+    """MULTIFI's ``jmp FILTPRG`` falls through into SETPWID (player.asm:1321-1327)."""
+    swm = _toy_swm()
+    swm.instruments[0].pw_table = b"\x10\x20\x00"
+    swm.instruments[0].arp_speed = arp_speed
+    p = _play(swm, frames=SETUP_FRAMES + 2)
+    v = p.voices[0]
+    before = v.pw_lo
+    p._mulcntp(v)  # pylint: disable=protected-access
+    assert v.pw_lo == (before + 0x20) & 0xFF
+
+
+@pytest.mark.parametrize(
+    "slide_vib,vibratotypes", [(0x10, True), (0x20, True), (0x30, True), (0x00, False)]
+)
+def test_normvib_runs_for_every_positive_slidevib(slide_vib, vibratotypes):
+    """``ldy SLIDEVIB,x ; beq INCVIBR ; bpl NORMVIB`` (player.asm:2086-2089); INCVIBR needs VIBRATOTYPES."""
+    p = _play(_toy_swm(), frames=SETUP_FRAMES + 1)
+    p.features = dataclasses.replace(p.features, vibratotypes=vibratotypes)
+    v = p.voices[0]
+    v.slide_vib, v.vibrato_delay_counter, v.vibrato_offset = slide_vib, -1, 0
+    v.vibrato_freq_counter, v.vibrato_period = 4, 8
+    v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = 2, 0
+    p._tick_vibrato(v)  # pylint: disable=protected-access
+    assert (v.vibrato_offset, v.vibrato_freqmod_lo) == (2, 2)
+
+
+@pytest.mark.parametrize(
+    "vibratotypes,control,counter",
+    [(False, 0x30, 3), (True, 0x10, 3), (True, 0x20, 6), (True, 0x30, 0)],
+)
+def test_setvibr_starts_vibracnt_by_vibrato_type(vibratotypes, control, counter):
+    """SETVIBR (player.asm:2894-2911): a quarter period, or with VIBRATOTYPES half for $20 and none for $30."""
+    swm = _toy_swm()
+    swm.instruments[0].control = control
+    swm.instruments[0].vibrato = 0x46
+    p = _play(swm, frames=SETUP_FRAMES + 1)
+    p.features = dataclasses.replace(p.features, vibratotypes=vibratotypes)
+    v = p.voices[0]
+    p._setup_vibrato(v)  # pylint: disable=protected-access
+    assert (v.slide_vib, v.vibrato_period, v.vibrato_freq_counter) == (control, 12, counter)
+
+
+def test_a_vibrato_delay_with_bit_7_starts_at_once():
+    """SETVIB0 stores the delay byte whole and NORMVIB's ``bmi DOVIBRA`` tests it (player.asm:2890, 2105)."""
+    swm = _toy_swm()
+    swm.instruments[0].vibrato_delay = 0x80
+    p = _play(swm, frames=SETUP_FRAMES + 1)
+    assert p.voices[0].vibrato_delay_counter < 0

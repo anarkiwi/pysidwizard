@@ -31,7 +31,14 @@ from pysidwizard import (
 from pysidwizard.constants import AUTHOR_LEN, AUTHOR_POS, SWM_MAGIC, TUNE_HEADER_SIZE
 from pysidwizard.model import encode_sequence, pack_pattern
 from pysidwizard.player import FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
-from pysidwizard.sidreader import _filter_init, _filter_table_end, _freq_table_tail
+from pysidwizard.sidreader import (
+    _decode_instruments,
+    _decode_player_instruments,
+    _filter_init,
+    _filter_table_end,
+    _freq_table_tail,
+    _memory_accessors,
+)
 from tests._hvsc_fetch import HVSC_ROOT
 
 LOAD = 0x1000
@@ -946,3 +953,58 @@ def test_known_swp_file_parses_and_plays(rel):
         player = SWMPlayer(swm.subtune(n))
         for _ in range(500):
             player.play_frame()
+
+
+_BLANK = Instrument(control=0x1A, hr_decay=0xF, sustain=0xF, first_waveform=0x09)
+_REAL = Instrument(control=0x10, attack=2, wf_table=bytes([0x41, 0x00, 0x00]))
+
+
+_SLOTS = LOAD + 0x60
+
+
+def _slot_image(slot0: int, slot1: int):
+    """The blank and the real instrument at LOAD, then one instrument's ``inst_lo`` / ``inst_hi`` at _SLOTS."""
+    blank = _BLANK.encode() + b"\xff"
+    body = blank + _REAL.encode() + b"\xff"
+    mem = bytearray(0x80)
+    mem[: len(body)] = body
+    addrs = {"blank": LOAD, "real": LOAD + len(blank), "stale": 0x7F00}
+    for k, which in enumerate((slot0, slot1)):
+        mem[_SLOTS - LOAD + k] = addrs[which] & 0xFF
+        mem[_SLOTS - LOAD + 2 + k] = addrs[which] >> 8
+    return _memory_accessors(bytes(mem), LOAD, 0), body, LOAD + len(mem)
+
+
+def test_slot_0_decodes_where_it_is_not_instrument_1():
+    """PLAYERZP reads INSPTLO/HI slot 0 for CURINS=0; the exporter's link to slot 1 is not guaranteed."""
+    (byte, chunk), body, end = _slot_image("blank", "real")
+    (real,), dummy = _decode_instruments(byte, chunk, _SLOTS, _SLOTS + 2, 1, LOAD, end)
+    assert real.encode() == _REAL.encode()
+    assert dummy.encode() == _BLANK.encode()
+    assert dummy.ram.startswith(body), "the RAM window runs on past the instrument's own tables"
+    assert real.ram.startswith(body[len(_BLANK.encode()) + 1 :])
+    (byte, chunk), _, end = _slot_image("real", "real")
+    assert _decode_instruments(byte, chunk, _SLOTS, _SLOTS + 2, 1, LOAD, end)[1] is None
+
+
+def test_slot_0_beside_a_stale_unused_instrument_1():
+    """A player-read image can leave an unused instrument's pointer stale while slot 0 holds a blank."""
+    (byte, chunk), _, end = _slot_image("blank", "stale")
+
+    def inrange(addr):
+        return LOAD <= addr < end
+
+    args = (_SLOTS, _SLOTS + 2, 1, _SLOTS, inrange, set())
+    (unused,), dummy = _decode_player_instruments(byte, chunk, *args)
+    assert unused == Instrument(name=b"INST 01")
+    assert dummy.encode() == _BLANK.encode()
+    (byte, chunk), _, end = _slot_image("stale", "stale")
+    assert _decode_player_instruments(byte, chunk, *args)[1] is None
+
+
+def test_parse_sid_instruments_carry_their_ram():
+    sid, exp = _build_reference_image()
+    swm = parse_sid(sid)
+    assert swm.dummy_instrument is None
+    for got, want in zip(swm.instruments, exp["insts"], strict=True):
+        assert got.ram.startswith(want.encode() + b"\xff")

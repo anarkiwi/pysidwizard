@@ -162,3 +162,80 @@ def test_global_cwepcnt_persists_across_controller_swap():
         f"expected {pre_swap + 1}, got {p.filter_sweep_count} "
         "(old per-voice model would have shown 1)"
     )
+
+
+def _filter_instrument(control: int, filter_table: bytes) -> Instrument:
+    return Instrument(
+        control=control,
+        sustain=0xF,
+        first_waveform=Waveform.PULSE | 0x01,
+        wf_table=bytes([0x41, 0x80, 0xFF]),
+        pw_table=b"\x88\x00\x00",
+        filter_table=filter_table,
+    )
+
+
+def _two_row_swm(first: Instrument, second: Instrument, second_row: Row) -> SWMFile:
+    pat_v0 = Pattern(rows=[Row(note=49, instrument=1), second_row] + [Row()] * 6, length=8)
+    silent = Pattern(rows=[Row()] * 8, length=8)
+    return SWMFile(
+        sequences=[[PlayPattern(1), End()], [PlayPattern(2), End()], [PlayPattern(2), End()]],
+        patterns=[pat_v0, silent],
+        instruments=[first, second],
+        subtune_tempos=[(straight_tempo(6), straight_tempo(6))],
+    )
+
+
+def _filt_start(ins: Instrument) -> int:
+    return 0x10 + len(ins.wf_table) + 1 + len(ins.pw_table) + 1
+
+
+def test_a_zero_first_filter_byte_leaves_fltposi_with_the_controller():
+    """SETFLTP's ``beq SWONFL`` (player.asm:1929) routes the voice without touching FLTCTRL / FLTPOSI."""
+    first = _filter_instrument(0x00, bytes([0x90, 0x10, 0x00, 0x90, 0x20, 0x00]))
+    second = _filter_instrument(0x00, bytes([0x00, 0x00, 0x00]))
+    p = SWMPlayer(_two_row_swm(first, second, Row(note=50, instrument=2)))
+    for _ in range(SETUP_FRAMES + 7):
+        p.play_frame()
+    assert p.filter_controller_voice is p.voices[0]
+    assert p.voices[0].instrument is p.swm.instruments[1]
+    assert p.voices[0].voice_in_filter
+    assert p.filt_pos > _filt_start(first), "FLTPOSI kept walking the first instrument's table"
+
+
+def test_the_filter_reset_switch_skips_setfltp():
+    """FILTRESETSW's ``bmi ENDFILRESET`` (player.asm:1894) leaves FLTCTRL and FSWITCH untouched."""
+    ins = _filter_instrument(0x80, bytes([0x90, 0x10, 0x00]))
+    p = SWMPlayer(_two_row_swm(ins, ins, Row(note=50)))
+    for _ in range(SETUP_FRAMES + 1):
+        p.play_frame()
+    assert p.filter_controller_voice is p.voices[0]
+    p.filter_controller_voice = None
+    for _ in range(6):
+        p.play_frame()
+    assert p.voices[0].note == 50
+    assert p.filter_controller_voice is None
+
+
+def test_the_filter_walk_reads_past_the_instrument_through_its_ram():
+    """FLTPOSI indexes PLAYERZP like any table cursor, so it reads the image's following bytes."""
+    ins = _filter_instrument(0x00, bytes([0x00, 0x00, 0x00]))
+    pos = 0x45
+    ram = bytearray(ins.memory_image() + b"\xff")
+    ram += bytes(pos - len(ram)) + bytes([0xC1, 0x22, 0x00])
+    ins.ram = bytes(ram)
+    p = SWMPlayer(_two_row_swm(ins, ins, Row()))
+    for _ in range(SETUP_FRAMES + 1):
+        p.play_frame()
+    v = p.voices[0]
+    p.filter_controller_voice, p.filt_pos = v, pos
+    p._tick_filt_table(v)  # pylint: disable=protected-access
+    assert (p.filter_cutoff_hi, p.filter_resonance) == (0x22, 0x10)
+    assert p.filt_pos == pos + 3
+
+
+def test_ram_that_no_longer_holds_the_instrument_is_ignored():
+    ins = _filter_instrument(0x00, bytes([0x90, 0x10, 0x00]))
+    ins.ram = bytes(0x100)
+    p = SWMPlayer(_two_row_swm(ins, ins, Row()))
+    assert p._image(ins) == ins.memory_image()  # pylint: disable=protected-access
