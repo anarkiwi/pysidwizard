@@ -27,7 +27,7 @@ dependencies = [
     # --format sidwizard --state``). 0.24 adds the survey renderer's
     # ``cadence_info``, the oracle-free ``survey scope`` and the pinned-archive
     # fixture fetch (``fetch_archive_member``) the test suite uses.
-    "pysidtracker>=0.24.0",
+    "pysidtracker>=0.30.0",
 ]
 
 [project.optional-dependencies]

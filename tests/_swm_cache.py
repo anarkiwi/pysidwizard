@@ -9,7 +9,6 @@ from ``tests/``.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -173,15 +172,9 @@ SW17 = (SW17_ZIP_URL, SW17_ZIP_SHA256)
 SW14 = (SW14_ZIP_URL, SW14_ZIP_SHA256)
 
 
-def swm_cache_dir() -> Path:
-    """Local cache directory for the release archives and extracted files."""
-    env = os.environ.get("SIDWIZARD_TUNECACHE")
-    return Path(env) if env else Path(__file__).resolve().parent / ".swmcache"
-
-
 def release_member(release: Tuple[str, str], member: str, sha256: str, name: str) -> Path:
     """``member`` of the pinned ``(url, sha256)`` ``release`` archive, cached as ``name``."""
-    return fetch_archive_member(*release, member, sha256, cache_dir=swm_cache_dir(), name=name)
+    return fetch_archive_member(*release, member, sha256, name=name)
 
 
 def swm_path(tune: str) -> Path:

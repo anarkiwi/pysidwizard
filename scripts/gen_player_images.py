@@ -15,8 +15,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+from pysidtracker.testing import default_cache
+
 REPO = Path(__file__).resolve().parent.parent
-CACHE = REPO / "tests" / ".swmcache"
+CACHE = default_cache("archives", REPO)
 DEFAULT_OUT = REPO / "src" / "pysidwizard" / "player_images.py"
 
 # version -> (archive name, kind, glob of 1-SID exports); the 1.7 smallpack is the pre-1.8 release
