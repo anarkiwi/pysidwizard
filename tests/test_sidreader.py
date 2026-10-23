@@ -31,7 +31,7 @@ from pysidwizard import (
 from pysidwizard.constants import AUTHOR_LEN, AUTHOR_POS, SWM_MAGIC, TUNE_HEADER_SIZE
 from pysidwizard.model import encode_sequence, pack_pattern
 from pysidwizard.player import FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
-from pysidwizard.sidreader import _filter_table_end, _freq_table_tail
+from pysidwizard.sidreader import _filter_init, _filter_table_end, _freq_table_tail
 from tests._hvsc_fetch import HVSC_ROOT
 
 LOAD = 0x1000
@@ -584,6 +584,25 @@ def test_parse_sid_captures_the_bytes_past_freqtbl():
 def test_freq_table_tail_is_empty_when_the_image_has_no_frequency_table():
     """Without FREQTBL in the image the player stays on its shipped-build fallback."""
     assert _freq_table_tail(b"\x00" * 4096) == b""
+
+
+# COMMONREGS through $D418, then CTFHGHO with and without the FILTKBTRACK prelude.
+_COMMONREGS = bytes.fromhex("a90009a08d17d4a90f09008d18d418")
+_KBDTRACK = bytes.fromhex("a900f00aae76997d5094a8b9119c69")
+
+
+@pytest.mark.parametrize(
+    "code, expect",
+    [
+        (_COMMONREGS + bytes.fromhex("a90b69008d16d4a9078d15d4"), (0xA0, 0x0B, 0x07)),
+        (_COMMONREGS + _KBDTRACK + bytes.fromhex("0b8d16d460a9078d15d4"), (0xA0, 0x0B, 0x00)),
+        (_COMMONREGS + _KBDTRACK + bytes.fromhex("0ba000f01f"), (0xA0, 0x0B, 0x00)),
+        (bytes(64), (0, 0, 0)),
+    ],
+)
+def test_filter_init_reads_the_operands_initer_leaves(code, expect):
+    """RESONIB / CTFHGHO / CTFLGHO (player.asm:749-797); CTFLGHO only right after ``sta $D416``."""
+    assert _filter_init(bytes(16) + code) == expect
 
 
 def test_parse_sid_exposes_all_subtunes():

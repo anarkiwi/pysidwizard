@@ -710,6 +710,9 @@ class SWMFile:
     freq_hi_image: bytes = b""
     # SID registers ($D400-$D418) as the ``.sid``'s init left them; empty for a bare ``.swm`` (all zero).
     sid_init: bytes = b""
+    # ``(RESONIB, CTFHGHO, CTFLGHO)`` operands as the image holds them: INITER never
+    # resets them (player.asm:749-797), so the first call writes them; zero for a bare ``.swm``.
+    filter_init: Tuple[int, int, int] = (0, 0, 0)
     # ".P00" wrapper name (16-byte PETSCII field from disk); transport metadata, excluded from equality.
     p00_name: bytes = field(default=b"", compare=False)
 
@@ -762,6 +765,7 @@ class SWMFile:
             freq_table_tail=self.freq_table_tail,
             first_frame_freq_by_track=self.first_frame_freq_by_track,
             sid_init=self.sid_init,
+            filter_init=self.filter_init,
             freq_lo_image=self.freq_lo_image,
             freq_hi_image=self.freq_hi_image,
         )
