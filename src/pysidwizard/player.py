@@ -469,6 +469,8 @@ class SWMPlayer(MemPlayer):
             self.freq_lo, self.freq_hi = swm.freq_lo_image, swm.freq_hi_image
         else:
             self.freq_lo, self.freq_hi = freq_tables(self.features, swm.freq_table_tail)
+        # EXPTABH is 11 zero bytes then the image's own FREQTBH (player.asm:2958).
+        self.exptabh = bytes(EXPTABH_FREQTBH_OFFSET) + bytes(self.freq_hi)
         self._unsupported_effects: dict = {}
         super().__init__(b"", 0)
 
@@ -1700,7 +1702,7 @@ class SWMPlayer(MemPlayer):
         """
         y = min(index & 0xFF, EXP_MAX_INDEX)
         if y < EXP_THRESHOLD:
-            return EXPTABH[y], 0
+            return self.exptabh[y], 0
         i = y - EXP_THRESHOLD
         return self.freq_lo[i], self.freq_hi[i]
 
@@ -1714,7 +1716,7 @@ class SWMPlayer(MemPlayer):
         if not self.features.calcvibrato:
             y = min(raw_a & 0xFF, NONCALC_MAX_INDEX)
             if y < NONCALC_THRESHOLD:
-                return (0 if y == 0 else NOTE_FREQ_HI[y - 1]), 0
+                return (0 if y == 0 else self.freq_hi[y - 1]), 0
             i = y - NONCALC_THRESHOLD
             return self.freq_lo[i], self.freq_hi[i]
         # ``adc DPITCH,x ; tay`` (player.asm:2919-2920) keeps the full byte; LOOKUPA's own MAXSLID does the bounding.
@@ -2408,13 +2410,7 @@ class SWMPlayer(MemPlayer):
         for the upcoming emit."""
         ins = v.instrument
         if ins is None:
-            # No instrument loaded yet (voice was woken up by a note-FX
-            # like gate-off / sync before any real note triggered).
-            # Reference captures show AD/SR remain at their post-reset
-            # zeros; the SID-Wizard player simply doesn't touch them
-            # until an instrument is selected.
-            v.sid_ad = 0x00
-            v.sid_sr = 0x00
+            # CURINS=0: LEGATOO's INSPTFX is the only AD/SR writer (player.asm:1326).
             return
         v.in_hr_this_frame = v.hr_timer > 0
         if v.hr_timer > 0:
@@ -2513,8 +2509,8 @@ class SWMPlayer(MemPlayer):
             dpitch = (v.note + v.octave_shift + v.transpose) & 0x7F
             carry = (dpitch + v.pw_kbd_track) >> 8
             idx = (dpitch + v.pw_kbd_track) & 0xFF
-            e_y = EXPTABH[idx] if 0 <= idx < len(EXPTABH) else 0
-            e_ym = EXPTABH[idx - 1] if 0 <= idx - 1 < len(EXPTABH) else 0
+            e_y = self.exptabh[idx]
+            e_ym = self.exptabh[idx - 1] if idx else 0
             term = e_y - e_ym - 1 + carry
             pw_hi_sid = (pw_hi_sid + (term & 0xFF) + (1 if term >= 0 else 0)) & 0xFF
         v.sid_pw_hi = pw_hi_sid
@@ -2549,18 +2545,15 @@ class SWMPlayer(MemPlayer):
             if not (v.triggered or v.zp_dummy):
                 continue
             base = SID_BASE + SID_VOICE_OFFSET[v_idx]
-            # When the voice has no instrument loaded, SID-Wizard's
-            # TICK_2 / CNTPLAY takes the ``ldy CURINS,x; bne STRTINS;
-            # jmp LEGATOO`` branch and LEGATOO ends at WRWFGHO — which
-            # writes ONLY the WAVEFORM/CTRL register. FREQ_LO/HI, PW,
-            # AD, SR are left at whatever the SID was holding.
-            if v.instrument is None and not v.zp_dummy:
-                self._wr(base + 4, v.sid_ctrl)
-                continue
-            # TICK_2 of a legato / portamento / NPORTAM row: SID-Wizard's
-            # LEGATOO -> WRWFGHO writes ONLY $D404 (CTRL). FREQ/PW/AD/SR
-            # are not touched; the chip retains its previous-frame values.
-            if v.in_tick2_legato_this_frame:
+            # With no instrument loaded TICK_2 takes ``ldy CURINS,x; bne STRTINS;
+            # jmp LEGATOO`` (player.asm:1326), as does a legato / portamento /
+            # NPORTAM row: LEGATOO's INSPTFX writes SIDG.AD/SR directly
+            # (WRITEAD / WRITESR / SMALFX2..6) and WRWFGHO writes CTRL, leaving
+            # FREQ and PW at what the chip holds.
+            if (v.instrument is None and not v.zp_dummy) or v.in_tick2_legato_this_frame:
+                if v.adsr_emit_required:
+                    self._wr(base + 5, v.sid_ad)
+                    self._wr(base + 6, v.sid_sr)
                 self._wr(base + 4, v.sid_ctrl)
                 continue
             # During the HR test-bit frame SID-Wizard's STRTSND only
@@ -2599,9 +2592,7 @@ class SWMPlayer(MemPlayer):
             cv = self.filter_controller_voice
             dpitch = (cv.note + cv.octave_shift + cv.transpose) & 0x7F
             idx = (dpitch + self.filter_kbd_track) & 0xFF
-            cutoff_hi += (EXPTABH[idx] if 0 <= idx < len(EXPTABH) else 0) + (
-                (dpitch + self.filter_kbd_track) >> 8
-            )
+            cutoff_hi += self.exptabh[idx] + ((dpitch + self.filter_kbd_track) >> 8)
         self._wr(SID_REG_BASE + 0x16, (cutoff_hi + self.filter_shift + (cutoff_hi >> 8)) & 0xFF)
         self._wr(SID_REG_BASE + 0x17, res_routing & 0xFF)
         self._wr(SID_REG_BASE + 0x18, self.filter_mode_vol & 0xFF)
