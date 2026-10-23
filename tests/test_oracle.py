@@ -115,6 +115,8 @@ TUNES = {
     "lightrider": "MUSICIANS/A/Ash_9/Lightrider.sid",
     # A re-packed image whose INSPTLO/HI slot 0 is not instrument 1, NORMVIB on a $30 vibrato type and a SKIPWFT carry from SETPWID.
     "too_long_on_disk": "MUSICIANS/M/Moellpauk/Too_Long_on_Disk.sid",
+    # A release small-FX on tracks with no instrument yet, through another track's PLAYERZP.
+    "lykia_night_2": "MUSICIANS/C/C0zmo/Lykia_Night_2.sid",
     # Builds other than the header's driver byte names (an edited SWP game player, a headerless export): matched once the flags were read from the player code.
     "arkanoid_remake": "MUSICIANS/C/C0zmo/Arkanoid_Remake.sid",
     "lykia_prologue": "MUSICIANS/C/C0zmo/Lykia_Prologue-Nathans_Journey.sid",

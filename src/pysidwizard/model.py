@@ -444,6 +444,9 @@ class Pattern:
     rows: List[Row] = field(default_factory=list)
     length: Optional[int] = None
     size_override: Optional[int] = None
+    # The 256 bytes PLAYERZP indexes from the pattern's address in a ``.sid`` image;
+    # empty for a bare ``.swm``.
+    ram: bytes = field(default=b"", compare=False, repr=False)
 
     @classmethod
     def decode(

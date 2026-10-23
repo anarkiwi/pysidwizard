@@ -20,6 +20,7 @@ from pysidwizard import (
     SWMUnsupportedEffectWarning,
     Transpose,
     Waveform,
+    pack_pattern,
     parse_swm,
     straight_tempo,
 )
@@ -1615,3 +1616,85 @@ def test_a_vibrato_delay_with_bit_7_starts_at_once():
     swm.instruments[0].vibrato_delay = 0x80
     p = _play(swm, frames=SETUP_FRAMES + 1)
     assert p.voices[0].vibrato_delay_counter < 0
+
+
+def _curins0_swm(row: Row) -> SWMFile:
+    """``_toy_swm`` whose voice 1 plays ``row`` with no instrument ever selected."""
+    swm = _toy_swm()
+    swm.patterns.append(Pattern(rows=[row, Row(), Row()], length=3))
+    swm.sequences = [[PlayPattern(1), End()], [PlayPattern(2), End()], [PlayPattern(2), End()]]
+    return swm
+
+
+@pytest.mark.parametrize("retain,sr", [(False, 0xFF), (True, 0x0F)])
+def test_curins_0_small_fx_reads_the_playerzp_another_track_left(retain, sr):
+    """With CURINS=0 TICK_2 jumps to LEGATOO (player.asm:1752-1754): SETINBL reads PLAYERZP as left.
+
+    Voice 0 runs last each frame, and its TICK_1 HRENDER loads instrument 1
+    (sustain $F, release 0); voice 1's SMALFX6 merges its release nibble into
+    that SR byte next frame unless PLAYER restores the caller's zeropage.
+    """
+    p = SWMPlayer(_curins0_swm(Row(fx=0x6F)))
+    p.features = dataclasses.replace(p.features, retainzeropage=retain)
+    grid = p.render_grid(SETUP_FRAMES + 1)
+    assert grid[SETUP_FRAMES][0x0D] == sr
+
+
+@pytest.mark.parametrize(
+    "code,ad,sr",
+    [(0x2C, 0xC7, None), (0x3C, 0x5C, None), (0x5C, None, 0xC1), (0x6C, None, 0x9C)],
+)
+def test_curins_0_adsr_small_fx_merges_the_playerzp_bytes(code, ad, sr):
+    """SMALFX2/3/5/6 read the other nibble through SETINBH / SETINBL (player.asm:3214-3223)."""
+    p = SWMPlayer(_toy_swm())
+    zp = Instrument(attack=5, decay=7, sustain=9, release=1)
+    p._zp = p._image(zp)  # pylint: disable=protected-access
+    v = VoiceState(channel=1)
+    p._apply_small_fx(v, code)  # pylint: disable=protected-access
+    assert v.adsr_emit_required
+    assert (v.sid_ad if ad is not None else v.sid_sr) == (ad if ad is not None else sr)
+
+
+def test_curins_0_vibrato_fx_reads_the_playerzp_instrument():
+    """VIBAMFX's SETINBH (Y=5) and FORCVIB's control byte come through PLAYERZP.
+
+    player.asm:3338-3346.
+    """
+    p = SWMPlayer(_toy_swm())
+    p._zp = p._image(Instrument(control=0x20, vibrato=0x03))  # pylint: disable=protected-access
+    v = VoiceState(channel=1)
+    p._apply_small_fx(v, 0x84)  # pylint: disable=protected-access
+    assert (v.slide_vib, v.vibrato_period) == (0x20, 6)
+
+
+def test_tick_0_points_playerzp_at_the_packed_pattern():
+    """TICK_0 / TICK_1 load PLAYERZP from PPTRLO/HI (player.asm:1388, 1628)."""
+    swm = _curins0_swm(Row(fx=0x6F))
+    swm.sequences[0] = [PlayPattern(2), End()]
+    swm.patterns[1].rows[2] = Row(note=0x7E, fx=0x2A)
+    p = SWMPlayer(swm)
+    p.features = dataclasses.replace(p.features, retainzeropage=False)
+    p.play_frame()
+    packed = pack_pattern(swm.patterns[1].encode_unpacked())
+    assert p._zp == packed + b"\xff"  # pylint: disable=protected-access
+    assert p.render_grid(SETUP_FRAMES)[-1][0x06] == (packed[4] & 0xF0) | 0x0F == 0xFF
+
+
+def test_a_sid_pattern_image_reads_past_its_terminator():
+    """A ``.sid`` pattern's PLAYERZP window carries the image bytes after its $FF."""
+    swm = _toy_swm()
+    pattern = swm.patterns[0]
+    packed = pack_pattern(pattern.encode_unpacked()) + b"\xff"
+    pattern.ram = packed + b"\x05\x99"
+    assert SWMPlayer(swm)._pattern_image(pattern) == pattern.ram  # pylint: disable=protected-access
+    pattern.ram = b"\x00" + packed
+    assert SWMPlayer(swm)._pattern_image(pattern) == packed  # pylint: disable=protected-access
+
+
+def test_a_staccato_hr_leaves_playerzp_at_the_upcoming_instrument():
+    """HRGTOFF's staccato ``rts`` (player.asm:1586) precedes HRENDER's reload of CURINS."""
+    swm = _hr_timer_swm(0x18)
+    swm.instruments.append(dataclasses.replace(swm.instruments[0], control=0x1D))
+    swm.patterns[0].rows[2] = Row(note=53, instrument=2)
+    p = _play(swm, frames=SETUP_FRAMES + 6)
+    assert p._zp is p._image(swm.instruments[1])  # pylint: disable=protected-access
