@@ -1002,6 +1002,15 @@ def test_slot_0_beside_a_stale_unused_instrument_1():
     assert _decode_player_instruments(byte, chunk, *args)[1] is None
 
 
+def test_parse_sid_patterns_carry_their_ram():
+    """TICK_0 / TICK_1 point PLAYERZP at a pattern; its window runs on into the next one."""
+    sid, _ = _build_reference_image()
+    first, second = parse_sid(sid).patterns
+    packed = [pack_pattern(p.encode_unpacked()) + b"\xff" for p in (first, second)]
+    assert first.ram.startswith(packed[0] + bytes([len(first.encode_unpacked()) + 1]) + packed[1])
+    assert second.ram.startswith(packed[1])
+
+
 def test_parse_sid_instruments_carry_their_ram():
     sid, exp = _build_reference_image()
     swm = parse_sid(sid)

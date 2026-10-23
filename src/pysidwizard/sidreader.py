@@ -960,20 +960,25 @@ def _decode_dummy(byte, chunk, addrs, bound, inrange) -> Optional[Instrument]:
 
 
 # PLAYERZP's ``lda (PLAYERZP),y`` reach.
-_INST_RAM = 0x100
+_ZP_REACH = 0x100
 
 
 def _decode_at(byte, chunk, addr: int, cursor: int, name: bytes) -> Instrument:
     """The instrument whose body is ``[addr, cursor)``, with its :attr:`~pysidwizard.model.Instrument.ram` window."""
     ins = Instrument.decode(chunk(addr, cursor - addr), name=name)
+    ins.ram = _ram_window(byte, addr)
+    return ins
+
+
+def _ram_window(byte, addr: int) -> bytes:
+    """The bytes ``lda (PLAYERZP),y`` can reach from ``addr``, up to the image's end."""
     ram = bytearray()
-    for a in range(addr, addr + _INST_RAM):
+    for a in range(addr, addr + _ZP_REACH):
         try:
             ram.append(byte(a))
         except _LayoutError:
             break
-    ins.ram = bytes(ram)
-    return ins
+    return bytes(ram)
 
 
 def _scan_pattern_end(byte, start: int) -> int:
@@ -1026,7 +1031,9 @@ def _decode_patterns(byte, chunk, ptn_lo, ptn_hi, pat_amount, load, end, ptr_bas
         length = byte(term + 1)
         if not 0 < length <= 0xFF:
             length = len(unpacked)
-        patterns.append(Pattern.decode(unpacked, length=length))
+        pat = Pattern.decode(unpacked, length=length)
+        pat.ram = _ram_window(byte, addr)
+        patterns.append(pat)
     return patterns, min_pattern
 
 
@@ -1622,6 +1629,7 @@ def _player_patterns(
         if not 0 < length <= 0xFF:
             length = len(unpacked)
         pat = Pattern.decode(unpacked, length=length)
+        pat.ram = _ram_window(byte, addr)
         patterns.append(pat)
         if k in ref_all:
             for row in pat.rows:

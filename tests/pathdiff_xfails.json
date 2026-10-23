@@ -15,19 +15,6 @@
  {
   "compare": "lead",
   "frames": 11,
-  "id": "c7c1b037e4cd",
-  "key": "('first', '6502:edge:c47905995fe1251553b8db97', '')",
-  "kind": "first",
-  "left": "6502",
-  "md5": "1237e33e3ff5ad951b2d1ab4ba642800",
-  "reason": "$1649 BCS $168d -> $168D: reference frame 2, register $0D v2_sr",
-  "relpath": "MUSICIANS/C/C0zmo/Lykia_Night_2.sid",
-  "right": "format:sidwizard",
-  "song": 1
- },
- {
-  "compare": "lead",
-  "frames": 11,
   "id": "d60fe0b96505",
   "key": "('first', '', 'sidwizard:edge:pysidwizard/player.py:SWMPlayer._tick_voice:676>677')",
   "kind": "first",

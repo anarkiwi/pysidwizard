@@ -67,6 +67,7 @@ from .model import (
     SWMFile,
     TempoOverride,
     Transpose,
+    pack_pattern,
 )
 
 # --------------------------------------------------------------------------
@@ -502,8 +503,8 @@ class SWMPlayer(MemPlayer):
         # Chord-table base offsets, one per (1-indexed) chord. Computed
         # once at construction so each ``$7F`` arp hit is an O(1) lookup.
         self._chord_starts: List[int] = _parse_chord_starts(swm.chord_table)
-        # Instrument memory images, keyed by object identity (see _image).
-        self._inst_images: dict[int, bytes] = {}
+        # PLAYERZP images of instruments and patterns, keyed by object identity.
+        self._zp_images: dict[int, bytes] = {}
 
         # Per-voice state. SID-Wizard assigns the SWM sequences in the
         # order [V0, V1, V2] for subtune 0 (sequences 0, 1, 2).
@@ -574,6 +575,10 @@ class SWMPlayer(MemPlayer):
         self.filter_controller_voice: Optional[VoiceState] = None
         # FLTPOSI: the one filter-table cursor, read through the controller's PLAYERZP.
         self.filt_pos = 0
+        # PLAYERZP's target: the bytes ``lda (PLAYERZP),y`` reads. One pointer shared by
+        # every track, so a TICK_2 with CURINS=0 (LEGATOO's INSPTFX) reads whatever the
+        # last pattern or instrument load left; empty until the first load.
+        self._zp = b""
         # CWEPCNT (player.asm ~line 1761) is a single global byte —
         # the sweep-cycle countdown for whichever voice currently owns
         # FilterProgram. Mirror that here as a player-level (not per-
@@ -603,6 +608,9 @@ class SWMPlayer(MemPlayer):
         rows or running HR setup.
         """
         is_multispeed_tick = self.swm.frame_speed > 1 and self._multispeed_phase != 0
+        if self.features.retainzeropage:
+            # PLAYER restores the caller's PLAYERZP on return (player.asm:1229-1235).
+            self._zp = b""
         # SID-Wizard's PLAYER calls DOTRACK in REVERSE voice order
         # (channel 3, 2, 1 = v2, v1, v0; player.asm lines 613-656).
         # State updates that race across voices in the same frame
@@ -659,6 +667,9 @@ class SWMPlayer(MemPlayer):
             # pinned (player.asm ``dec SPDCNT,x``); the held note's
             # tables keep running on subsequent frames.
             self._advance_row(v)
+        if pre_incr_sc <= 1 and v.pattern is not None:
+            # TICK_0 / TICK_1 point PLAYERZP at CURPTN (player.asm:1388, 1628).
+            self._zp = self._pattern_image(v.pattern)
         if pre_incr_sc == min(1, self._apply_tick(current_tempo)) and self._ends_here(v):
             # PTN_SEQ (player.asm:1653): the tick after the row read looks
             # ahead for the pattern's $FF; an orderlist $FE then pins SPDCNT
@@ -693,6 +704,8 @@ class SWMPlayer(MemPlayer):
                 applied_portamento_row = True
             self._apply_row(v, v.pending_row)
             v.pending_row = None
+            if v.instrument is not None:
+                self._zp = self._image(v.instrument)
         if applied_portamento_row:
             # CLEGATO -> LEGATOO -> INSPTFX -> WRWFGHO: only the SID
             # waveform / control register gets a fresh write this frame.
@@ -732,6 +745,9 @@ class SWMPlayer(MemPlayer):
         # ADSR, and DOES NOT advance the per-voice instrument tables
         # for ``HR_FRAMES`` (1) frame. The tables resume on the first
         # post-HR frame.
+        if v.instrument is not None:
+            # STRTINS / HRENDER / CNTPLAY load PLAYERZP from CURINS.
+            self._zp = self._image(v.instrument)
         if v.hr_timer > 0:
             self._compose_sid_writes(v)
             self._run_deferred_fx(v)
@@ -746,6 +762,8 @@ class SWMPlayer(MemPlayer):
         # WFARPTB never runs) so we also skip the per-instrument arp
         # counter update.
         if self._is_staccato_hr_tick(v, pre_incr_sc, apply_sc):
+            # HRGTOFF's staccato ``rts`` leaves PLAYERZP at the upcoming instrument.
+            self._zp = self._image(self._upcoming_hr_instrument(v, v.pending_row))
             self._maybe_emit_pre_hr(v, v.pending_row, pre_incr_sc)
             return
         # New-note setup window: TICK_0 / TICK_1 of a row whose pending
@@ -853,6 +871,7 @@ class SWMPlayer(MemPlayer):
     def _mulcntp(self, v: VoiceState) -> None:
         """MULCNTP's table walk for ``v`` through its PLAYERZP instrument."""
         assert v.instrument is not None
+        self._zp = self._image(v.instrument)
         self._tick_wf_table(v)
         # MULTIFI's FILTPRG falls through to SETPWID (player.asm:1321-1327).
         if v.instrument.arp_speed & 0xC0:
@@ -1320,7 +1339,7 @@ class SWMPlayer(MemPlayer):
             elif fx == 0x07 and fx_value is not None:
                 # BIGFX07 = SMALFX7 (player.asm:3516) selects a chord by its full byte.
                 self._select_chord(v, fx_value)
-            elif fx == 0x08 and fx_value is not None and v.instrument is not None:
+            elif fx == 0x08 and fx_value is not None:
                 # BIGFX08 (player.asm:3518): FORCVIB then SETVIBR on the value byte.
                 self._apply_vibrato_byte(v, fx_value)
             elif fx == 0x0D and fx_value is not None:
@@ -1430,7 +1449,17 @@ class SWMPlayer(MemPlayer):
         # SMALFX2/3/5/6 write SIDG.AD / SIDG.SR directly, taking the OTHER nibble from the current instrument (= what the overrides above model).
         ins = v.instrument
         if high in (0x20, 0x30, 0x50, 0x60):
-            if ins is not None:
+            if ins is None and not keep:
+                # SETINBH / SETINBL (player.asm:3214-3223) read byte 3 / 4 through PLAYERZP.
+                y = 3 if high < 0x40 else 4
+                other = self._zp_byte(v, y) & (0x0F if high in (0x20, 0x50) else 0xF0)
+                merged = other | (low << 4 if high in (0x20, 0x50) else low)
+                if y == 3:
+                    v.sid_ad = merged
+                else:
+                    v.sid_sr = merged
+                v.adsr_emit_required = True
+            elif ins is not None:
                 attack = v.attack_override if v.attack_override is not None else ins.attack
                 decay = v.decay_override if v.decay_override is not None else ins.decay
                 sustain = v.sustain_override if v.sustain_override is not None else ins.sustain
@@ -1451,9 +1480,8 @@ class SWMPlayer(MemPlayer):
             v.arp_speed_reload = low
             v.arp_speed_counter = 0xFF
         elif high == 0x80:
-            # SMALFX8 = VIBAMFX (player.asm:3338): the nibble overrides the instrument vibrato byte's amplitude, then BIGFX08.
-            if ins is not None:
-                self._apply_vibrato_byte(v, (low << 4) | (ins.vibrato & 0x0F))
+            # SMALFX8 = VIBAMFX (player.asm:3338): the nibble overrides PLAYERZP's vibrato byte's amplitude, then BIGFX08.
+            self._apply_vibrato_byte(v, (low << 4) | (self._zp_byte(v, 5) & 0x0F))
         elif high == 0x90:
             # SMALFX9 (player.asm:3349): VIBFREQU := nibble * 2, leaving amplitude alone.
             v.vibrato_period = low << 1
@@ -1517,8 +1545,7 @@ class SWMPlayer(MemPlayer):
         SETVIBR derives VIBFREQU / VIBRACNT and the FREQMOD amplitude, which
         SETFMOD leaves at zero for an amplitude nibble of 0 (``beq wrFmodL``).
         """
-        ins = v.instrument
-        v.slide_vib = ins.control & 0x30 if ins is not None else 0
+        v.slide_vib = self._zp_byte(v, 0) & 0x30
         self._setvibr(v, vibrato_byte)
 
     def _setvibr(self, v: VoiceState, vibrato_byte: int) -> None:
@@ -2074,13 +2101,40 @@ class SWMPlayer(MemPlayer):
         holds the instrument's encoding, so a cursor past the instrument's own
         tables reads the image's following bytes as the 6502 does.
         """
-        image = self._inst_images.get(id(ins))
+        image = self._zp_images.get(id(ins))
         if image is None:
             image = ins.memory_image()
             if ins.ram.startswith(image):
                 image = ins.ram
-            self._inst_images[id(ins)] = image
+            self._zp_images[id(ins)] = image
         return image
+
+    def _pattern_image(self, pattern: Pattern) -> bytes:
+        """The packed pattern TICK_0 / TICK_1 point PLAYERZP at (player.asm:1388, 1628).
+
+        Its :attr:`~pysidwizard.model.Pattern.ram` window when that holds the
+        same packing, so a read past the terminator sees the image's bytes.
+        """
+        image = self._zp_images.get(id(pattern))
+        if image is None:
+            image = pack_pattern(pattern.encode_unpacked()) + b"\xff"
+            if pattern.ram.startswith(image):
+                image = pattern.ram
+            self._zp_images[id(pattern)] = image
+        return image
+
+    def _zp_image(self, v: VoiceState) -> bytes:
+        """What ``lda (PLAYERZP),y`` reads during ``v``'s INSPTFX.
+
+        STRTINS loads CURINS's instrument first; with CURINS=0 TICK_2 jumps
+        straight to LEGATOO (player.asm:1752-1754), so PLAYERZP still holds
+        whatever the previous load, on any track, left.
+        """
+        return self._image(v.instrument) if v.instrument is not None else self._zp
+
+    def _zp_byte(self, v: VoiceState, y: int) -> int:
+        image = self._zp_image(v)
+        return image[y] if y < len(image) else 0
 
     @staticmethod
     def _filt_table_start(ins: Instrument) -> int:
