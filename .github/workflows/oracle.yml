@@ -44,7 +44,7 @@ jobs:
       - name: Cache tunes and oracle traces
         uses: anarkiwi/pysidtracker/.github/actions/cache@v0.30.0
         with:
-          key: ${{ hashFiles('tests/test_oracle.py') }}
+          key: ${{ hashFiles('tests/test_oracle.py', 'tests/pathdiff_xfails.json') }}
           sidtrace: "true"
           tunes: tests/test_oracle.py
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pysidwizard"
-version = "0.3.4"
+version = "0.3.5"
 description = "Pure-Python reader, writer, and player for SID-Wizard SWM modules"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,8 +26,9 @@ dependencies = [
     # and chases the state behind them (``python -m pysidtracker.whydiff TUNE
     # --format sidwizard --state``). 0.24 adds the survey renderer's
     # ``cadence_info``, the oracle-free ``survey scope`` and the pinned-archive
-    # fixture fetch (``fetch_archive_member``) the test suite uses.
-    "pysidtracker>=0.30.0",
+    # fixture fetch (``fetch_archive_member``) the test suite uses. 0.31 adds
+    # ``pathdiff`` and its strict-xfail manifest (tests/test_pathdiff.py).
+    "pysidtracker>=0.31.0",
 ]
 
 [project.optional-dependencies]

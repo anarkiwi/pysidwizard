@@ -219,6 +219,27 @@ PYTHONPATH=scripts python -m pysidtracker.survey diff $HVSC .hvsc-survey/tunes.c
     --work .hvsc-survey --render oracle_hvsc:render
 ```
 
+### pathdiff xfails
+
+[`pysidtracker.pathdiff`](https://github.com/anarkiwi/pysidtracker/blob/main/docs/pathdiff.md)
+localises the survey's divergences to the fewest fixes, comparing jennings running
+each tune (`6502`) with the `sidwizard` format. `tests/pathdiff_xfails.json` holds
+one case per top fix; `tests/test_pathdiff.py` runs each as a strict xfail against
+the oracle (`-m oracle`). Regenerate it after a survey:
+
+```bash
+python -m pysidtracker.pathdiff build $HVSC .hvsc-survey/tunes.csv --work .hvsc-survey \
+    --left 6502 --right format:sidwizard --jobs 32
+python -m pysidtracker.pathdiff rank --work .hvsc-survey --right format:sidwizard --explain 10
+python -m pysidtracker.pathdiff xfails --work .hvsc-survey --right format:sidwizard \
+    --manifest tests/pathdiff_xfails.json --top 15 --verify --prune
+```
+
+`build` reads `results.csv`'s `info`, so run the survey with `--render
+scripts/oracle_hvsc.py:render` (its `driver`, `frame_speed` and cadence fields become
+`info:` build-option features), and pass `--force` after a pysidtracker upgrade
+changes the cache format. Existing case ids are kept; `--prune` drops fixed cases.
+
 `.hvsc-survey/` holds copyright-derived traces and is gitignored. When
 `.hvsc-survey/tunes.csv` (or `$PYSIDWIZARD_TUNES_CSV`) and the HVSC tree
 (`$HVSC`, default `/scratch/datasets/hvsc/C64Music`) are present, the unit suite
