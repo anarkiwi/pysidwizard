@@ -102,6 +102,8 @@ TUNES = {
     # WF-arp relative steps whose sum leaves the 96-note table (masked indices 97 / 107 / 109 / 117): matched only once ABSPTCH's ``and #$7F`` replaced a clamp and the tunes' own past-FREQTBL image bytes backed the lookup.
     "argonaut": "MUSICIANS/A/AMB/Argonaut.sid",
     "memory_invaders": "MUSICIANS/C/Chiummo_Gaetano/Memory_Invaders.sid",
+    # Extra build: an abandoned WF-table jump keeps ``cmp #$FE``'s carry, and PORTEND restores the instrument vibrato.
+    "your_fathers_nightmare": "GAMES/S-Z/Your_Fathers_Nightmare.sid",
 }
 
 
@@ -127,23 +129,6 @@ tune_id, oracle_match = make_oracle_fixtures(
 def test_native_render_matches_oracle(oracle_match):  # noqa: F811
     """The native render equals the oracle grid from the first play call on."""
     oracle_match()
-
-
-# #50 detune-carry class: the 6502's WF-table jump compare leaves C set into the
-# frequency add, where the model's carry is clear.
-DIVERGING_TUNE = "GAMES/S-Z/Your_Fathers_Nightmare.sid"
-
-
-@pytest.mark.oracle
-@pytest.mark.xfail(strict=True, reason="#50: WF-table jump leaves the 6502 carry set")
-def test_diverging_tune_explains_itself():
-    """Run with ``--runxfail`` (or read ``build/why/``) for the side-by-side explanation."""
-    assert_oracle_match(
-        DIVERGING_TUNE,
-        _player,
-        frames=FRAMES,
-        report_dir=_WHY,
-    )
 
 
 @pytest.mark.oracle
