@@ -461,8 +461,8 @@ class SWMPlayer(MemPlayer):
 
     def __init__(self, swm: SWMFile, features: Optional[PlayerFeatures] = None) -> None:
         self.swm = swm
-        # The build this module was exported for (SWM driver byte = PLAYERTYPE).
-        self.features = features or features_for_driver(swm.driver_type)
+        # The build this module was exported for: its player code's, else the SWM driver byte's.
+        self.features = features or swm.features or features_for_driver(swm.driver_type)
         if swm.freq_lo_image and swm.freq_hi_image:
             self.freq_lo, self.freq_hi = swm.freq_lo_image, swm.freq_hi_image
         else:

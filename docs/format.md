@@ -354,6 +354,12 @@ the first play call:
 - Build gates: without ARPSPEEDSUPP, WF bytes `$00-$0F` are waveforms. Without
   CHORDSUPPORT, arp `$7F` is a relative step. Without WFARP_NOP_SUPP, `$80` is
   absolute pitch 0.
+- A `.sid`'s build flags come from its player code (`SWMFile.features`,
+  `pysidwizard.features.detect_features`), not the header's driver byte: SWP game
+  players are assembled from an edited `settings.cfg`, and some exports carry no
+  header. Each modelled flag is read at its `.if feature.X_ON` site, matched
+  relocation-free in both its on and off form; a flag whose site is missing keeps
+  the driver byte's build.
 
 ### Song selection
 
