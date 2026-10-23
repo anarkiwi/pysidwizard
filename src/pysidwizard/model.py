@@ -512,6 +512,8 @@ class Instrument:
     wf_table: bytes = b""
     pw_table: bytes = b""
     filter_table: bytes = b""
+    # The 256 bytes PLAYERZP indexes from the instrument's address in a ``.sid`` image, its table terminator and whatever follows included; empty for a bare ``.swm``.
+    ram: bytes = field(default=b"", compare=False, repr=False)
 
     def name_str(self) -> str:
         return self.name.decode("latin-1").rstrip(" \x00")
@@ -716,6 +718,8 @@ class SWMFile:
     filter_init: Tuple[int, int, int, int] = (0, 0, 0, 0)
     # The build flags read from a ``.sid``'s player code; None for a bare ``.swm`` (the driver byte's build).
     features: Optional[PlayerFeatures] = None
+    # The instrument INSPTLO/HI slot 0 points at in a ``.sid`` image, when it is not instrument 1 (which a bare ``.swm`` and the exporter's own link imply).
+    dummy_instrument: Optional[Instrument] = None
     # ".P00" wrapper name (16-byte PETSCII field from disk); transport metadata, excluded from equality.
     p00_name: bytes = field(default=b"", compare=False)
 
@@ -772,6 +776,7 @@ class SWMFile:
             features=self.features,
             freq_lo_image=self.freq_lo_image,
             freq_hi_image=self.freq_hi_image,
+            dummy_instrument=self.dummy_instrument,
         )
 
     def author_str(self) -> str:

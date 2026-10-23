@@ -14,32 +14,6 @@
  },
  {
   "compare": "lead",
-  "frames": 9,
-  "id": "b2d4c9a7c996",
-  "key": "('first', '', 'sidwizard:edge:pysidwizard/player.py:SWMPlayer._tick_voice:645>655')",
-  "kind": "first",
-  "left": "6502",
-  "md5": "05c7629924bef69aa4e7b2395adb514f",
-  "reason": "pysidwizard/player.py:645 if v.speed_counter == 0 and not v.sequence_ended: -> 655 || vs: $0AEA BEQ $0af0 -> $0AEC: reference frame 0, register $00 v1_freq_lo",
-  "relpath": "MUSICIANS/M/Moellpauk/Too_Long_on_Disk.sid",
-  "right": "format:sidwizard",
-  "song": 1
- },
- {
-  "compare": "lead",
-  "frames": 12,
-  "id": "b7b0e51280ce",
-  "key": "('first', '', 'sidwizard:edge:pysidwizard/player.py:SWMPlayer._tick_voice:709>725')",
-  "kind": "first",
-  "left": "6502",
-  "md5": "dc57c5813c32cb44a7c6bfadae2cf40c",
-  "reason": "pysidwizard/player.py:710 v.instrument is None -> 725: reference frame 3, register $00 v1_freq_lo",
-  "relpath": "MUSICIANS/S/Street_Tuff/Hardcrap.sid",
-  "right": "format:sidwizard",
-  "song": 1
- },
- {
-  "compare": "lead",
   "frames": 11,
   "id": "c7c1b037e4cd",
   "key": "('first', '6502:edge:c47905995fe1251553b8db97', '')",

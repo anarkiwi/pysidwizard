@@ -115,7 +115,7 @@ from .constants import (
     TUNE_HEADER_SIZE,
     TUNING_TYPE_POS,
 )
-from .errors import SIDFormatError
+from .errors import SIDFormatError, SWMFormatError
 from .features import detect_features, features_for_driver
 from .model import (
     End,
@@ -673,7 +673,7 @@ def _build(
     if inst_lo <= load:
         raise _LayoutError("pointer tables underflow the load address")
 
-    instruments = _decode_instruments(byte, chunk, inst_lo, inst_hi, inst_amount, load, end)
+    instruments, dummy = _decode_instruments(byte, chunk, inst_lo, inst_hi, inst_amount, load, end)
     patterns, min_pattern = _decode_patterns(byte, chunk, ptn_lo, ptn_hi, pat_amount, load, end)
 
     subtune_base = _locate_subtune_table(byte, inst_lo, subtunes, seq_amount, load, min_pattern)
@@ -704,6 +704,7 @@ def _build(
         chord_table,
         tempo_table,
         subtune_tempos,
+        dummy,
     )
 
 
@@ -739,6 +740,7 @@ def _assemble(
     chord_table: bytes,
     tempo_table: bytes,
     subtune_tempos,
+    dummy_instrument: Optional[Instrument] = None,
 ) -> SWMFile:
     """Build the :class:`SWMFile` from decoded regions and the tune header.
 
@@ -770,6 +772,7 @@ def _assemble(
         tempo_table=tempo_table,
         subtune_tempos=subtune_tempos,
         load_address=load,
+        dummy_instrument=dummy_instrument,
         **meta,
     )
 
@@ -833,7 +836,7 @@ def _build_swp(data: bytes, load: int, base: int, swp_off: int) -> SWMFile:
     ptn_hi = swp_base + offs["ptn_hi"]
     subtune_base = swp_base + offs["subtunes"]
 
-    instruments = _decode_instruments(
+    instruments, dummy = _decode_instruments(
         byte, chunk, inst_lo, inst_hi, inst_amount, load, end, ptr_base=swp_base
     )
     patterns, _ = _decode_patterns(
@@ -863,6 +866,7 @@ def _build_swp(data: bytes, load: int, base: int, swp_off: int) -> SWMFile:
         chord_table,
         tempo_table,
         subtune_tempos,
+        dummy,
     )
     # The tune's real author is in the SWP1 block; the SWM1 header's is the template's.
     auth_end = swp_off + AUTHOR_POS + AUTHOR_LEN
@@ -905,29 +909,71 @@ def _filter_table_end(byte, start: int, bound: int) -> Optional[int]:
 def _decode_instruments(
     byte, chunk, inst_lo, inst_hi, inst_amount, load, end, ptr_base=0, reloc_delta=0
 ):
-    """Decode the ``inst_amount`` instruments (1-based; index 0 is the dummy).
+    """Decode the ``inst_amount`` instruments (1-based) and the slot-0 dummy.
 
     Each instrument is a 16-byte header followed by three inline ``$FF``-
     terminated tables (waveform / pulse-width / filter). The body runs to the
     filter table's terminating ``$FF`` row (column 0) and is handed to
-    :meth:`Instrument.decode`.
+    :meth:`Instrument.decode`. Returns ``(instruments, dummy)`` (see
+    :func:`_decode_dummy`).
     """
     instruments: List[Instrument] = []
+    addrs = [
+        _resolve_ptr(byte(inst_lo + k) | (byte(inst_hi + k) << 8), ptr_base, load, end, reloc_delta)
+        for k in range(inst_amount + 1)
+    ]
     for k in range(1, inst_amount + 1):
-        raw = byte(inst_lo + k) | (byte(inst_hi + k) << 8)
-        addr = _resolve_ptr(raw, ptr_base, load, end, reloc_delta)
+        addr = addrs[k]
         if not (load <= addr < end):
             raise _LayoutError(f"instrument {k} pointer {addr:#06x} out of range")
         cursor = _filter_table_end(byte, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), inst_lo)
         if cursor is None:
             raise _LayoutError(f"instrument {k} filter table unterminated")
         try:
-            instruments.append(Instrument.decode(chunk(addr, cursor - addr), name=b"INST %02d" % k))
+            instruments.append(_decode_at(byte, chunk, addr, cursor, name=b"INST %02d" % k))
         except _LayoutError:
             raise
         except Exception as exc:  # SWMFormatError from a malformed body
             raise _LayoutError(f"instrument {k} did not decode: {exc}") from exc
-    return instruments
+    return instruments, _decode_dummy(byte, chunk, addrs, inst_lo, lambda a: load <= a < end)
+
+
+def _decode_dummy(byte, chunk, addrs, bound, inrange) -> Optional[Instrument]:
+    """The instrument INSPTLO/HI slot 0 (``addrs[0]``) points at, where it is not instrument 1.
+
+    PLAYERZP reads slot 0 whenever a path loads CURINS=0 without testing it.
+    The exporter links it to instrument 1 (packdepack.inc:621-633), but a
+    re-packed image can point it elsewhere, e.g. at a blank instrument while
+    instrument 1's own pointer is left stale. ``None`` when slot 0 is
+    instrument 1's pointer or does not hold a decodable instrument.
+    """
+    addr = addrs[0]
+    if addr in addrs[1:2] or not inrange(addr):
+        return None
+    try:
+        cursor = _filter_table_end(byte, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), bound)
+        if cursor is None:
+            return None
+        return _decode_at(byte, chunk, addr, cursor, name=b"INST 00")
+    except SWMFormatError:
+        return None
+
+
+# PLAYERZP's ``lda (PLAYERZP),y`` reach.
+_INST_RAM = 0x100
+
+
+def _decode_at(byte, chunk, addr: int, cursor: int, name: bytes) -> Instrument:
+    """The instrument whose body is ``[addr, cursor)``, with its :attr:`~pysidwizard.model.Instrument.ram` window."""
+    ins = Instrument.decode(chunk(addr, cursor - addr), name=name)
+    ram = bytearray()
+    for a in range(addr, addr + _INST_RAM):
+        try:
+            ram.append(byte(a))
+        except _LayoutError:
+            break
+    ins.ram = bytes(ram)
+    return ins
 
 
 def _scan_pattern_end(byte, start: int) -> int:
@@ -1157,7 +1203,7 @@ def _try_codescan_layout(
     pat_amount = ptn_hi - ptn_lo
     if inst_amount < 0 or pat_amount < 0 or inst_lo <= load or ptn_lo <= load:
         raise _LayoutError("code-scan: implausible table geometry")
-    instruments = _decode_instruments(
+    instruments, dummy = _decode_instruments(
         byte, chunk, inst_lo, inst_hi, inst_amount, load, end, reloc_delta=reloc
     )
     patterns, min_pattern = _decode_patterns(
@@ -1195,6 +1241,7 @@ def _try_codescan_layout(
             chord_table,
             tempo_table,
             subtune_tempos,
+            dummy,
         )
     raise last or _LayoutError("code-scan: no coherent subtune table")
 
@@ -1531,7 +1578,7 @@ def _build_via_player(data: bytes, load: int, base: int) -> SWMFile:
     patterns, ref_inst = _player_patterns(
         byte, chunk, ptn_lo, ptn_hi, pat_amount, data_hi, inrange, ref_all, ref_primary, default_len
     )
-    instruments = _player_instruments(
+    instruments, dummy = _player_instruments(
         byte, chunk, data, swm_pos, ordered, ptn_lo, data_hi, inrange, ref_inst
     )
     chord_table, tempo_table = _player_chord_tempo(image, chunk, swm_header, data_lo)
@@ -1547,6 +1594,7 @@ def _build_via_player(data: bytes, load: int, base: int) -> SWMFile:
         chord_table,
         tempo_table,
         subtune_tempos,
+        dummy,
     )
 
 
@@ -1616,9 +1664,10 @@ def _player_instruments(byte, chunk, data, swm_pos, ordered, ptn_lo, ceil, inran
 
 def _decode_player_instruments(byte, chunk, inst_lo, inst_hi, amount, ceil, inrange, ref_inst):
     instruments: List[Instrument] = []
+    addrs = [byte(inst_lo + k) | (byte(inst_hi + k) << 8) for k in range(amount + 1)]
     for k in range(1, amount + 1):
         name = b"INST %02d" % k
-        addr = byte(inst_lo + k) | (byte(inst_hi + k) << 8)
+        addr = addrs[k]
         if not inrange(addr):
             if k in ref_inst:
                 raise _LayoutError(f"referenced instrument {k} is absent from the image")
@@ -1628,14 +1677,14 @@ def _decode_player_instruments(byte, chunk, inst_lo, inst_hi, amount, ceil, inra
         if cursor is None:
             cursor = ceil
         try:
-            instruments.append(Instrument.decode(chunk(addr, cursor - addr), name=name))
+            instruments.append(_decode_at(byte, chunk, addr, cursor, name=name))
         except _LayoutError:
             raise
         except Exception as exc:  # malformed body
             if k in ref_inst:
                 raise _LayoutError(f"referenced instrument {k} did not decode: {exc}") from exc
             instruments.append(Instrument(name=name))
-    return instruments
+    return instruments, _decode_dummy(byte, chunk, addrs, ceil, inrange)
 
 
 def _player_chord_tempo(image, chunk, swm_header, min_data):

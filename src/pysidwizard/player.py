@@ -261,6 +261,8 @@ class VoiceState:
     tempo_left: int = 6
     tempo_right: int = 6
     tempo_toggle: int = 0  # alternates between left/right for funktempo
+    # Bit 7 on the left slot's TEMPOTBL byte: SPDCNT's match rewinds TMPPOS to it rather than stepping to the right slot.
+    tempo_left_end: bool = True
     speed_counter: int = 0  # frames spent on this row
 
     # Note / instrument state.
@@ -373,8 +375,9 @@ class VoiceState:
     # SET / sweep-end and stashes it for the next WRPULS, where it
     # picks an EXPTAB-based per-note adjustment to PWHIGHO.
     pw_kbd_track: int = 0
+    # Carry SETPWID's table step leaves (before ENDPWTB's keyboard track).
+    pw_carry: bool = False
 
-    filt_pos: int = 0
     filt_hi: int = 0
     filt_lo: int = 0
     voice_in_filter: bool = False
@@ -504,26 +507,17 @@ class SWMPlayer(MemPlayer):
 
         # Per-voice state. SID-Wizard assigns the SWM sequences in the
         # order [V0, V1, V2] for subtune 0 (sequences 0, 1, 2).
-        # Tempo decoding (mirrors player.asm's TEMPOTBL / TMPPOS logic
-        # around the ``ora #$80`` "SINGLE TEMPO" trick at line ~2927):
-        # each subtune tempo pair is two bytes; bit 7 of each byte signals
-        # "this slot is a fixed tempo, do not advance to the partner slot".
-        # When BOTH bytes have bit 7 set, the per-track TMPPOS stays at
-        # slot 0 and the row period is just ``left & 0x7F`` — a straight
-        # tempo. Only when at least one byte has bit 7 CLEAR does TMPPOS
-        # toggle between the two slots, producing the funktempo swing
-        # of alternating row periods.
+        # SETSTUNE copies the subtune's tempo pair to TEMPOTBL+0/1 as stored
+        # (player.asm:2657-2668): bit 7 on the left byte makes it a single
+        # tempo, otherwise TMPPOS alternates the two slots (funktempo).
         tempo_left, tempo_right = swm.subtune_tempos[0] if swm.subtune_tempos else (6, 6)
-        straight = (tempo_left & 0x80) and (tempo_right & 0x80)
-        if straight:
-            tl = tr = tempo_left & 0x7F
-        else:
-            tl = tempo_left & 0x7F
-            tr = tempo_right & 0x7F
         # INSPTLO/INSPTHI slot 0: the exporter links the unused instrument 0 to
-        # instrument 1 (packdepack.inc:621-633). PLAYERZP points at it whenever
-        # a path loads CURINS=0 without testing it (HRENDER, MULCNTP).
-        self._dummy: Optional[Instrument] = swm.instruments[0] if swm.instruments else None
+        # instrument 1 (packdepack.inc:621-633) unless the image says otherwise.
+        # PLAYERZP points at it whenever a path loads CURINS=0 without testing it
+        # (HRENDER, MULCNTP).
+        self._dummy: Optional[Instrument] = swm.dummy_instrument or (
+            swm.instruments[0] if swm.instruments else None
+        )
         self._empty = _empty_instrument()
         # $D418 and its pending SEQVOLU nibble must exist before INITER's
         # orderlist walk, which can run a MainVolume seq-fx.
@@ -537,8 +531,9 @@ class SWMPlayer(MemPlayer):
             v = VoiceState(channel=i, ptn_gate=0, arp_speed_counter=0)
             if i < len(swm.sequences):
                 v.sequence = swm.sequences[i]
-            v.tempo_left = tl
-            v.tempo_right = tr
+            v.tempo_left = tempo_left & 0x7F
+            v.tempo_right = tempo_right & 0x7F
+            v.tempo_left_end = bool(tempo_left & 0x80)
             # INITPTN (player.asm:788): read each orderlist up to its first
             # pattern, running any orderlist effects on the way.
             self._advance_sequence(v)
@@ -577,6 +572,8 @@ class SWMPlayer(MemPlayer):
         # yet (matches the post-INITER default; first STRTSND of a
         # SET-row-starting instrument assigns).
         self.filter_controller_voice: Optional[VoiceState] = None
+        # FLTPOSI: the one filter-table cursor, read through the controller's PLAYERZP.
+        self.filt_pos = 0
         # CWEPCNT (player.asm ~line 1761) is a single global byte —
         # the sweep-cycle countdown for whichever voice currently owns
         # FilterProgram. Mirror that here as a player-level (not per-
@@ -644,9 +641,9 @@ class SWMPlayer(MemPlayer):
             return
         # Decide whether this frame is a "row tick" (advance pattern row)
         # or a between-rows frame (just continue table execution).
-        current_tempo = v.tempo_left if v.tempo_toggle == 0 else v.tempo_right
-        if current_tempo == 0:
-            current_tempo = 6
+        current_tempo = self._current_tempo(v)
+        if self._tempo_match(v, current_tempo):
+            current_tempo = self._current_tempo(v)
         # Capture pre-increment speed_counter so we can detect the
         # ``PRE_HR_LEAD_FRAMES`` frame (= tempo - PRE_HR_LEAD_FRAMES)
         # after the increment / wrap. Used by _emit_pre_hr below.
@@ -669,12 +666,7 @@ class SWMPlayer(MemPlayer):
             v.pending_row = None
             v.pattern = None
             v.sequence_ended = True
-        v.speed_counter += 1
-        if v.speed_counter >= current_tempo:
-            # advTprg (player.asm:1385): the counter reaching the tempo both
-            # restarts it and steps TMPPOS to the next row's tempo slot.
-            v.speed_counter = 0
-            v.tempo_toggle ^= 1
+        v.speed_counter = (v.speed_counter + 1) & 0xFF
         # TICK_2: apply the row's note / instrument / fx now, two frames
         # after the row read. _apply_row may call _start_note (sets
         # hr_timer, resets tables, gate-on). The compose call below then
@@ -809,7 +801,7 @@ class SWMPlayer(MemPlayer):
         ):
             v.wf_pitch_carry = True
         if not in_new_note_setup:
-            self._tick_pw_table(v)
+            self._setpwid(v)
             self._tick_filt_table(v)
         self._compose_sid_writes(v)
         # TICK_0 (pre_incr_sc==0) and TICK_1 (pre_incr_sc==1) of a
@@ -862,8 +854,9 @@ class SWMPlayer(MemPlayer):
         """MULCNTP's table walk for ``v`` through its PLAYERZP instrument."""
         assert v.instrument is not None
         self._tick_wf_table(v)
-        if v.instrument.arp_speed & 0x40:
-            self._tick_pw_table(v)
+        # MULTIFI's FILTPRG falls through to SETPWID (player.asm:1321-1327).
+        if v.instrument.arp_speed & 0xC0:
+            self._setpwid(v)
         if v.instrument.arp_speed & 0x80:
             self._tick_filt_table(v)
         self._compose_sid_writes(v)
@@ -1032,6 +1025,7 @@ class SWMPlayer(MemPlayer):
             if isinstance(cmd, TempoOverride):
                 v.tempo_left = cmd.frames_per_row
                 v.tempo_right = cmd.frames_per_row
+                v.tempo_left_end = True
                 continue
             if isinstance(cmd, MainVolume):
                 # chVolFx: stash into SEQVOLU; _advance_row's READROW copy
@@ -1361,7 +1355,7 @@ class SWMPlayer(MemPlayer):
                 ins = v.instrument
                 target = fx_value * 3
                 if target < len(ins.filter_table):
-                    v.filt_pos = self._filt_table_start(ins) + target
+                    self.filt_pos = self._filt_table_start(ins) + target
                     self.filter_sweep_count = 0
             elif fx == 0x0F and fx_value is not None:
                 # BIGFX0F (player.asm:3563) writes CTFHGHO, the $D416 cutoff-high ghost.
@@ -1380,13 +1374,13 @@ class SWMPlayer(MemPlayer):
                 self._set_tempo(self.voices, fx_value & 0x7F, fx_value & 0x7F)
             elif fx == 0x11 and fx_value is not None:
                 # BIGFX11 (player.asm:3627): main funktempo, high nibble then low.
-                self._set_tempo(self.voices, fx_value >> 4, fx_value & 0x0F)
+                self._set_tempo(self.voices, fx_value >> 4, fx_value & 0x0F, funk=True)
             elif fx == 0x13 and fx_value is not None:
                 # BIGFX13 (player.asm:3658): track single tempo, this voice only.
                 self._set_tempo([v], fx_value & 0x7F, fx_value & 0x7F)
             elif fx == 0x14 and fx_value is not None:
                 # BIGFX14 (player.asm:3669): track funktempo, this voice only.
-                self._set_tempo([v], fx_value >> 4, fx_value & 0x0F)
+                self._set_tempo([v], fx_value >> 4, fx_value & 0x0F, funk=True)
             elif fx in (0x1D, 0x1E) and not self.features.delaysupport:
                 # BIGFX1D / BIGFX1E (player.asm:3730 / 3746) are wrapped in
                 # ``.if feature.DELAYSUPPORT_ON``, which only the Extra player sets
@@ -1479,12 +1473,42 @@ class SWMPlayer(MemPlayer):
         else:
             self._report_unsupported(v, "small-fx", code)
 
-    def _set_tempo(self, voices: List[VoiceState], left: int, right: int) -> None:
-        """Write a tempo pair and rewind TMPPOS to its base (player.asm:3591-3625)."""
+    def _set_tempo(
+        self, voices: List[VoiceState], left: int, right: int, funk: bool = False
+    ) -> None:
+        """Write a tempo pair and rewind TMPPOS to its base (player.asm:3591-3625).
+
+        A single tempo is stored ``ora #$80``; a funktempo's first slot is not.
+        """
         for voice in voices:
             voice.tempo_left = left
             voice.tempo_right = right
+            voice.tempo_left_end = not funk
             voice.tempo_toggle = 0
+
+    @staticmethod
+    def _current_tempo(v: VoiceState) -> int:
+        tempo = v.tempo_left if v.tempo_toggle == 0 else v.tempo_right
+        return tempo or 6
+
+    @staticmethod
+    def _tempo_match(v: VoiceState, tempo: int) -> bool:
+        """The frame-start SPDCNT test against TEMPOTBL (player.asm:1344-1379).
+
+        ``sec ; sbc`` of the slot byte: a zero result (a slot without bit 7
+        reached exactly) restarts SPDCNT and steps TMPPOS to the next slot, a
+        signed overflow (a bit-7 slot reached or passed) restarts it at
+        TMPBASE. The tempo a TICK_2 fx just set is thus already in force.
+        """
+        end = v.tempo_toggle or v.tempo_left_end
+        entry = tempo | (0x80 if end else 0)
+        sc = v.speed_counter
+        diff = (sc - entry) & 0xFF
+        if diff and not (sc ^ entry) & (sc ^ diff) & 0x80:
+            return False
+        v.speed_counter = 0
+        v.tempo_toggle = 0 if diff else 1
+        return True
 
     def _apply_vibrato_byte(self, v: VoiceState, vibrato_byte: int) -> None:
         """BIGFX08 (player.asm:3518): FORCVIB then SETVIBR (player.asm:2894).
@@ -1495,15 +1519,23 @@ class SWMPlayer(MemPlayer):
         """
         ins = v.instrument
         v.slide_vib = ins.control & 0x30 if ins is not None else 0
+        self._setvibr(v, vibrato_byte)
+
+    def _setvibr(self, v: VoiceState, vibrato_byte: int) -> None:
+        """SETVIBR (player.asm:2894-2911): VIBFREQU, VIBRACNT and FREQMOD from ``vibrato_byte``.
+
+        VIBRACNT starts at a quarter period; with VIBRATOTYPES a SLIDEVIB of
+        $20 starts it at half and $30 at zero.
+        """
         freq_nibble = vibrato_byte & 0x0F
         amp_nibble = (vibrato_byte >> 4) & 0x0F
         v.vibrato_period = freq_nibble * 2
-        if v.slide_vib == 0x30:
-            v.vibrato_freq_counter = 0
-        elif v.slide_vib >= 0x20:
-            v.vibrato_freq_counter = freq_nibble
-        else:
+        if not self.features.vibratotypes or v.slide_vib < 0x20:
             v.vibrato_freq_counter = freq_nibble >> 1
+        elif v.slide_vib == 0x30:
+            v.vibrato_freq_counter = 0
+        else:
+            v.vibrato_freq_counter = freq_nibble
         if amp_nibble == 0:
             v.vibrato_freqmod_lo = 0
             v.vibrato_freqmod_hi = 0
@@ -1587,8 +1619,6 @@ class SWMPlayer(MemPlayer):
                 # from the instrument base (STRTSND ~line 1445 reads the
                 # header's PW-table pointer). _tick_pw_table walks from here.
                 v.pw_pos = INST_WF_TABLE_POS + len(v.instrument.wf_table) + 1
-            if not filt_reset_off:
-                v.filt_pos = self._filt_table_start(v.instrument)
             v.wf_arp_pitch = 0
             v.wf_arp_absolute = False
             # STRTSND (player.asm line 1422) stores $FF to ARPSCNT so
@@ -1607,29 +1637,9 @@ class SWMPlayer(MemPlayer):
             # triggers with whatever the previous walk left them at.
             # Clearing them here drifted the post-STRTSND walks.
             #
-            # STRTSND's SETFLTP block (player.asm line 1553-1568) sets
-            # FSWITCH (= our voice_in_filter) on the SAME tick: voice is
-            # filtered if the new instrument's filter table starts with
-            # anything other than $FF; CLEARED if it starts with $FF
-            # (= "instrument not filtered" marker) or is empty. This is
-            # the ONLY place SID-Wizard updates FSWITCH per voice; the
-            # CNTPLY2 FILTPRG walk doesn't touch it.
-            #
-            # SETFLTP also conditionally REASSIGNS FLTCTRL (= the global
-            # filter-controller voice): for ANY ft[0] != $00, $FF this
-            # voice claims controllership (sweep rows $01..$7F and
-            # set-mode rows $80..$FE alike). ft[0] == $00 leaves FLTCTRL
-            # alone (= "filtered but doesn't control"); ft[0] == $FF
-            # clears the routing bit and relinquishes control iff this
-            # voice WAS the controller.
-            ft = v.instrument.filter_table
-            v.voice_in_filter = bool(ft) and ft[0] != FILT_TABLE_END
-            self._set_filter_routing(v, v.voice_in_filter)
-            if ft and ft[0] not in (0x00, FILT_TABLE_END):
-                self.filter_controller_voice = v
-            elif ft and ft[0] == FILT_TABLE_END:
-                if self.filter_controller_voice is v:
-                    self.filter_controller_voice = None
+            # FILTRESETSW's ``bmi ENDFILRESET`` skips all of SETFLTP.
+            if not filt_reset_off:
+                self._setfltp(v)
             # Seed chord state from the instrument's default-chord field
             # (1-based; 0 means "no chord"). The WF-table arp tick will
             # consume ``chord_pos`` whenever it hits a ``$7F`` arp byte.
@@ -1644,20 +1654,33 @@ class SWMPlayer(MemPlayer):
 
     # ---- vibrato setup / tick ---------------------------------------
 
+    def _setfltp(self, v: VoiceState) -> None:
+        """SETFLTP (player.asm:1929-2000): FSWITCH, FLTCTRL and FLTPOSI from the filter table's first byte.
+
+        Any byte but $00 / $FF claims the filter (FLTCTRL := this track,
+        FLTPOSI := the table start); $00 routes the voice through the filter
+        without touching either; $FF (or no table) unroutes it and drops
+        control if this track held it. FSWITCH is written nowhere else.
+        """
+        start = self._filt_table_start(v.instrument)
+        ft = v.instrument.filter_table
+        first = ft[0] if ft else FILT_TABLE_END
+        v.voice_in_filter = first != FILT_TABLE_END
+        self._set_filter_routing(v, v.voice_in_filter)
+        if first not in (0x00, FILT_TABLE_END):
+            self.filter_controller_voice = v
+            self.filt_pos = start
+        elif first == FILT_TABLE_END and self.filter_controller_voice is v:
+            self.filter_controller_voice = None
+
     def _setup_vibrato(self, v: VoiceState) -> None:
         """Initialise per-voice vibrato state from the instrument's
-        ``vibrato`` and ``vibrato_delay`` bytes — mirrors player.asm's
-        SETVIB0 / SETVIBR (line ~2290).
+        ``vibrato`` and ``vibrato_delay`` bytes: STRTSND's SLIDEVIB, then
+        SETVIB0 (player.asm:2890) and :meth:`_setvibr`.
 
-        We model NORMVIB (SLIDEVIB=$10, control bits 4-5 = 01) and
-        INCVIBR (SLIDEVIB=$00, bits = 00). INCVIBR shares this setup:
-        FREQMOD starts at the amp-nibble value (0 for the common
-        ramp-from-silence case) and grows each frame in _tick_vibrato.
-        The delayed-slide variants ($20/$30) are still out of scope.
-
-        FREQMOD is the calculated-vibrato variant (CALCVIBRATO_ON in upstream
-        settings.cfg): index = ``(amp << 2) + play_note``, looked up through
-        :meth:`_lookup_freqmod` against :data:`EXPTABH`.
+        VIDELCNT takes the delay byte whole, so one with bit 7 set starts
+        the vibrato at once. INCVIBR (SLIDEVIB=$00 with VIBRATOTYPES) reuses
+        it as FREQMOD's per-frame increase.
         """
         ins = v.instrument
         v.slide_vib = ins.control & 0x30 if ins is not None else 0
@@ -1669,23 +1692,9 @@ class SWMPlayer(MemPlayer):
             v.vibrato_freqmod_lo = 0
             v.vibrato_freqmod_hi = 0
             return
-        v.vibrato_delay_counter = ins.vibrato_delay & 0x7F
-        freq_nibble = ins.vibrato & 0x0F
-        amp_nibble = (ins.vibrato >> 4) & 0xF
-        v.vibrato_period = freq_nibble * 2
-        # Initial VIBRACNT for SLIDEVIB=$10: ``freq_nibble / 2`` —
-        # player.asm SETVIBR (line 2295) shifts the freq nibble down
-        # once for SLIDEVIB >= $20 and a second time for SLIDEVIB <
-        # $20 (the NORMVIB quarter-timer path).
-        v.vibrato_freq_counter = freq_nibble >> 1
-        # SETFMOD's ``beq wrFmodL`` zeroes FREQMOD when amp_nibble == 0 (vibrato byte $00).
-        if amp_nibble == 0:
-            v.vibrato_freqmod_lo = 0
-            v.vibrato_freqmod_hi = 0
-        else:
-            v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = self._freqmod(
-                amp_nibble << 3, v.note + v.octave_shift + v.transpose
-            )
+        delay = ins.vibrato_delay & 0xFF
+        v.vibrato_delay_counter = delay - 0x100 if delay & 0x80 else delay
+        self._setvibr(v, ins.vibrato)
 
     def _dpitch_freq(self, dpitch: int) -> int:
         """FREQTBL/FREQTBH word at DPITCH, which the asm indexes unmasked (``ldy DPITCH,x``)."""
@@ -1725,11 +1734,11 @@ class SWMPlayer(MemPlayer):
     def _tick_vibrato(self, v: VoiceState) -> None:
         """Advance vibrato OR tone-portamento by one frame.
 
-        Handles two slide_vib modes:
-        * NORMVIB ($10): delay-then-triangle vibrato as in player.asm
-          NORMVIB + DOVIBRA. Adds / subtracts FREQMOD from a running
-          ``vibrato_offset`` that ``_compose_sid_writes`` folds into
-          the base freq.
+        Handles these slide_vib modes:
+        * NORMVIB (any type $01..$7F, and $00 without VIBRATOTYPES):
+          delay-then-triangle vibrato as in player.asm NORMVIB + DOVIBRA.
+          Adds / subtracts FREQMOD from a running ``vibrato_offset`` that
+          ``_compose_sid_writes`` folds into the base freq.
         * Tone portamento ($83, set by big-fx 03): drift the freq
           offset toward 0 by FREQMOD each frame, mirroring
           player.asm's PORTAME path (line ~1650). The offset was
@@ -1766,22 +1775,25 @@ class SWMPlayer(MemPlayer):
             mod = (v.vibrato_freqmod_hi << 8) | v.vibrato_freqmod_lo
             v.vibrato_offset = (v.vibrato_offset - mod) & 0xFFFF
             return
-        if v.slide_vib == 0x00:
+        if v.slide_vib == 0x00 and self.features.vibratotypes:
             # INCVIBR (player.asm line 1688): the FREQMOD amplitude grows
             # each frame by VIDELCNT (the vibrato-delay byte, reused as
             # the increase ratio — never decremented here), then falls
             # straight through to the shared DOVIBRA triangle. No delay
             # phase. With FREQMOD seeded to 0 in _setup_vibrato this
             # ramps the vibrato depth up from silence.
-            mod = ((v.vibrato_freqmod_hi << 8) | v.vibrato_freqmod_lo) + v.vibrato_delay_counter
+            mod = ((v.vibrato_freqmod_hi << 8) | v.vibrato_freqmod_lo) + (
+                v.vibrato_delay_counter & 0xFF
+            )
             v.vibrato_freqmod_lo = mod & 0xFF
             v.vibrato_freqmod_hi = (mod >> 8) & 0xFF
-        elif v.slide_vib == 0x10:
+        elif v.slide_vib < 0x80:
+            # NORMVIB: ``ldy SLIDEVIB,x ; bpl NORMVIB`` (player.asm:2086-2089).
             if v.vibrato_delay_counter >= 0:
                 v.vibrato_delay_counter -= 1
                 return
         else:
-            return  # only INCVIBR / NORMVIB triangles supported beyond this
+            return
         # DOVIBRA: decrement freq counter (reloading from VIBFREQU on
         # wrap), then choose ADD or SUB based on which half we're in.
         # Mirrors player.asm DOVIBRA exactly — including the case where
@@ -2056,10 +2068,17 @@ class SWMPlayer(MemPlayer):
     # ---- instrument WF / PW / Filter table ticks ---------------------
 
     def _image(self, ins: Instrument) -> bytes:
-        """The instrument's memory image, cached per instrument object."""
+        """The bytes PLAYERZP reads for ``ins``, cached per instrument object.
+
+        Its :attr:`~pysidwizard.model.Instrument.ram` window when that still
+        holds the instrument's encoding, so a cursor past the instrument's own
+        tables reads the image's following bytes as the 6502 does.
+        """
         image = self._inst_images.get(id(ins))
         if image is None:
             image = ins.memory_image()
+            if ins.ram.startswith(image):
+                image = ins.ram
             self._inst_images[id(ins)] = image
         return image
 
@@ -2223,81 +2242,94 @@ class SWMPlayer(MemPlayer):
             return
 
     def _tick_pw_table(self, v: VoiceState) -> None:
-        """Advance the pulse-width table by one step.
+        """Advance the pulse-width table by one step (SETPWID, player.asm:2332-2376).
 
         ``pw_pos`` is an ABSOLUTE offset from the instrument base, matching
         SID-Wizard's PWTPOS, and is walked against
         :meth:`Instrument.memory_image`. A position the player has not reset
         can therefore land in another table's bytes, or (below
-        :data:`INST_WF_TABLE_POS`) in the header — exactly as the real
-        player does.
+        :data:`INST_WF_TABLE_POS`) in the header -- exactly as the real
+        player does. Records the carry the step leaves in ``v.pw_carry``.
         """
         ins = v.instrument
         if ins is None:
             return
         image = self._image(ins)
-        for _ in range(4):
-            idx = v.pw_pos
-            if idx < 0 or idx >= len(image):
+        idx = v.pw_pos
+        if not 0 <= idx < len(image):
+            return
+
+        def col(i: int) -> int:
+            return image[i] if i < len(image) else 0
+
+        byte0 = image[idx]
+        if byte0 < 0x80:
+            # PWSWEEP: ``cmp PWEEPCNT,x ; beq PWADVAN`` (carry set), else one
+            # signed step of the (PWHIGHO, PWLOGHO) pair.
+            if v.pw_sweep_count == byte0:
+                v.pw_carry = True
+                self._pw_advance(v, idx, col)
                 return
-            byte0 = image[idx]
-            if byte0 == PW_TABLE_END:
-                return
-            if byte0 == PW_TABLE_JUMP:
-                # JUMP target is an absolute instrument offset.
-                tgt = image[idx + 1] if idx + 1 < len(image) else 0
-                if tgt >= len(image):
-                    return
-                v.pw_pos = tgt
-                # Per player.asm PWTJUMP (~line 1893): if the target's
-                # first byte is sweep mode (< $80), ``bpl SEPWPOS``
-                # just sets PWTPOS and returns — the sweep does not
-                # advance this frame. Only set-mode targets fall
-                # through to SETPULW and process in the same tick.
-                if image[tgt] < 0x80:
-                    v.pw_sweep_count = 0
-                    return
-                continue
-            if byte0 & 0x80:
-                # Set-mode row: high byte (low 7 bits -> pw_hi), then a
-                # PW-low byte at +1. Column 2 is the PW keyboard-track
-                # value (stashed for compose to apply via EXPTAB).
-                v.pw_hi = byte0 & 0x7F
-                if idx + 1 < len(image):
-                    v.pw_lo = image[idx + 1]
-                if idx + 2 < len(image):
-                    v.pw_kbd_track = image[idx + 2]
-                v.pw_pos += PW_ROW_STRIDE
-                v.pw_sweep_count = 0
-                return
-            # Sweep mode: byte0 is the cycle countdown, byte1 is the
-            # signed PW delta per frame. SID-Wizard's player.asm
-            # PWSWEEP treats (PWHIGHO, PWLOGHO) as a 16-bit register
-            # pair: for a negative delta it pre-decrements PWHIGHO
-            # then adds the unsigned delta to PWLOGHO with carry; for
-            # a positive delta it adds delta to PWLOGHO with carry
-            # into PWHIGHO. We mirror that exactly so the 4-bit
-            # SID-visible PW_HI nibble accumulates the same way under
-            # multi-row sweeps as on the real player.
-            if v.pw_sweep_count >= byte0:
-                # Sweep complete -> PWADVAN. Player.asm reads col 2
-                # (PKBDTRK) right before storing the new PWTPOS.
-                if idx + 2 < len(image):
-                    v.pw_kbd_track = image[idx + 2]
-                v.pw_pos += PW_ROW_STRIDE
-                v.pw_sweep_count = 0
-                return
-            v.pw_sweep_count += 1
-            delta = image[idx + 1] if idx + 1 < len(image) else 0
+            v.pw_sweep_count = (v.pw_sweep_count + 1) & 0xFF
+            delta = col(idx + 1)
             if delta & 0x80:
-                # Negative delta: pre-decrement PWHIGHO.
                 v.pw_hi = (v.pw_hi - 1) & 0xFF
-            new_lo = v.pw_lo + delta
-            v.pw_lo = new_lo & 0xFF
-            if new_lo > 0xFF:
-                # Add carry into PWHIGHO.
+            total = v.pw_lo + delta
+            v.pw_lo = total & 0xFF
+            v.pw_carry = total > 0xFF
+            if v.pw_carry:
                 v.pw_hi = (v.pw_hi + 1) & 0xFF
             return
+        if byte0 == PW_TABLE_END:
+            v.pw_carry = True
+            return
+        if byte0 == PW_TABLE_JUMP:
+            # PWTJUMP: ``cmp PWTPOS,x`` rests on a self-jump; a sweep target
+            # only moves PWTPOS, any other target row is SETPULW'd at once.
+            tgt = col(idx + 1)
+            v.pw_carry = tgt >= idx
+            if tgt == idx or tgt >= len(image):
+                return
+            if image[tgt] < 0x80:
+                v.pw_pos = tgt
+                v.pw_sweep_count = 0
+                return
+            idx = tgt
+        else:
+            v.pw_carry = False
+        v.pw_hi = image[idx] & 0x7F
+        v.pw_lo = col(idx + 1)
+        self._pw_advance(v, idx, col)
+
+    @staticmethod
+    def _pw_advance(v: VoiceState, idx: int, col) -> None:
+        """PWADVAN / SEPWPOS: latch PKBDTRK, step to the next row, reset the sweep."""
+        v.pw_kbd_track = col(idx + 2)
+        v.pw_pos = idx + PW_ROW_STRIDE
+        v.pw_sweep_count = 0
+
+    def _setpwid(self, v: VoiceState) -> None:
+        """SETPWID ahead of WFARPTB: a SKIPWFT frame's WRPITCH adds the carry it leaves."""
+        self._tick_pw_table(v)
+        if v.skipwft_this_tick:
+            v.wf_pitch_carry = self._wrpuls(v)[1] if self.features.pwkeybtrack else v.pw_carry
+
+    def _wrpuls(self, v: VoiceState) -> Tuple[int, bool]:
+        """ENDPWTB's PW-hi byte and carry (player.asm:2376-2390).
+
+        With PWKEYBTRACK the EXPTABH step at DPITCH+PKBDTRK, its sbc borrow,
+        is added to PWHIGHO; a zero PKBDTRK adds nothing with carry clear.
+        """
+        if not (self.features.pwkeybtrack and v.pw_kbd_track):
+            return v.pw_hi & 0xFF, False
+        dpitch = (v.note + v.octave_shift + v.transpose) & 0x7F
+        carry = (dpitch + v.pw_kbd_track) >> 8
+        idx = (dpitch + v.pw_kbd_track) & 0xFF
+        e_y = self.exptabh[idx]
+        e_ym = self.exptabh[idx - 1] if idx else 0
+        term = e_y - e_ym - 1 + carry
+        total = (v.pw_hi & 0xFF) + (term & 0xFF) + (1 if term >= 0 else 0)
+        return total & 0xFF, total > 0xFF
 
     def _tick_filt_table(self, v: VoiceState) -> None:
         """Advance the filter table by one step.
@@ -2329,14 +2361,12 @@ class SWMPlayer(MemPlayer):
         if ins is None:
             return
         table = self._image(ins)
-        if not ins.filter_table:
-            return
         # NOTE: voice_in_filter (= FSWITCH bit) is NOT updated here — per
         # player.asm, FILTPRG only walks the table and writes
         # cutoff/resonance; FSWITCH is only set at STRTSND's SETFLTP. See
         # _start_note for the assignment.
         for _ in range(4):
-            pos = v.filt_pos
+            pos = self.filt_pos
             if pos >= len(table):
                 return
             byte0 = table[pos]
@@ -2346,7 +2376,7 @@ class SWMPlayer(MemPlayer):
                 target = table[pos + 1] if pos + 1 < len(table) else 0
                 if target >= len(table):
                     return
-                v.filt_pos = target
+                self.filt_pos = target
                 # Per player.asm FLTJUMP (~line 1802): if target's
                 # first byte is sweep mode (< $80), ``bpl SETFPOS``
                 # just initialises filt_pos for next frame and exits.
@@ -2371,7 +2401,7 @@ class SWMPlayer(MemPlayer):
                 self.filter_resonance = (byte0 & 0x0F) << 4
                 # $D418 high nibble = filter band/mode (LP/BP/HP).
                 self.filter_mode_vol = (self.filter_mode_vol & 0x0F) | (byte0 & 0x70)
-                v.filt_pos += FILT_ROW_STRIDE
+                self.filt_pos += FILT_ROW_STRIDE
                 self.filter_sweep_count = 0
                 return
             # Sweep mode. byte0 = cycle count, byte1 = signed delta per
@@ -2384,7 +2414,7 @@ class SWMPlayer(MemPlayer):
             # high 5 bits via ``LSR LSR LSR`` add to CTFH).
             if self.filter_sweep_count >= byte0:
                 self.filter_kbd_track = table[pos + 2] if pos + 2 < len(table) else 0
-                v.filt_pos += FILT_ROW_STRIDE
+                self.filt_pos += FILT_ROW_STRIDE
                 self.filter_sweep_count = 0
                 return
             self.filter_sweep_count += 1
@@ -2503,17 +2533,7 @@ class SWMPlayer(MemPlayer):
         # the chip. But SID-Wizard's WRPULS path writes the full
         # PWHIGHO byte (already AND-masked with $7F at SETPULW), so
         # bits 4-6 of the SID register MAY be non-zero — mirror that.
-        pw_hi_sid = v.pw_hi & 0x7F
-        if v.pw_kbd_track != 0 and self.features.pwkeybtrack:
-            # WRPULS keyboard tracking: the EXPTABH step at DPITCH+PKBDTRK, its sbc borrow, into PWHIGHO.
-            dpitch = (v.note + v.octave_shift + v.transpose) & 0x7F
-            carry = (dpitch + v.pw_kbd_track) >> 8
-            idx = (dpitch + v.pw_kbd_track) & 0xFF
-            e_y = self.exptabh[idx]
-            e_ym = self.exptabh[idx - 1] if idx else 0
-            term = e_y - e_ym - 1 + carry
-            pw_hi_sid = (pw_hi_sid + (term & 0xFF) + (1 if term >= 0 else 0)) & 0xFF
-        v.sid_pw_hi = pw_hi_sid
+        v.sid_pw_hi = self._wrpuls(v)[0]
         v.sid_pw_lo = v.pw_lo
 
         # NOTE: SID-Wizard's CNTPLY1/2 steady-state path never writes
