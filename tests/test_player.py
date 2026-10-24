@@ -428,6 +428,34 @@ def test_chord_table_cycles_pitches_with_loop_terminator():
     assert post_hr == [3, 7, 12, 3, 7, 12, 3, 7], f"got {post_hr}"
 
 
+@pytest.mark.parametrize("detune_byte, chord", [(0x10, 3), (0xFF, 3), (0x10, 0x7E)])
+def test_chord_row_loads_detune_without_nop_test(detune_byte, chord):
+    """PLYCHRD stores a ``$7F`` row's detune byte as is, ``$FF`` included,
+    also when the chord returns (``$7E``) to the next WF row."""
+    from pysidwizard import SWMFile, straight_tempo
+
+    inst = Instrument(
+        name=b"CHORDDT ",
+        sustain=0xF,
+        first_waveform=0x41,
+        default_chord=1,
+        wf_table=bytes([0x41, 0x7F, detune_byte, 0x41, 0x00, 0xFF]),
+    )
+    swm = SWMFile(
+        sequences=[[PlayPattern(1), End()]] * 3,
+        patterns=[Pattern(rows=[Row(note=49, instrument=1)] + [Row()] * 12, length=13)],
+        instruments=[inst],
+        chord_table=bytes([chord, 0x7F]),
+        subtune_tempos=[(straight_tempo(3), straight_tempo(3))],
+    )
+    p = SWMPlayer(swm)
+    for _ in range(SETUP_FRAMES + HR_FRAMES + 1):
+        p.play_frame()
+    v = p.voices[0]
+    assert v.detune & 0xFF == detune_byte
+    assert v.sid_freq_lo == (v.zp_freq_lo + detune_byte + v.wf_pitch_carry) & 0xFF
+
+
 def test_chord_table_return_terminator_resets_pos_and_signals_advance():
     """A ``$7E`` chord byte is the 'return from chord to WFARP'
     terminator. The chord-tick method should:
@@ -1759,3 +1787,163 @@ def test_gate_off_pw_and_filter_pointers_follow_the_wf_one():
     v.pw_pos = 0x13
     p._ngateof(v)  # pylint: disable=protected-access
     assert v.pw_pos == 0x13
+
+
+def _chord_swm(
+    note: int, chord: bytes, wf_table: bytes = bytes([0x41, 0x7F, 0x00, 0xFF])
+) -> SWMFile:
+    """``_toy_swm`` whose instrument plays chord 1 (``chord``) through ``wf_table``."""
+    swm = _toy_swm()
+    swm.instruments[0].wf_table = wf_table
+    swm.instruments[0].default_chord = 1
+    swm.chord_table = chord
+    swm.patterns[0].rows[0] = Row(note=note, instrument=1)
+    return swm
+
+
+@pytest.mark.parametrize(
+    "swm,carry",
+    [
+        (_chord_swm(49, bytes([0xFB, 0x7F])), True),
+        (_chord_swm(49, bytes([0x03, 0x7F])), False),
+        (
+            dataclasses.replace(
+                _wf_arp_swm(5, 0x0C), sequences=[[Transpose(-16), PlayPattern(1), End()]] * 3
+            ),
+            True,
+        ),
+        (_wf_arp_swm(5, 0x0C), False),
+    ],
+)
+def test_relptch_carries_any_arp_plus_dpitch_past_ff(swm, carry):
+    """RELPTCH's ``clc ; adc DPITCH`` carry reaches WRPITCH's ``adc DETUNER`` (player.asm:2035-2050)."""
+    v = _play(swm, frames=SETUP_FRAMES + HR_FRAMES + 1).voices[0]
+    assert v.wf_pitch_carry is carry
+    assert v.sid_freq_lo == (v.zp_freq_lo + carry) & 0xFF
+
+
+def test_a_bare_instrument_select_keeps_the_held_dpitch():
+    """CLEGATO latches DPITCH at the note (player.asm:1786); the next note takes the new octave shift."""
+    swm = _toy_swm()
+    swm.instruments.append(dataclasses.replace(swm.instruments[0], octave_shift=12))
+    rows = [Row(note=49, instrument=1), Row(instrument=2), Row(note=49), Row(), Row()]
+    swm.patterns[0] = Pattern(rows=rows, length=5)
+    freq_hi = [row[1] for row in SWMPlayer(swm).render_grid(16)]
+    assert freq_hi[3:9] == [NOTE_FREQ_HI[49]] * 6
+    assert freq_hi[9:] == [NOTE_FREQ_HI[61]] * 7
+
+
+@pytest.mark.parametrize("light,note", [(False, 49 - 5), (True, 49)])
+def test_orderlist_transpose_reaches_dpitch_only_with_transposesupp(light, note):
+    """CLEGATO's ``clc ; adc TRANSP,x`` is assembled out of the Light build (altplayers.inc:434)."""
+    swm = _toy_swm()
+    swm.sequences = [[Transpose(-5), PlayPattern(1), End()]] * 3
+    if light:
+        _light(swm)
+    p = _play(swm, frames=SETUP_FRAMES + HR_FRAMES + 1)
+    assert p.voices[0].dpitch == note
+    assert p.regs[1] == NOTE_FREQ_HI[note]
+
+
+def test_a_spare_slot_plays_the_images_instrument():
+    """SEL_INS takes any slot below $3F (player.asm:1777); past the count it is the image's bytes."""
+    swm = _toy_swm()
+    spare = Instrument(control=0x10, attack=3)
+    spare.ram = bytes([0x55]) * 0x100
+    swm.spare_instruments = {3: spare}
+    p = SWMPlayer(swm)
+    assert p._resolve_instrument(3) is spare  # pylint: disable=protected-access
+    assert p._resolve_instrument(2) is p._empty  # pylint: disable=protected-access
+    assert p._image(spare) == spare.ram  # pylint: disable=protected-access
+
+
+@pytest.mark.parametrize("retain,sr", [(True, 0xAF), (False, 0xFF)])
+def test_retainzeropage_restores_the_inits_playerzp_every_frame(retain, sr):
+    """PLAYER pushes and pulls the caller's PLAYERZP (player.asm:609-613, 888-892)."""
+    swm = _curins0_swm(Row(fx=0x6F))
+    swm.zp_init = bytes([0, 0, 0, 0, 0xA3])
+    p = SWMPlayer(swm)
+    assert p._zp == swm.zp_init  # pylint: disable=protected-access
+    p.features = dataclasses.replace(p.features, retainzeropage=retain)
+    assert p.render_grid(SETUP_FRAMES + 1)[SETUP_FRAMES][0x0D] == sr
+
+
+@pytest.mark.parametrize(
+    "fswitch,filtkbtrack,switch,track",
+    [(True, True, 3, 0), (False, True, 7, 0x83), (True, False, 7, 0)],
+)
+def test_fladvan_reads_a_8x_third_column_as_fswitch(fswitch, filtkbtrack, switch, track):
+    """FLADVAN (player.asm:1827-1836): from 1.4 a $80-$8F keyboard track is FSWITCH."""
+    swm = _toy_swm()
+    swm.instruments[0].filter_table = bytes([0x91, 0x40, 0x83, 0xFF])
+    swm.kbtrack_fswitch = fswitch
+    p = SWMPlayer(swm)
+    p.features = dataclasses.replace(p.features, filtkbtrack=filtkbtrack)
+    for _ in range(SETUP_FRAMES + HR_FRAMES + 2):
+        p.play_frame()
+    assert (p.filter_switch, p.filter_kbd_track) == (switch, track)
+
+
+def test_a_wf_jump_target_is_a_waveform_even_below_10():
+    """WFAJUMP reads the target row straight into SEWFARP (player.asm:1965-1968); a $7E chord return reads on."""
+    wf = bytes([0x41, 0x00, 0x00, 0xFE, 0x16, 0x00, 0x05, 0x7F, 0x00, 0x03, 0x00, 0x00, 0xFF])
+    p = _play(_chord_swm(49, bytes([0x7E]), wf), frames=SETUP_FRAMES + 1)
+    v = p.voices[0]
+    v.wf_pos, v.arp_speed_counter, v.ptn_gate = 0x13, 0, 0xFF
+    p._tick_wf_table(v)  # pylint: disable=protected-access
+    assert (v.sid_ctrl, v.arp_speed_counter) == (0x05, 0x03)
+
+
+def _kbtrack_player() -> SWMPlayer:
+    p = _play(_toy_swm(), frames=SETUP_FRAMES + HR_FRAMES + 2)
+    p.features = dataclasses.replace(p.features, pwkeybtrack=True, filtkbtrack=True)
+    return p
+
+
+def test_keyboard_tracking_indexes_by_the_whole_dpitch_byte():
+    """``ldy DPITCH,x`` is unmasked in CKBDTRK / PKBDTRK (player.asm:1080, 2380)."""
+    p = _kbtrack_player()
+    v = p.voices[0]
+    v.pw_kbd_track = p.filter_kbd_track = 0x10
+    p.filter_controller_voice = v
+    cutoffs, pulses = [], []
+    for dpitch in (0xF5, 0x75):
+        v.dpitch = dpitch
+        p._write_regs()  # pylint: disable=protected-access
+        cutoffs.append(p.snapshot()[0x16])
+        pulses.append(p._wrpuls(v))  # pylint: disable=protected-access
+    assert cutoffs[0] != cutoffs[1]
+    assert pulses[0] != pulses[1]
+
+
+@pytest.mark.parametrize("allghostregs", [False, True])
+def test_the_pw_ghost_only_moves_on_a_setpwid_tick(allghostregs):
+    """ENDPWTB alone writes SIDG.PLSW (player.asm:2376-2390); ALLGHOSTREGS re-emits the ghost."""
+    p = _kbtrack_player()
+    p.features = dataclasses.replace(p.features, allghostregs=allghostregs)
+    v = p.voices[0]
+    ghost = (v.sid_pw_hi, v.sid_pw_lo)
+    p._wr(0xD403, 0x0E)  # pylint: disable=protected-access
+    v.pw_kbd_track, v.dpitch, v.pw_written = 0x30, 0x40, False
+    p._compose_sid_writes(v)  # pylint: disable=protected-access
+    p._write_regs()  # pylint: disable=protected-access
+    assert (v.sid_pw_hi, v.sid_pw_lo) == ghost
+    assert p.snapshot()[3] == (ghost[0] if allghostregs else 0x0E)
+    v.pw_written = True
+    p._compose_sid_writes(v)  # pylint: disable=protected-access
+    assert v.sid_pw_hi != ghost[0]
+
+
+@pytest.mark.parametrize(
+    "stores,wfctrl_smallfx,ctrl", [(True, True, 0x4A), (False, True, 0x41), (True, False, 0x41)]
+)
+def test_small_fx_e_merges_the_waveform_low_nibble_before_1_5(stores, wfctrl_smallfx, ctrl):
+    """SMALFXE's ``jmp WRITEWF`` (player.asm:2748-2753) stores the merged nibble until 1.5."""
+    swm = _fx_swm(0x02, 0x00)
+    swm.patterns[0].rows[1] = Row(fx=0xEA)
+    swm.wfctrl_fx_stores = stores
+    p = SWMPlayer(swm)
+    p.features = dataclasses.replace(p.features, wfctrl_smallfx=wfctrl_smallfx)
+    for _ in range(SETUP_FRAMES + 4):
+        p.play_frame()
+    assert p.regs[4] == ctrl

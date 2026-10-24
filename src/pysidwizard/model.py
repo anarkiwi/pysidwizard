@@ -22,7 +22,7 @@ byte-exact: see ``tests/test_roundtrip.py``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .constants import (
     AUTHOR_LEN,
@@ -626,7 +626,8 @@ class Instrument:
         )
 
     @classmethod
-    def decode(cls, data: bytes, name: bytes) -> Instrument:
+    def decode(cls, data: bytes, name: bytes, strict: bool = True) -> Instrument:
+        """Decode an instrument body; ``strict=False`` clamps out-of-range table pointers."""
         if len(data) < INST_HEADER_SIZE:
             raise SWMFormatError(
                 f"instrument data is {len(data)} bytes; need at least "
@@ -635,6 +636,9 @@ class Instrument:
         header = data[:INST_HEADER_SIZE]
         pw_ptr = header[INST_PW_TABLE_PTR_POS]
         filt_ptr = header[INST_FILTER_TABLE_PTR_POS]
+        if not strict:
+            pw_ptr = min(max(pw_ptr, INST_HEADER_SIZE + 1), len(data) + 1)
+            filt_ptr = min(max(filt_ptr, pw_ptr), len(data) + 1)
         if not (INST_HEADER_SIZE < pw_ptr <= filt_ptr <= len(data) + 1):
             raise SWMFormatError(
                 f"instrument table pointers out of range: "
@@ -722,6 +726,9 @@ class SWMFile:
     # ``(RESONIB, CTFHGHO, CTFLGHO, FSWITCH)`` operands as the tune's init leaves them
     # (player.asm:418, 749-797), which the first call writes; zero for a bare ``.swm``.
     filter_init: Tuple[int, int, int, int] = (0, 0, 0, 0)
+    # What ``lda (PLAYERZP),y`` reads where the tune's init left PLAYERZP ($FE/$FF), which a
+    # RETAINZEROPAGE PLAYER restores every call (player.asm:609-613, 888-892); empty for a bare ``.swm``.
+    zp_init: bytes = b""
     # ``(operand, mask, play_sign)`` of a PLAYER entry that toggles its own ``lda #`` operand
     # with ``eor #mask`` each call and returns unless bit 7 equals ``play_sign``; empty when it
     # always plays.
@@ -730,10 +737,18 @@ class SWMFile:
     # filter-controller track points FLTPOSI at that $FF. Without it FLTCTRL and FLTPOSI stay,
     # so the walk goes on through whatever instrument the track plays next.
     filter_stop_rewinds: bool = True
+    # Whether FLADVAN reads a filter row's $80-$8F third column as FSWITCH (and a zero keyboard
+    # track) rather than as the keyboard track; 1.4 on (player.asm:1827-1836).
+    kbtrack_fswitch: bool = True
+    # Whether SMALFXE stores its merged low nibble to WFGHOST (``jmp WRITEWF``, before 1.5);
+    # later releases comment the store out (player.asm:2748-2753).
+    wfctrl_fx_stores: bool = False
     # The build flags read from a ``.sid``'s player code; None for a bare ``.swm`` (the driver byte's build).
     features: Optional[PlayerFeatures] = None
     # The instrument INSPTLO/HI slot 0 points at in a ``.sid`` image, when it is not instrument 1 (which a bare ``.swm`` and the exporter's own link imply).
     dummy_instrument: Optional[Instrument] = None
+    # The instruments INSPTLO/HI slots past the count point at in a ``.sid`` image, by slot; a bare ``.swm`` has none (the depacker's blank).
+    spare_instruments: Dict[int, Instrument] = field(default_factory=dict)
     # ".P00" wrapper name (16-byte PETSCII field from disk); transport metadata, excluded from equality.
     p00_name: bytes = field(default=b"", compare=False)
 
@@ -788,12 +803,16 @@ class SWMFile:
             first_frame_fixed_waveform=self.first_frame_fixed_waveform,
             sid_init=self.sid_init,
             filter_init=self.filter_init,
+            zp_init=self.zp_init,
             play_gate=self.play_gate,
             filter_stop_rewinds=self.filter_stop_rewinds,
+            kbtrack_fswitch=self.kbtrack_fswitch,
+            wfctrl_fx_stores=self.wfctrl_fx_stores,
             features=self.features,
             freq_lo_image=self.freq_lo_image,
             freq_hi_image=self.freq_hi_image,
             dummy_instrument=self.dummy_instrument,
+            spare_instruments=self.spare_instruments,
         )
 
     def author_str(self) -> str:

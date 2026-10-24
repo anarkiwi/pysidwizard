@@ -26,9 +26,16 @@ from pysidwizard import (
     is_sidwizard_sid,
     parse_psid_header,
     parse_sid,
+    parse_sid_song,
     read_sid,
 )
-from pysidwizard.constants import AUTHOR_LEN, AUTHOR_POS, SWM_MAGIC, TUNE_HEADER_SIZE
+from pysidwizard.constants import (
+    AUTHOR_LEN,
+    AUTHOR_POS,
+    INST_HEADER_SIZE,
+    SWM_MAGIC,
+    TUNE_HEADER_SIZE,
+)
 from pysidwizard.model import encode_sequence, pack_pattern
 from pysidwizard.player import FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
 from pysidwizard.sidreader import (
@@ -39,7 +46,7 @@ from pysidwizard.sidreader import (
     _freq_table_tail,
     _memory_accessors,
 )
-from tests._hvsc_fetch import HVSC_ROOT
+from tests._hvsc_fetch import HVSC_ROOT, resolve
 
 LOAD = 0x1000
 
@@ -978,13 +985,14 @@ def _slot_image(slot0: int, slot1: int):
 def test_slot_0_decodes_where_it_is_not_instrument_1():
     """PLAYERZP reads INSPTLO/HI slot 0 for CURINS=0; the exporter's link to slot 1 is not guaranteed."""
     (byte, chunk), body, end = _slot_image("blank", "real")
-    (real,), dummy = _decode_instruments(byte, chunk, _SLOTS, _SLOTS + 2, 1, LOAD, end)
+    (real,), slots = _decode_instruments(byte, chunk, _SLOTS, _SLOTS + 2, 1, LOAD, end)
+    dummy = slots[0]
     assert real.encode() == _REAL.encode()
     assert dummy.encode() == _BLANK.encode()
     assert dummy.ram.startswith(body), "the RAM window runs on past the instrument's own tables"
     assert real.ram.startswith(body[len(_BLANK.encode()) + 1 :])
     (byte, chunk), _, end = _slot_image("real", "real")
-    assert _decode_instruments(byte, chunk, _SLOTS, _SLOTS + 2, 1, LOAD, end)[1] is None
+    assert 0 not in _decode_instruments(byte, chunk, _SLOTS, _SLOTS + 2, 1, LOAD, end)[1]
 
 
 def test_slot_0_beside_a_stale_unused_instrument_1():
@@ -995,11 +1003,20 @@ def test_slot_0_beside_a_stale_unused_instrument_1():
         return LOAD <= addr < end
 
     args = (_SLOTS, _SLOTS + 2, 1, _SLOTS, inrange, set())
-    (unused,), dummy = _decode_player_instruments(byte, chunk, *args)
+    (unused,), slots = _decode_player_instruments(byte, chunk, *args)
     assert unused == Instrument(name=b"INST 01")
-    assert dummy.encode() == _BLANK.encode()
+    assert slots[0].encode() == _BLANK.encode()
     (byte, chunk), _, end = _slot_image("stale", "stale")
-    assert _decode_player_instruments(byte, chunk, *args)[1] is None
+    assert 0 not in _decode_player_instruments(byte, chunk, *args)[1]
+
+
+def test_slots_past_the_count_read_the_bytes_after_the_pointer_tables():
+    """SEL_INS takes any slot below $3F; past the count INSPTLO/HI run on into what follows."""
+    (byte, chunk), body, end = _slot_image("real", "blank")
+    _, slots = _decode_instruments(byte, chunk, _SLOTS, _SLOTS + 2, 0, LOAD, end)
+    assert slots[0].encode() == _REAL.encode()
+    assert slots[1].encode()[:INST_HEADER_SIZE] == _BLANK.encode()[:INST_HEADER_SIZE]
+    assert slots[1].ram.startswith(body)
 
 
 def test_parse_sid_patterns_carry_their_ram():
@@ -1017,3 +1034,38 @@ def test_parse_sid_instruments_carry_their_ram():
     assert swm.dummy_instrument is None
     for got, want in zip(swm.instruments, exp["insts"], strict=True):
         assert got.ram.startswith(want.encode() + b"\xff")
+
+
+_FLADVAN_PRE14 = "c8b1fe8d0000c88c0000"
+_FLADVAN_14 = "b1fe1003c990b004290f8d0000"
+
+
+@pytest.mark.parametrize(
+    "code,fswitch",
+    [("", True), (_FLADVAN_PRE14, False), (_FLADVAN_PRE14 + _FLADVAN_14, True)],
+)
+def test_parse_sid_reads_whether_fladvan_takes_an_fswitch_column(code, fswitch):
+    """FLADVAN's ``cmp #$90 ; bcs ; and #$0F ; sta F_SWITCH`` is 1.4 on (player.asm:1829-1836)."""
+    sid, _ = _build_reference_image()
+    assert parse_sid(sid + bytes.fromhex(code)).kbtrack_fswitch is fswitch
+
+
+@pytest.mark.parametrize(
+    "store,stores",
+    [("", False), ("60", False), ("9d000060", True), ("4c0000", True)],
+)
+def test_parse_sid_reads_whether_smalfxe_stores_wfghost(store, stores):
+    """SMALFXE's ``jmp WRITEWF`` (player.asm:2748-2753) is commented out from 1.5."""
+    sid, _ = _build_reference_image()
+    code = bytes.fromhex("bd0000200000" + store + "0a0a0a0a8d0000") if store else b""
+    assert parse_sid(sid + code).wfctrl_fx_stores is stores
+
+
+def test_a_wrapper_patched_instrument_reads_from_post_init_memory():
+    """First Storm's wrapper patches instrument bytes per song before INITER, which PLAYERZP reads."""
+    path = resolve("MUSICIANS/C/C0zmo/First_Storm.sid")
+    if path is None:
+        pytest.skip("unreachable (offline)")
+    data = path.read_bytes()
+    assert parse_sid_song(data, 1).instruments[16].ram[0x16] == 0x4D
+    assert parse_sid_song(data, 2).instruments[16].ram[0x16] == 0x12

@@ -70,6 +70,7 @@ def test_bare_build_has_every_optional_feature_off():
 def test_light_build_drops_chords_vibrato_and_tempo_programs():
     light = BUILD_FLAGS[DRIVER_LIGHT]
     assert not light.chordsupport
+    assert not light.transposesupp
     assert not light.calcvibrato
     assert not light.tempoprgsupp
     assert not light.finefiltsweep
@@ -118,6 +119,7 @@ SITES = {
     "frame1switch": ("29309d0000a91a2908f010", "29309d0000a91aa9099d0000"),
     "wfarp_nop_supp": ("1010c980f005c9e090", "1010c9e090"),
     "octaveshift": ("4c000018a00971fe187d00009d0000", "4c000018187d00009d0000"),
+    "transposesupp": ("4c000018a00971fe187d00009d0000", "4c000018a00971fe9d0000"),
     "pwresetsw": ("2c00007008a00ab1fe9d0000", "a00ab1fe9d0000"),
     "filtresetsw": ("a00ab1fe9d00002c00003010", "a00ab1fe9d0000bc0000"),
     "portavibra": ("c0fff010bc0000b90000fd00008d0000", "bc0000b90000fd00008d0000"),
@@ -132,6 +134,7 @@ SITES = {
         "9d0000a9ff9d0000a007b1fe9d000020",
     ),
     "filt_ctrl_fx": ("48290f8d00006829f08d0000", ""),
+    "retainzeropage": ("a5fe48a5ff48a20e", "a20e"),
 }
 
 
@@ -145,9 +148,9 @@ def test_each_flag_reads_from_its_site(flag):
 def test_a_flag_without_its_site_keeps_the_fallback_build():
     """Foreign code (no anchor) leaves every anchored flag to the header's build."""
     found = detect_flags(bytes(64), 0x1000)
-    assert found == {"filt_ctrl_fx": False}
+    assert found == {"filt_ctrl_fx": False, "retainzeropage": False}
     extra = BUILD_FLAGS[DRIVER_EXTRA]
-    assert detect_features(bytes(64), 0x1000, extra) == replace(extra, filt_ctrl_fx=False)
+    assert detect_features(bytes(64), 0x1000, extra) == replace(extra, **found)
 
 
 # HRENDER ``jmp`` (target patched in), then CNTPLAY ending at offset 32: CNTPLY2 is $1020.
