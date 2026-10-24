@@ -111,10 +111,8 @@ class Effects:
                 if fx == 0x03:
                     # Portamento big-fx: skip HR / table reset and
                     # set up the slide. ``fx_value`` is the portamento
-                    # speed (passed as A to SETFMOD). _begin_portamento
-                    # seeds vibrato_offset from the previous freq so
-                    # the slide starts at the old note and drifts to
-                    # the new target.
+                    # speed (passed as A to SETFMOD); FREQLO/FREQHI keep the
+                    # old note, which PORTAME slides to the new DPITCH.
                     self._begin_portamento(v, fx_value if fx_value is not None else 0)
                     portamento_applied = True
                 elif v.slide_vib == 0xFF:
@@ -126,11 +124,6 @@ class Effects:
                     # LEGATO: SETPRTA sets SLIDEVIB=$83 (FREQMODL was
                     # already set by NPORTAM) and LEGATOO -> WRWFGHO.
                     # No STRTSND, no table reset.
-                    target_freq = self._dpitch_freq(v.dpitch)
-                    # SID-Wizard reads ZP FREQLO/HI (pre-carry, pre-detune)
-                    # for portamento seeding — see _begin_portamento.
-                    previous_freq = (v.zp_freq_hi << 8) | v.zp_freq_lo
-                    v.vibrato_offset = (previous_freq - target_freq) & 0xFFFF
                     v.slide_vib = 0x83
                 elif instrument == 0x3F:
                     # Legato (CURIFX=$3F): SID-Wizard's CHILEGA branch
@@ -141,13 +134,6 @@ class Effects:
                     # Then LEGATOO runs INSPTFX + WRWFGHO. The next
                     # PORTAME tick slides FREQ instantly to the new
                     # target (FREQMODH=$7F = $7F00 = huge step -> snaps).
-                    # We seed vibrato_offset from previous_freq - target
-                    # like _begin_portamento does, then set the slide
-                    # state directly.
-                    target_freq = self._dpitch_freq(v.dpitch)
-                    # ZP read; see _begin_portamento.
-                    previous_freq = (v.zp_freq_hi << 8) | v.zp_freq_lo
-                    v.vibrato_offset = (previous_freq - target_freq) & 0xFFFF
                     v.slide_vib = 0x83
                     v.vibrato_freqmod_hi = 0x7F
                 else:
@@ -201,9 +187,6 @@ class Effects:
                 # the only way the slide ends.
                 ins = v.instrument
                 self._apply_vibrato_byte(v, ((note & 0x0F) << 4) | (ins.vibrato & 0x0F))
-                # Snap any in-progress portamento offset so the slide
-                # actually ends here (don't leave a residual offset).
-                v.vibrato_offset = 0
 
         # INSPTFX (player.asm:3179) runs after STRTSND's own AD/SR/WFGHOST writes on a
         # new-note tick, so defer it past this tick's compose; otherwise apply it here.

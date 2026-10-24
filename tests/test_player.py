@@ -1442,6 +1442,19 @@ def test_calcvibrato_off_makes_the_vibrato_amplitude_pitch_independent():
     assert calc._freqmod(0x40, 20) != calc._freqmod(0x40, 90)
 
 
+def _set_offset(p, v, offset):
+    """FREQLO/FREQHI ``offset`` away from FREQTBL[DPITCH]."""
+    word = (p._dpitch_freq(v.dpitch) + offset) & 0xFFFF  # pylint: disable=protected-access
+    v.zp_freq_lo, v.zp_freq_hi = word & 0xFF, word >> 8
+
+
+def _offset(p, v):
+    """FREQLO/FREQHI minus FREQTBL[DPITCH], 16-bit."""
+    return (
+        ((v.zp_freq_hi << 8) | v.zp_freq_lo) - p._dpitch_freq(v.dpitch)
+    ) & 0xFFFF  # pylint: disable=protected-access
+
+
 @pytest.mark.parametrize("portavibra,offset", [(False, -0x400 + 0x21), (True, 0)])
 def test_a_pending_note_fx_portamento_slides_unless_portavibra(portavibra, offset):
     """SLIDES (player.asm:2091-2098): a note-FX portamento's SLIDEVIB=$FF runs PORTAME
@@ -1449,26 +1462,35 @@ def test_a_pending_note_fx_portamento_slides_unless_portavibra(portavibra, offse
     p = _play(_fx_swm(0x02, 0x10), frames=SETUP_FRAMES + 1)
     p.features = dataclasses.replace(p.features, portavibra=portavibra)
     v = p.voices[0]
-    v.slide_vib, v.vibrato_offset = 0xFF, (-0x400) & 0xFFFF
+    v.slide_vib = 0xFF
+    _set_offset(p, v, -0x400)
     v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = 0x20, 0
     p._tick_vibrato(v)  # pylint: disable=protected-access
-    assert v.vibrato_offset == offset & 0xFFFF and v.slide_vib == 0xFF
+    assert _offset(p, v) == offset & 0xFFFF and v.slide_vib == 0xFF
 
 
 @pytest.mark.parametrize(
     "portavibra,signed,offset",
-    [(False, -0x20, 1), (True, -0x20, 0), (False, 0x20, 0), (True, 0x20, -1)],
+    [
+        (False, -0x20, 1),
+        (True, -0x20, 0),
+        (False, 0x20, 0),
+        (True, 0x20, -1),
+        (False, 0x8000, 0x7FDF),
+    ],
 )
 def test_portame_tests_the_difference_with_the_carry_slides_leaves(portavibra, signed, offset):
     """PORTAME's ``sbc FREQLO`` (player.asm:2101) borrows unless ``cpy #$82`` set the carry;
-    PORTAVIBRA_ON's ``cpy #$FF`` clears it, moving both snap boundaries one unit."""
+    PORTAVIBRA_ON's ``cpy #$FF`` clears it, moving both snap boundaries one unit. The
+    16-bit compare is unsigned, so a pitch $8000 above the target still slides down."""
     p = _play(_fx_swm(0x02, 0x10), frames=SETUP_FRAMES + 1)
     p.features = dataclasses.replace(p.features, portavibra=portavibra)
     v = p.voices[0]
-    v.slide_vib, v.vibrato_offset = 0x83, signed & 0xFFFF
+    v.slide_vib = 0x83
+    _set_offset(p, v, signed)
     v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = 0x20, 0
     p._tick_vibrato(v)  # pylint: disable=protected-access
-    assert v.vibrato_offset == offset & 0xFFFF
+    assert _offset(p, v) == offset & 0xFFFF
 
 
 @pytest.mark.parametrize("portavibra", [False, True])
@@ -1480,10 +1502,11 @@ def test_portend_restores_the_instrument_vibrato_only_with_portavibra(portavibra
     p = _play(swm, frames=SETUP_FRAMES + 1)
     p.features = dataclasses.replace(p.features, portavibra=portavibra)
     v = p.voices[0]
-    v.slide_vib, v.vibrato_offset, v.vibrato_period = 0x83, 1, 0
+    v.slide_vib, v.vibrato_period = 0x83, 0
+    _set_offset(p, v, 1)
     v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = 0x20, 0
     p._tick_vibrato(v)  # pylint: disable=protected-access
-    assert v.vibrato_offset == 0
+    assert _offset(p, v) == 0
     assert (v.slide_vib, v.vibrato_period) == ((0x10, 12) if portavibra else (0x83, 0))
 
 
@@ -1615,11 +1638,12 @@ def test_normvib_runs_for_every_positive_slidevib(slide_vib, vibratotypes):
     p = _play(_toy_swm(), frames=SETUP_FRAMES + 1)
     p.features = dataclasses.replace(p.features, vibratotypes=vibratotypes)
     v = p.voices[0]
-    v.slide_vib, v.vibrato_delay_counter, v.vibrato_offset = slide_vib, -1, 0
+    v.slide_vib, v.vibrato_delay_counter = slide_vib, -1
+    _set_offset(p, v, 0)
     v.vibrato_freq_counter, v.vibrato_period = 4, 8
     v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = 2, 0
     p._tick_vibrato(v)  # pylint: disable=protected-access
-    assert (v.vibrato_offset, v.vibrato_freqmod_lo) == (2, 2)
+    assert (_offset(p, v), v.vibrato_freqmod_lo) == (2, 2)
 
 
 @pytest.mark.parametrize(

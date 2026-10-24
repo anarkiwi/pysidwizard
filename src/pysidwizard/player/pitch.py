@@ -28,17 +28,11 @@ class Pitch:
 
         Handles these slide_vib modes:
         * NORMVIB (any type $01..$7F, and $00 without VIBRATOTYPES):
-          delay-then-triangle vibrato as in player.asm NORMVIB + DOVIBRA.
-          Adds / subtracts FREQMOD from a running ``vibrato_offset`` that
-          ``_compose_sid_writes`` folds into the base freq.
-        * Tone portamento ($83, set by big-fx 03): drift the freq
-          offset toward 0 by FREQMOD each frame, mirroring
-          player.asm's PORTAME path (line ~1650). The offset was
-          seeded to ``previous_freq - target_freq`` at the portamento
-          row trigger so freq starts at the previous note and slides
-          to the target. When the offset crosses 0 the portamento
-          terminates (slide_vib reverts to the instrument's vibrato
-          type and vibrato state is re-initialised via SETVIB1).
+          delay-then-triangle vibrato as in player.asm NORMVIB + DOVIBRA,
+          adding / subtracting FREQMOD to FREQLO/FREQHI.
+        * Slides ($81 / $82) add / subtract FREQMOD.
+        * Tone portamento ($83, set by big-fx 03): PORTAME steps FREQLO/FREQHI
+          toward FREQTBL[DPITCH] (:meth:`_tick_portamento`).
 
         Skipped when there is no instrument loaded or when the
         slide_vib type isn't one of the above.
@@ -51,21 +45,16 @@ class Pitch:
             self._tick_portamento(v)
             return
         if v.slide_vib == 0xFF:
-            v.vibrato_offset = 0
+            self._targetn(v)
             return
+        mod = (v.vibrato_freqmod_hi << 8) | v.vibrato_freqmod_lo
         if v.slide_vib == 0x81:
-            # SLIDES path with SLIDEVIB=$81 (player.asm line 1644):
-            # ADDFREQ — FREQLO += FREQMODL, FREQHI += FREQMODH. We
-            # model this as vibrato_offset += FREQMOD (compose folds
-            # the offset into the base freq).
-            mod = (v.vibrato_freqmod_hi << 8) | v.vibrato_freqmod_lo
-            v.vibrato_offset = (v.vibrato_offset + mod) & 0xFFFF
+            # SLIDES with SLIDEVIB=$81: ADDFREQ, FREQLO/FREQHI += FREQMOD (player.asm:1644).
+            self._add_freq(v, mod)
             return
         if v.slide_vib == 0x82:
-            # SLIDES path with SLIDEVIB=$82 (player.asm line 1642):
-            # SUBFREQ — FREQLO -= FREQMODL.
-            mod = (v.vibrato_freqmod_hi << 8) | v.vibrato_freqmod_lo
-            v.vibrato_offset = (v.vibrato_offset - mod) & 0xFFFF
+            # SLIDES with SLIDEVIB=$82: SUBFREQ, FREQLO/FREQHI -= FREQMOD (player.asm:1642).
+            self._add_freq(v, -mod)
             return
         if v.slide_vib == 0x00 and self.features.vibratotypes:
             # INCVIBR (player.asm line 1688): the FREQMOD amplitude grows
@@ -100,18 +89,21 @@ class Pitch:
         # `asl A ; cmp VIBFREQU ; bcc ADDFREQ` — 8-bit asl truncates,
         # bcc takes the ADD branch iff (VIBRACNT << 1) & $FF < VIBFREQU.
         asl_result = (v.vibrato_freq_counter << 1) & 0xFF
-        if asl_result < v.vibrato_period:
-            v.vibrato_offset = (v.vibrato_offset + mod) & 0xFFFF
-        else:
-            v.vibrato_offset = (v.vibrato_offset - mod) & 0xFFFF
+        self._add_freq(v, mod if asl_result < v.vibrato_period else -mod)
+
+    @staticmethod
+    def _add_freq(v: VoiceState, delta: int) -> None:
+        """ADDFREQ / SUBFREQ: FREQLO/FREQHI += ``delta`` (16-bit wrap)."""
+        word = (((v.zp_freq_hi << 8) | v.zp_freq_lo) + delta) & 0xFFFF
+        v.zp_freq_lo, v.zp_freq_hi = word & 0xFF, word >> 8
+
+    def _targetn(self, v: VoiceState) -> None:
+        """TARGETN: FREQLO/FREQHI := FREQTBL/FREQTBH at DPITCH."""
+        i = v.dpitch & 0xFF
+        v.zp_freq_lo, v.zp_freq_hi = self.freq_lo[i], self.freq_hi[i]
 
     def _tick_portamento(self, v: VoiceState) -> None:
-        """Drift ``vibrato_offset`` toward 0 by FREQMOD each frame.
-
-        At the portamento row trigger the offset was seeded to
-        ``previous_freq - target_freq`` (signed 16-bit, two's
-        complement). Each tick we move it one FREQMOD step closer to
-        zero; when we cross zero, snap to 0.
+        """PORTAME: step FREQLO/FREQHI one FREQMOD toward FREQTBL[DPITCH], or snap to it.
 
         SID-Wizard 1.94's default ``PORTAVIBRA_ON=0`` build does NOT
         terminate the slide when target is reached — PORTEND just
@@ -121,31 +113,27 @@ class Pitch:
         PORTAVIBRA_ON, PORTEND first runs FORCVIB and SETVIB1 (player.asm:2118),
         restoring the instrument's vibrato.
         """
-        offset = v.vibrato_offset
-        # Interpret as signed 16-bit.
-        signed = offset - 0x10000 if offset & 0x8000 else offset
-        # PORTAME's ``sbc FREQLO`` borrows the carry SLIDES leaves: ``cpy #$82``
-        # sets it, PORTAVIBRA_ON's later ``cpy #$FF`` clears it, so the
-        # target - current difference it tests is ``-signed - borrow``.
-        # ADDFREQ / SUBFREQ inherit the test's carry and step FREQMOD + 1.
+        # ``sbc FREQLO`` / ``sbc FREQHI`` borrow the carry SLIDES leaves: ``cpy #$82``
+        # sets it, PORTAVIBRA_ON's later ``cpy #$FF`` clears it. The 16-bit
+        # difference's carry picks PORTAUP or PORTADN, whose own carry into
+        # ADDFREQ / SUBFREQ makes the step FREQMOD + 1.
+        cur = (v.zp_freq_hi << 8) | v.zp_freq_lo
         mod = (v.vibrato_freqmod_hi << 8) | v.vibrato_freqmod_lo
         borrow = 1 if self.features.portavibra else 0
-        step = mod + 1
-        if signed > -borrow:
-            if signed <= mod - borrow:
+        diff = self._dpitch_freq(v.dpitch) - cur - borrow
+        if diff >= 0:
+            if diff < mod:
                 self._portend(v)
-                return
-            new_signed = signed - step
+            else:
+                self._add_freq(v, mod + 1)
+        elif diff + mod >= 0:
+            self._portend(v)
         else:
-            if signed + mod + borrow > 0:
-                self._portend(v)
-                return
-            new_signed = signed + step
-        v.vibrato_offset = new_signed & 0xFFFF
+            self._add_freq(v, -mod - 1)
 
     def _portend(self, v: VoiceState) -> None:
         """PORTEND / TARGETN (player.asm:2117): the slide reached its target note."""
-        v.vibrato_offset = 0
+        self._targetn(v)
         if self.features.portavibra and v.instrument is not None:
             self._apply_vibrato_byte(v, v.instrument.vibrato)
 
@@ -159,20 +147,9 @@ class Pitch:
         ``(fx_value >> 1) + target_pitch`` per the calculated-slide
         path in SETFMOD (LSR then ADC DPITCH).
 
-        ``vibrato_offset`` is set to ``previous_freq - target_freq``
-        so when ``_compose_sid_writes`` folds it into the
-        target-note base freq we get the previous-note freq as the
-        starting point of the slide.
+        FREQLO/FREQHI keep the previous pitch; PORTAME slides it to the target.
         """
-        # Target freq: the row's note column with octave + transpose
-        # (= the play note we just stored in v.note).
         target_note = v.dpitch
-        target_freq = self._dpitch_freq(target_note)
-        # SID-Wizard's portamento seed reads ZP FREQLO/FREQHI (= the
-        # pre-carry, pre-detune ghost) — that's the value the prior
-        # frame's WF arp / vibrato / portamento step left there.
-        previous_freq = (v.zp_freq_hi << 8) | v.zp_freq_lo
-        v.vibrato_offset = (previous_freq - target_freq) & 0xFFFF
         v.slide_vib = 0x83
         # SETFMOD index: ``lsr A ; adc DPITCH,x`` — the lsr sets carry to
         # bit 0 of fx_value, then adc adds DPITCH plus that carry.
@@ -191,7 +168,6 @@ class Pitch:
         """
         ins = v.instrument
         v.slide_vib = ins.control & 0x30 if ins is not None else 0
-        v.vibrato_offset = 0
         if ins is None:
             v.vibrato_delay_counter = 0
             v.vibrato_period = 0

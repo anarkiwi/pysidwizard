@@ -157,15 +157,14 @@ class InstrumentTables:
                 elif arp == WF_ARP_NOP and self.features.wfarp_nop_supp:
                     # NORMARP's NOP path: ``CMP #$80; BEQ ENDWFTB``.
                     # The equality CMP sets carry before BEQ -> WRPITCH
-                    # sees C=1 and adds +1 to FREQ_LO. Vibrato's mutation
-                    # of FREQLO/FREQHI ZP is NOT wiped here, so the
-                    # accumulated vibrato_offset must persist.
+                    # sees C=1 and adds +1 to FREQ_LO; FREQLO/FREQHI keep
+                    # whatever VIBSLIDE left.
                     v.wf_pitch_carry = True
                 elif 0x80 <= arp < WF_ARP_REL_DOWN_BASE:
                     v.wf_arp_pitch = arp & 0x7F
                     v.wf_arp_absolute = True
-                    # ABSPTCH overwrites FREQLO/FREQHI ZP, same as RELPTCH.
-                    v.vibrato_offset = 0
+                    # ABSPTCH loads FREQLO/FREQHI from FREQTBL at the arp byte.
+                    self._load_freq(v, arp)
                     v.wf_did_pitch_write = True
                 else:
                     # $00..$7E relative up, $E0..$FF relative down.
@@ -177,18 +176,22 @@ class InstrumentTables:
             v.wf_pos += WF_ROW_STRIDE
             return
 
-    @staticmethod
-    def _relptch(v: VoiceState, arp: int) -> None:
+    def _relptch(self, v: VoiceState, arp: int) -> None:
         """RELPTCH: ``clc ; adc DPITCH,x`` then the FREQTBL load into FREQLO/FREQHI.
 
-        The load wipes any vibrato mutation of the ZP pitch, and the add's carry
+        The load replaces any vibrato mutation of the ZP pitch, and the add's carry
         reaches WRPITCH's ``adc DETUNER`` untouched (player.asm:2035-2050).
         """
         v.wf_arp_pitch = arp - 0x100 if arp >= 0x80 else arp
         v.wf_arp_absolute = False
-        v.vibrato_offset = 0
+        self._load_freq(v, arp + v.dpitch)
         v.wf_did_pitch_write = True
-        v.wf_pitch_carry = arp + (v.dpitch) > 0xFF
+        v.wf_pitch_carry = arp + v.dpitch > 0xFF
+
+    def _load_freq(self, v: VoiceState, index: int) -> None:
+        """ABSPTCH / RELPTCH: ``and #$7F ; tay ; lda FREQTBL,y ; sta FREQLO,x`` and FREQTBH into FREQHI."""
+        index &= 0x7F
+        v.zp_freq_lo, v.zp_freq_hi = self.freq_lo[index], self.freq_hi[index]
 
     def _tick_chord(self, v: VoiceState) -> bool:
         """Pull the next pitch out of the chord table for ``v``.
@@ -216,7 +219,9 @@ class InstrumentTables:
             # table; we can't replicate that exact OOB read, but we
             # also know these instruments don't actually have $7F arp
             # bytes, so this branch protects against the IndexError.
-            v.wf_did_pitch_write = True  # PLYCHRD still reaches RELPTCH
+            # PLYCHRD still reaches RELPTCH, with the CHORDS byte the out-of-range CHORDPOS reads.
+            self._load_freq(v, v.dpitch + v.wf_arp_pitch)
+            v.wf_did_pitch_write = True
             return False
         chord_start = self._chord_starts[v.current_chord - 1]
         if v.chord_pos >= len(table):

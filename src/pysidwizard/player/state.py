@@ -109,13 +109,6 @@ class VoiceState:
     # SLIDEVIB-equivalent: control byte bits 4-5. 0 = INCVIBR, $10 =
     # NORMVIB, $20/$30 = other variants we don't yet model.
     slide_vib: int = 0
-    # Accumulated signed 16-bit vibrato offset. SID-Wizard mutates
-    # FREQLO/FREQHI ghosts in place each frame; we keep the offset
-    # separate because ``_compose_sid_writes`` recomputes the base
-    # freq from the row note + arp + transpose every frame and would
-    # otherwise wipe the vibrato delta. ``_compose_sid_writes`` adds
-    # this to the base freq; ``_tick_vibrato`` mutates it.
-    vibrato_offset: int = 0
 
     # SID-Wizard's WRPITCH does ``ADC DETUNER,x`` which inherits the
     # 6502 carry flag set by the WF-table walk's branching. When the WF
@@ -135,7 +128,6 @@ class VoiceState:
     # pitch every frame.
     wf_did_pitch_write: bool = False
     # FREQLO/HI ZP keep the last note's pitch: no RELPTCH/ABSPTCH since STRTSND.
-    pitch_held: bool = False
     # True when the current frame's WFARPTB took the SKIPWFT branch
     # (= ARPSCNT was positive after dec, bpl taken). _tick_voice
     # uses this to decide whether HARDRST's ``cpy #$3F`` carry-SET
