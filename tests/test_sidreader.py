@@ -591,7 +591,7 @@ def test_parse_sid_captures_the_bytes_past_freqtbl():
     sid, _ = _build_reference_image()
     tail = bytes(range(FREQ_TABLE_TAIL_LEN))
     swm = parse_sid(sid + NOTE_FREQ_LO + tail)
-    assert swm.freq_table_tail == tail
+    assert swm.player.freq_table_tail == tail
     assert SWMPlayer(swm).freq_lo[96:] == tail
 
 
@@ -1031,7 +1031,7 @@ def test_parse_sid_patterns_carry_their_ram():
 def test_parse_sid_instruments_carry_their_ram():
     sid, exp = _build_reference_image()
     swm = parse_sid(sid)
-    assert swm.dummy_instrument is None
+    assert swm.player.dummy_instrument is None
     for got, want in zip(swm.instruments, exp["insts"], strict=True):
         assert got.ram.startswith(want.encode() + b"\xff")
 
@@ -1047,7 +1047,7 @@ _FLADVAN_14 = "b1fe1003c990b004290f8d0000"
 def test_parse_sid_reads_whether_fladvan_takes_an_fswitch_column(code, fswitch):
     """FLADVAN's ``cmp #$90 ; bcs ; and #$0F ; sta F_SWITCH`` is 1.4 on (player.asm:1829-1836)."""
     sid, _ = _build_reference_image()
-    assert parse_sid(sid + bytes.fromhex(code)).kbtrack_fswitch is fswitch
+    assert parse_sid(sid + bytes.fromhex(code)).player.quirks.kbtrack_fswitch is fswitch
 
 
 @pytest.mark.parametrize(
@@ -1058,7 +1058,7 @@ def test_parse_sid_reads_whether_smalfxe_stores_wfghost(store, stores):
     """SMALFXE's ``jmp WRITEWF`` (player.asm:2748-2753) is commented out from 1.5."""
     sid, _ = _build_reference_image()
     code = bytes.fromhex("bd0000200000" + store + "0a0a0a0a8d0000") if store else b""
-    assert parse_sid(sid + code).wfctrl_fx_stores is stores
+    assert parse_sid(sid + code).player.quirks.wfctrl_fx_stores is stores
 
 
 def test_a_wrapper_patched_instrument_reads_from_post_init_memory():

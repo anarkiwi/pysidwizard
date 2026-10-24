@@ -5,14 +5,15 @@ emits it; ``SWMconvert.c:58-59`` names 0..5). The six builds are one
 ``player.asm`` assembled with the ``feature`` blocks below. A ``.sid`` export's
 player code is the authority: a packed (SWP) game player is assembled from an
 edited ``settings.cfg``, so :func:`detect_features` reads each flag the player
-models from its ``.if feature.X_ON`` site in the code.
+models from its ``.if feature.X_ON`` site in the code, and :func:`detect_quirks`
+reads the release differences (:class:`PlayerQuirks`) the same way.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, fields, replace
-from typing import Dict, Optional
+from typing import Dict, Iterator, Optional
 
 # Driver byte values (SWMconvert.c:58-59 / altplayers.inc PLAYERTYPE lines).
 DRIVER_NORMAL = 0
@@ -288,11 +289,16 @@ def _vibslidealways(code: bytes, load: int) -> Optional[bool]:
     return False if 0 <= target < len(code) and _NOT_CNTPLY2.match(code, target) else None
 
 
+def _site_on(site: re.Pattern[bytes], code: bytes) -> Iterator[bool]:
+    """Per ``site`` match in ``code``, whether it is the on-form (group 1 matched)."""
+    return (m.group(1) is not None for m in site.finditer(code))
+
+
 def detect_flags(code: bytes, load: int) -> Dict[str, bool]:
     """The flags whose site the player ``code`` loaded at ``load`` has, read from it."""
     found: Dict[str, bool] = {}
     for name, site in _SITES.items():
-        matches = [m.group(1) is not None for m in site.finditer(code)]
+        matches = list(_site_on(site, code))
         if matches or name in _ON_ONLY:
             found[name] = any(matches)
     always = _vibslidealways(code, load)
@@ -308,3 +314,57 @@ def detect_features(code: bytes, load: int, fallback: PlayerFeatures) -> PlayerF
 
 # The flags :func:`detect_features` can read from the code.
 DETECTED_FLAGS = tuple(sorted([*_SITES, "vibslidealways"]))
+
+
+@dataclass(frozen=True)
+class PlayerQuirks:
+    """Release differences in ``player.asm`` that no ``feature`` flag gates.
+
+    Each default is the behaviour a player without the field's site keeps.
+    """
+
+    # Pre-1.8 drivers index STRTSND's first-frame FREQTBH load by X (the track offset) instead of Y = DPITCH (ChangeLog.txt:101).
+    first_frame_freq_by_track: bool = False
+    # V1.0's INSCTRL gives a control-bit-3 instrument a fixed $09 first frame and no FREQTBH pitch.
+    first_frame_fixed_waveform: bool = False
+    # Whether SETFLTP has STOPFLT (player.asm:2003-2005): a filter table starting $FF on the filter-controller track points FLTPOSI at that $FF; without it the walk goes on through the track's next instrument.
+    filter_stop_rewinds: bool = True
+    # Whether FLADVAN reads a filter row's $80-$8F third column as FSWITCH (and a zero keyboard track) rather than as the keyboard track; 1.4 on (player.asm:1827-1836).
+    kbtrack_fswitch: bool = True
+    # Whether SMALFXE stores its merged low nibble to WFGHOST (``jmp WRITEWF``, before 1.5); later releases comment the store out (player.asm:2748-2753).
+    wfctrl_fx_stores: bool = False
+
+
+# Per quirk, its site; group 1 is the quirk-on form, and no match keeps the field default.
+_QUIRK_SITES: Dict[str, re.Pattern[bytes]] = {
+    name: re.compile(pattern, re.S)
+    for name, pattern in {
+        # INSCTRL's first-frame pitch (player.asm:1838-1843): ``and #8 ; beq ; ldy DPITCH,x ; lda FREQTBH,{x|y}``.
+        "first_frame_freq_by_track": rb"\x29\x08\xf0.\xbc..(?:(\xbd)|\xb9)",
+        # V1.0's INSCTRL: ``and #8 ; beq SETWFTP ; lda #$09 ; sta WFGHOST,x``.
+        "first_frame_fixed_waveform": rb"(\x29\x08\xf0.\xa9\x09\x9d)",
+        # SETFLTP's $FF test (1993-2008): ``cmp #$FF ; beq ; stx FLTCTRL ; sty FLTPOSI ; lda FLSWTBL,x ; ora FSWITCH ; bne``, then STOPFLT's ``cpx FLTCTRL``.
+        "filter_stop_rewinds": rb"\xc9\xff\xf0.\x8e(?:(?=(..)\x8c..\xbd..\x0d..\xd0.\xec\1)|)"
+        rb"..\x8c..\xbd..\x0d..\xd0.",
+        # FLADVAN (1829-1836): 1.4's ``bpl ; cmp #$90 ; bcs ; and #$0F ; sta F_SWITCH``, else ``iny ; lda (zp),y ; sta CKBDTRK+1 ; iny ; sty FLTPOSI+1``.
+        "kbtrack_fswitch": rb"(\xb1.\x10.\xc9\x90\xb0.\x29\x0f\x8d)|\xc8\xb1.\x8d..\xc8\x98?[\x8c\x8d]",
+        # SMALFXE: ``lda WFGHOST,x ; jsr SETNIBL`` then ``sta WFGHOST,x ; rts`` / ``jmp WRITEWF`` or a bare ``rts``, before SMALFXF's ``asl x4``.
+        "wfctrl_fx_stores": rb"\xbd..\x20..(?:(\x9d..\x60|\x4c..)|\x60)\x0a\x0a\x0a\x0a\x8d",
+    }.items()
+}
+
+# Quirks the first match decides rather than any match.
+_FIRST_MATCH = frozenset({"first_frame_freq_by_track", "filter_stop_rewinds"})
+# Quirks read from the whole ``.sid`` image rather than the entered player's code.
+_IMAGE_QUIRKS = frozenset({"first_frame_freq_by_track"})
+
+
+def detect_quirks(code: bytes, image: bytes) -> PlayerQuirks:
+    """The quirks of the player ``code`` (in ``.sid`` ``image``), read from their sites."""
+    found: Dict[str, bool] = {}
+    for name, site in _QUIRK_SITES.items():
+        matches = _site_on(site, image if name in _IMAGE_QUIRKS else code)
+        first = next(matches, None)
+        if first is not None:
+            found[name] = first if name in _FIRST_MATCH else first or any(matches)
+    return PlayerQuirks(**found)

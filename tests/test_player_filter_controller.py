@@ -36,6 +36,7 @@ from pysidwizard import (
     straight_tempo,
 )
 from pysidwizard.player import SWMPlayer
+from tests._variant import with_image
 
 # INITER zeroes SPDCNT, so play calls 0 and 1 are row 0's TICK_0 and TICK_1 and
 # its note first applies on call 2 (TICK_2).
@@ -253,7 +254,7 @@ def test_an_ff_first_filter_table_keeps_fltctrl_on_the_track(rewinds):
     first = _filter_instrument(0x00, bytes([0x90, 0x10, 0x00, 0x90, 0x20, 0x00]))
     second = _filter_instrument(0x00, b"")
     swm = _two_row_swm(first, second, Row(note=50, instrument=2))
-    swm.filter_stop_rewinds = rewinds
+    with_image(swm, filter_stop_rewinds=rewinds)
     p = SWMPlayer(swm)
     for _ in range(SETUP_FRAMES + 7):
         p.play_frame()

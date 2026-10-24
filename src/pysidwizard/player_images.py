@@ -18,7 +18,7 @@ PLAYER_VERSIONS = ("1.7", "1.97")
 # Latest release; the default for player_version.
 LATEST_PLAYER_VERSION = "1.97"
 
-# (version, driver_type) -> (freq_lo_image, freq_hi_image, first_frame_freq_by_track);
+# (version, driver_type) -> (freq_lo, freq_hi, first_frame_freq_by_track);
 # the 256-byte FREQTBL / FREQTBH spans as the 6502 pitch table for that build.
 _PLAYER_IMAGES = {
     ("1.7", 0): (

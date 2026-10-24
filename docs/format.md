@@ -314,6 +314,12 @@ player emits them (channel 3 → 2 → 1, then global filter + volume). Offsets 
 wraps this into `RegWrite(clock, reg, val)`; `SWMPlayer(swm).render_grid(n)`
 returns `n` forward-filled 25-register rows.
 
+A `.sid`'s build flags, release quirks and init state are one `SWMFile.player`
+(`pysidwizard.PlayerImage`); a bare `.swm` has none, so the player takes its
+driver byte's build and the latest release's behaviour. A new release difference
+is one `_QUIRK_SITES` entry plus one `PlayerQuirks` field in
+`pysidwizard.features`.
+
 ### Player correctness
 
 The per-frame SID register output is validated byte-for-byte against the
@@ -345,16 +351,16 @@ the first play call:
   the first `frame_speed - 1` calls are MULPLY and call `frame_speed` is
   PLAYER. MULCNTP does not test CURINS, so it walks instrument 0 until the
   first STRTSND sets ARPSCNT to `$FF`.
-- The SID starts from the registers the init wrote (`SWMFile.sid_init`):
+- The SID starts from the registers the init wrote (`PlayerImage.sid_init`):
   INITER clears the chip with `$00`, or with `$08` in early drivers.
 - Pitch lookups use the image's own `FREQTBL`/`FREQTBH` (PAL or NTSC). Before
   SID-Wizard 1.8, STRTSND loads the first-frame pitch with `lda FREQTBH,x`, a
   typo (ChangeLog.txt:101). The reader detects this from the player code
-  (`SWMFile.first_frame_freq_by_track`).
+  (`PlayerQuirks.first_frame_freq_by_track`).
 - Build gates: without ARPSPEEDSUPP, WF bytes `$00-$0F` are waveforms. Without
   CHORDSUPPORT, arp `$7F` is a relative step. Without WFARP_NOP_SUPP, `$80` is
   absolute pitch 0.
-- A `.sid`'s build flags come from its player code (`SWMFile.features`,
+- A `.sid`'s build flags come from its player code (`PlayerImage.features`,
   `pysidwizard.features.detect_features`), not the header's driver byte: SWP game
   players are assembled from an edited `settings.cfg`, and some exports carry no
   header. Each modelled flag is read at its `.if feature.X_ON` site, matched
@@ -363,17 +369,17 @@ the first play call:
   PLAYER's `PLAYERZP` push.
 - Release differences the reader takes from the player code: FLADVAN reads a
   filter row's `$80-$8F` third column as FSWITCH from 1.4 on
-  (`SWMFile.kbtrack_fswitch`); SMALFXE stores its WFGHOST merge before 1.5
-  (`SWMFile.wfctrl_fx_stores`).
+  (`PlayerQuirks.kbtrack_fswitch`); SMALFXE stores its WFGHOST merge before 1.5
+  (`PlayerQuirks.wfctrl_fx_stores`).
 - DPITCH is latched when CLEGATO starts a note (note + the PLAYERZP
   instrument's octave shift + TRANSP). An instrument selected without a note,
   or a later transpose, does not move a held note.
 - SEL_INS takes any instrument below `$3F`. A slot past the count reads the
   INSPTLO/HI bytes that follow the tables, and the instrument at that pointer
   (the image, else libsidplayfp's power-on RAM) is
-  `SWMFile.spare_instruments`; a bare `.swm` uses the depacker's blank
+  `PlayerImage.spare_instruments`; a bare `.swm` uses the depacker's blank
   instrument.
-- PLAYERZP starts where the init left it (`SWMFile.zp_init`). A RETAINZEROPAGE
+- PLAYERZP starts where the init left it (`PlayerImage.zp_init`). A RETAINZEROPAGE
   PLAYER restores it every call, so a TICK_2 with CURINS = 0 reads it.
 
 ### Song selection

@@ -14,8 +14,10 @@ from pysidwizard.features import (
     DRIVER_LIGHT,
     DRIVER_MEDIUM,
     DRIVER_NORMAL,
+    PlayerQuirks,
     detect_features,
     detect_flags,
+    detect_quirks,
     features_for_driver,
 )
 from pysidwizard.sidfile import parse_psid_header
@@ -174,7 +176,7 @@ def test_release_exports_read_as_their_header_build(name):
     """A release's own exports carry the build their driver byte names, every flag read."""
     data = sw197_path(name).read_bytes()
     swm = parse_sid(data)
-    assert swm.features == features_for_driver(swm.driver_type)
+    assert swm.player.features == features_for_driver(swm.driver_type)
     header = parse_psid_header(data)
     found = detect_flags(data[header.data_start :], header.real_load_address)
     assert set(found) == set(DETECTED_FLAGS)
@@ -186,8 +188,8 @@ def test_a_packed_player_below_its_swp_data_reads_its_own_code():
     if path is None:
         pytest.skip("unreachable (offline)")
     swm = parse_sid_song(path.read_bytes(), 1)
-    assert not swm.features.detunesupport and not swm.features.multispeedsupp
-    assert swm.freq_lo_image[0x7D] == 0x22  # FREQTBL+$7D, past the 96 notes
+    assert not swm.player.features.detunesupport and not swm.player.features.multispeedsupp
+    assert swm.player.freq_lo[0x7D] == 0x22  # FREQTBL+$7D, past the 96 notes
 
 
 def test_a_packed_game_player_reads_as_its_own_build():
@@ -198,5 +200,28 @@ def test_a_packed_game_player_reads_as_its_own_build():
     swm = parse_sid_song(path.read_bytes(), 1)
     assert swm.driver_type == DRIVER_EXTRA
     off = ("hardrestypes", "vibslidealways", "arpspeedsupp", "detunesupport", "allghostregs")
-    assert not any(getattr(swm.features, flag) for flag in off)
-    assert swm.features.chordsupport and swm.features.frame1switch
+    assert not any(getattr(swm.player.features, flag) for flag in off)
+    assert swm.player.features.chordsupport and swm.player.features.frame1switch
+
+
+_SETFLTP = "c9fff00e8e97148c9b14bd87100d0711d006"
+_STOPFLT = "ec9714"
+_FSWITCH = "b1fe1003c990b004290f8d0000"
+_KBTRACK = "c8b1fe8d0000c88c0000"
+
+
+@pytest.mark.parametrize(
+    "code, changed",
+    [
+        ("", {}),
+        (_SETFLTP + "bd8810" + _SETFLTP + _STOPFLT, {"filter_stop_rewinds": False}),
+        (_SETFLTP + _STOPFLT + _SETFLTP + "bd8810", {}),
+        (_FSWITCH, {}),
+        (_KBTRACK, {"kbtrack_fswitch": False}),
+        (_KBTRACK + _FSWITCH, {}),
+        ("2908f010a9099d", {"first_frame_fixed_waveform": True}),
+    ],
+)
+def test_each_quirk_reads_from_its_site(code, changed):
+    """A quirk without its site keeps its default; the first SETFLTP decides STOPFLT."""
+    assert detect_quirks(bytes.fromhex(code), b"") == replace(PlayerQuirks(), **changed)

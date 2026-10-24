@@ -16,8 +16,9 @@ tables; vibrato; portamento; hard-restart; multispeed
 detune-with-carry chain.
 
 The player is parameterised by the compile-time feature flags of the build the
-module was exported for: :attr:`SWMPlayer.features`, derived from the SWM
-header's driver byte via :func:`pysidwizard.features.features_for_driver`.
+module was exported for: :attr:`SWMPlayer.features`, read from a ``.sid``'s
+player code (:attr:`SWMFile.player`), else derived from the SWM header's driver
+byte via :func:`pysidwizard.features.features_for_driver`.
 Driver types 0 (normal), 1 (Medium), 2 (Light) and 3 (Extra) are modelled.
 The Extra build's DELAYSUPPORT_ON ``$1D`` / ``$1E``, and the Light build's
 ARPSPEEDSUPP_ON / TEMPOPRGSUPP_ON / FILTKBTRACK_ON, are not yet gated.
@@ -69,6 +70,7 @@ from .model import (
     Transpose,
     pack_pattern,
 )
+from .variant import PlayerImage
 
 # --------------------------------------------------------------------------
 # Constants extracted from SID-Wizard's player.asm.
@@ -115,7 +117,7 @@ EXP_MAX_INDEX = EXP_THRESHOLD + len(NOTE_FREQ_HI)
 # CALCVIBRATO_ON=0 (player.asm:2883): EXPTBASE = FREQTBH-1, so the threshold is 97.
 NONCALC_THRESHOLD = len(NOTE_FREQ_HI) + 1
 NONCALC_MAX_INDEX = NONCALC_THRESHOLD + len(NOTE_FREQ_HI)
-# Bytes the assembler placed after FREQTBL (player.asm:3006 -- SEQ_FX's ``cmp #$A0`` in the shipped 1.94 build). Indexed loads past the table's 96th entry read them; the exact bytes are image-specific, so ``.sid`` inputs carry their own via :attr:`~pysidwizard.model.SWMFile.freq_table_tail` and this is only the fallback for a bare ``.swm``.
+# Bytes the assembler placed after FREQTBL (player.asm:3006 -- SEQ_FX's ``cmp #$A0`` in the shipped 1.94 build). Indexed loads past the table's 96th entry read them; the exact bytes are image-specific, so ``.sid`` inputs carry their own via :attr:`~pysidwizard.variant.PlayerImage.freq_table_tail` and this is only the fallback for a bare ``.swm``.
 FREQTBL_PAST_END = 0xC9
 
 # Longest past-FREQTBL run any indexed load can reach: ``ldy DPITCH,x`` is unmasked, so Y spans 0..255.
@@ -467,12 +469,13 @@ class SWMPlayer(MemPlayer):
 
     def __init__(self, swm: SWMFile, features: Optional[PlayerFeatures] = None) -> None:
         self.swm = swm
-        # The build this module was exported for: its player code's, else the SWM driver byte's.
-        self.features = features or swm.features or features_for_driver(swm.driver_type)
-        if swm.freq_lo_image and swm.freq_hi_image:
-            self.freq_lo, self.freq_hi = swm.freq_lo_image, swm.freq_hi_image
+        # The player variant this module was exported with: its ``.sid``'s image, else the SWM driver byte's build.
+        self.image = swm.player or PlayerImage(features_for_driver(swm.driver_type))
+        self.features = features or self.image.features
+        if self.image.freq_lo and self.image.freq_hi:
+            self.freq_lo, self.freq_hi = self.image.freq_lo, self.image.freq_hi
         else:
-            self.freq_lo, self.freq_hi = freq_tables(self.features, swm.freq_table_tail)
+            self.freq_lo, self.freq_hi = freq_tables(self.features, self.image.freq_table_tail)
         # EXPTABH is 11 zero bytes then the image's own FREQTBH (player.asm:2958).
         self.exptabh = bytes(EXPTABH_FREQTBH_OFFSET) + bytes(self.freq_hi)
         self._unsupported_effects: dict = {}
@@ -482,7 +485,7 @@ class SWMPlayer(MemPlayer):
         swm = self.swm
         # The first play call starts from whatever the tune's init wrote (INITER's
         # SID clear loop writes $00 or, in early drivers, $08).
-        self._mem[SID_BASE : SID_BASE + len(swm.sid_init)] = swm.sid_init
+        self._mem[SID_BASE : SID_BASE + len(self.image.sid_init)] = self.image.sid_init
 
         # Frame rate. SID-Wizard's frame speed is the value at offset 4
         # of the header (``FSPEEDPOS`` / 1..8). Each frame the player
@@ -505,7 +508,7 @@ class SWMPlayer(MemPlayer):
         self._chord_starts: List[int] = _parse_chord_starts(swm.chord_table)
         # PLAYERZP images of instruments and patterns, keyed by object identity; a spare slot is its image window.
         self._zp_images: dict[int, bytes] = {
-            id(ins): ins.ram for ins in swm.spare_instruments.values()
+            id(ins): ins.ram for ins in self.image.spare_instruments.values()
         }
 
         # Per-voice state. SID-Wizard assigns the SWM sequences in the
@@ -518,7 +521,7 @@ class SWMPlayer(MemPlayer):
         # instrument 1 (packdepack.inc:621-633) unless the image says otherwise.
         # PLAYERZP points at it whenever a path loads CURINS=0 without testing it
         # (HRENDER, MULCNTP).
-        self._dummy: Optional[Instrument] = swm.dummy_instrument or (
+        self._dummy: Optional[Instrument] = self.image.dummy_instrument or (
             swm.instruments[0] if swm.instruments else None
         )
         self._empty = _empty_instrument()
@@ -557,7 +560,7 @@ class SWMPlayer(MemPlayer):
             self.filter_cutoff_hi,
             self.filter_cutoff_lo,
             self.filter_switch,
-        ) = swm.filter_init
+        ) = self.image.filter_init
         # FSWITCH (player.asm:1085): the low nibble of $D417 -- per-voice routing bits
         # maintained by STRTSND's SETFLTP (player.asm:1999-2008), plus the filter-external
         # bit that only BIGFX1F writes; its start is the operand the tune's init leaves.
@@ -580,7 +583,7 @@ class SWMPlayer(MemPlayer):
         # PLAYERZP's target: the bytes ``lda (PLAYERZP),y`` reads. One pointer shared by
         # every track, so a TICK_2 with CURINS=0 (LEGATOO's INSPTFX) reads whatever the
         # last pattern or instrument load left, starting where the init left it.
-        self._zp = swm.zp_init
+        self._zp = self.image.zp_init
         # CWEPCNT (player.asm ~line 1761) is a single global byte —
         # the sweep-cycle countdown for whichever voice currently owns
         # FilterProgram. Mirror that here as a player-level (not per-
@@ -588,7 +591,7 @@ class SWMPlayer(MemPlayer):
         self.filter_sweep_count = 0
 
         self.frame_idx = 0
-        self._play_gate = self.swm.play_gate[0] if self.swm.play_gate else 0
+        self._play_gate = self.image.play_gate[0] if self.image.play_gate else 0
         self.finished = False
 
         # Multispeed state. For ``frame_speed > 1`` the exporter's CIA player
@@ -610,15 +613,15 @@ class SWMPlayer(MemPlayer):
         the bit-6 / bit-7 multispeed flags set) without advancing
         rows or running HR setup.
         """
-        if self.swm.play_gate:
-            _, mask, play_sign = self.swm.play_gate
+        if self.image.play_gate:
+            _, mask, play_sign = self.image.play_gate
             self._play_gate ^= mask
             if self._play_gate & 0x80 != play_sign:
                 return
         is_multispeed_tick = self.swm.frame_speed > 1 and self._multispeed_phase != 0
         if self.features.retainzeropage:
             # PLAYER restores the caller's PLAYERZP on return (player.asm:1229-1235).
-            self._zp = self.swm.zp_init
+            self._zp = self.image.zp_init
         # SID-Wizard's PLAYER calls DOTRACK in REVERSE voice order
         # (channel 3, 2, 1 = v2, v1, v0; player.asm lines 613-656).
         # State updates that race across voices in the same frame
@@ -1080,7 +1083,7 @@ class SWMPlayer(MemPlayer):
         if 1 <= ref <= len(self.swm.instruments):
             return self.swm.instruments[ref - 1]
         if 1 <= ref <= 0x3E:
-            return self.swm.spare_instruments.get(ref, self._empty)
+            return self.image.spare_instruments.get(ref, self._empty)
         return None
 
     def _apply_row(self, v: VoiceState, row) -> None:
@@ -1463,7 +1466,7 @@ class SWMPlayer(MemPlayer):
         elif high == 0xE0:
             # SMALFXE (player.asm:2748) merges the nibble into WFGHOST's low nibble; from 1.5 its
             # ``jmp WRITEWF`` is commented out, leaving a no-op.
-            if self.swm.wfctrl_fx_stores and self.features.wfctrl_smallfx:
+            if self.image.quirks.wfctrl_fx_stores and self.features.wfctrl_smallfx:
                 v.sid_ctrl = (v.sid_ctrl & 0xF0) | low
         elif high == 0x70:
             self._select_chord(v, low)
@@ -1708,7 +1711,7 @@ class SWMPlayer(MemPlayer):
         elif (
             first == FILT_TABLE_END
             and self.filter_controller_voice is v
-            and self.swm.filter_stop_rewinds
+            and self.image.quirks.filter_stop_rewinds
         ):
             self.filt_pos = start
 
@@ -2403,7 +2406,7 @@ class SWMPlayer(MemPlayer):
         if not self.features.filtkbtrack:
             return
         track = table[pos + 2] if pos + 2 < len(table) else 0
-        if self.swm.kbtrack_fswitch and 0x80 <= track < 0x90:
+        if self.image.quirks.kbtrack_fswitch and 0x80 <= track < 0x90:
             self.filter_switch = track & 0x0F
             track = 0
         self.filter_kbd_track = track
@@ -2543,7 +2546,7 @@ class SWMPlayer(MemPlayer):
             # retain their pre-HR values — player.asm line 1271 has
             # ``and #8 ; beq SETWFTP`` to bypass the writes.
             if not self.features.frame1switch or (
-                ins.control & 0x08 and self.swm.first_frame_fixed_waveform
+                ins.control & 0x08 and self.image.quirks.first_frame_fixed_waveform
             ):
                 # Flag off, STRTSND does ``lda #$09 ; sta WFGHOST,x`` unconditionally; V1.0 does it on bit 3.
                 v.sid_ctrl = 0x09
@@ -2551,7 +2554,7 @@ class SWMPlayer(MemPlayer):
                 v.sid_ctrl = ins.effective_first_waveform & v.ptn_gate
                 # INSCTRL (player.asm:1839) indexes with an unmasked ``ldy DPITCH,x``;
                 # pre-1.8 drivers index by the track offset X instead.
-                if self.swm.first_frame_freq_by_track:
+                if self.image.quirks.first_frame_freq_by_track:
                     index = v.channel * TRACK_STRIDE
                 else:
                     index = v.dpitch

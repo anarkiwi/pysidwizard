@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import replace
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Union
 
@@ -120,7 +121,7 @@ from .constants import (
     TUNING_TYPE_POS,
 )
 from .errors import SIDFormatError, SWMFormatError
-from .features import detect_features, features_for_driver
+from .features import detect_features, detect_quirks, features_for_driver
 from .model import (
     End,
     Instrument,
@@ -134,6 +135,7 @@ from .model import (
 from .player import FREQ_TABLE_SPAN, FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
 from .reader import LATEST_PLAYER_VERSION, apply_player_image
 from .sidfile import find_player_signature, parse_psid_header
+from .variant import PlayerImage
 
 # SID-Wizard's "packed" (``SWP``) export keeps an ``SWP1`` magic (the ``SWM1``
 # header with its ``M`` turned into ``P``). Despite the name the tune data is
@@ -251,13 +253,6 @@ def _freq_table_tail(data: bytes) -> bytes:
     return data[end : end + FREQ_TABLE_TAIL_LEN]
 
 
-# INSCTRL's first-frame pitch (player.asm:1838-1843): ``and #8 ; beq ; ldy DPITCH,x ; lda FREQTBH,{y|x}``.
-_INSCTRL_FREQTBH = re.compile(rb"\x29\x08\xf0.\xbc..([\xb9\xbd])", re.S)
-_LDA_ABS_X = 0xBD
-# V1.0's INSCTRL: ``and #8 ; beq SETWFTP ; lda #$09 ; sta WFGHOST,x``.
-_INSCTRL_FIXED_WAVEFORM = re.compile(rb"\x29\x08\xf0.\xa9\x09\x9d", re.S)
-
-
 # ABSPTCH's pitch load (player.asm:2531-2535): ``tay ; lda FREQTBL,y ; sta FREQLO,x ; lda FREQTBH,y ; sta FREQHI,x``.
 _CODE_FREQTBL = CodePattern("A8 B9 {lo:w} 9D ?? ?? B9 {hi:w} 9D")
 # FREQTBL follows FREQTBH directly, or after the 8-byte keyboard-track slope.
@@ -279,12 +274,6 @@ def _freq_table_images(data: bytes) -> tuple:
                 image.mem[hi : hi + FREQ_TABLE_SPAN]
             )
     return b"", b""
-
-
-def _first_frame_freq_by_track(data: bytes) -> bool:
-    """Whether STRTSND's first-frame FREQTBH load is the pre-1.8 ``lda FREQTBH,x`` typo."""
-    match = _INSCTRL_FREQTBH.search(data)
-    return bool(match) and match.group(1)[0] == _LDA_ABS_X
 
 
 # COMMONREGS (player.asm:748-797): ``lda #FSWITCH ; ora #RESONIB ; sta $D417 ; ... ; clc`` then, past the
@@ -348,56 +337,28 @@ def _player_code(data: bytes) -> tuple:
     return code, load
 
 
-def _player_features(data: bytes, driver_type: int):
-    """The build flags of the player code the init enters, over the driver byte's build."""
-    code, load = _player_code(data)
-    return detect_features(code, load, features_for_driver(driver_type))
-
-
-# SETFLTP's $FF test (player.asm:1993-2008): ``cmp #$FF ; beq ; stx FLTCTRL ; sty FLTPOSI ;
-# lda FLSWTBL,x ; ora FSWITCH ; bne``, then STOPFLT's ``cpx FLTCTRL`` where the player has it.
-_SETFLTP_END = re.compile(rb"\xc9\xff\xf0.\x8e(..)\x8c..\xbd..\x0d..\xd0.(\xec\1)?", re.S)
-
-
-# FLADVAN (1.4+, player.asm:1829-1836): ``lda (zp),y ; bpl wrKbTrk ; cmp #$90 ; bcs wrKbTrk ; and #$0F ; sta F_SWITCH``.
-_FLADVAN_FSWITCH = re.compile(rb"\xb1.\x10.\xc9\x90\xb0.\x29\x0f\x8d", re.S)
-# FLADVAN before 1.4: ``iny ; lda (zp),y ; sta CKBDTRK+1 ; iny ; sty FLTPOSI+1``.
-_FLADVAN_KBTRACK = re.compile(rb"\xc8\xb1.\x8d..\xc8(?:\x98)?[\x8c\x8d]", re.S)
-
-
-# SMALFXE: ``lda WFGHOST,x ; jsr SETNIBL`` then a store (``sta WFGHOST,x ; rts`` or
-# ``jmp WRITEWF``) or a bare ``rts``, before SMALFXF's ``asl x4 ; sta RESONIB+1``.
-_SMALFXE = re.compile(rb"\xbd..\x20..(?:(\x9d..\x60|\x4c..)|\x60)\x0a\x0a\x0a\x0a\x8d", re.S)
-
-
-def _filter_stop_rewinds(code: bytes) -> bool:
-    """Whether ``code``'s SETFLTP has STOPFLT; True when no SETFLTP matches."""
-    match = _SETFLTP_END.search(code)
-    return match is None or match.group(2) is not None
-
-
 def parse_sid(data: bytes) -> SWMFile:
     """Parse a single-SID SID-Wizard ``.sid`` image into a :class:`SWMFile`.
 
-    Also captures the image's :attr:`~pysidwizard.model.SWMFile.freq_table_tail`
-    so the player reproduces past-table pitch lookups exactly, and the build
-    flags its player code was assembled with (:func:`~pysidwizard.features.detect_features`).
+    Its :attr:`~pysidwizard.model.SWMFile.player` holds the image's build flags
+    (:func:`~pysidwizard.features.detect_features`), release quirks and tables,
+    so the player reproduces its code and past-table pitch lookups exactly.
     """
     swm = _parse_sid_layout(data)
-    swm.freq_table_tail = _freq_table_tail(data)
-    swm.first_frame_freq_by_track = _first_frame_freq_by_track(data)
-    swm.filter_init = _filter_init(data)
-    swm.features = _player_features(data, swm.driver_type)
-    code = _player_code(data)[0]
-    swm.filter_stop_rewinds = _filter_stop_rewinds(code)
-    swm.first_frame_fixed_waveform = _INSCTRL_FIXED_WAVEFORM.search(code) is not None
-    swm.kbtrack_fswitch = _FLADVAN_KBTRACK.search(code) is None or bool(
-        _FLADVAN_FSWITCH.search(code)
-    )
-    swm.wfctrl_fx_stores = any(m.group(1) for m in _SMALFXE.finditer(code))
+    code, load = _player_code(data)
     image = SidImage.from_sid(data)
-    swm.play_gate = _play_gate(image.mem, image.header.init_address or image.load)
-    swm.freq_lo_image, swm.freq_hi_image = _freq_table_images(data)
+    base = swm.player or PlayerImage(features_for_driver(swm.driver_type))
+    freq_lo, freq_hi = _freq_table_images(data)
+    swm.player = replace(
+        base,
+        features=detect_features(code, load, base.features),
+        quirks=detect_quirks(code, data),
+        freq_lo=freq_lo,
+        freq_hi=freq_hi,
+        freq_table_tail=_freq_table_tail(data),
+        filter_init=_filter_init(data),
+        play_gate=_play_gate(image.mem, image.header.init_address or image.load),
+    )
     return swm
 
 
@@ -642,13 +603,16 @@ def parse_sid_song(data: bytes, song: int) -> SWMFile:
             f"song {song} selects subtune {subtune}, but the module decodes "
             f"{swm.subtune_count} subtune(s)"
         )
-    swm.sid_init = sid
-    # INITER zeroes FSWITCH only under FILT_CTRL_FX_ON (player.asm:418), so read the operands it left.
-    swm.filter_init = _filter_init(after[found[1] if found else 0 :])
     zp = after[_PLAYERZP] | (after[_PLAYERZP + 1] << 8)
-    swm.zp_init = (after + after)[zp : zp + _ZP_REACH]
+    init = {
+        "sid_init": sid,
+        # INITER zeroes FSWITCH only under FILT_CTRL_FX_ON (player.asm:418), so read the operands it left.
+        "filter_init": _filter_init(after[found[1] if found else 0 :]),
+        "zp_init": (after + after)[zp : zp + _ZP_REACH],
+    }
     if found is not None:
-        swm.play_gate = _play_gate(after, found[1])
+        init["play_gate"] = _play_gate(after, found[1])
+    swm.player = replace(swm.player, **init)
     return swm.subtune(subtune)
 
 
@@ -665,8 +629,11 @@ def _patched_instruments(swm: SWMFile, data: bytes, after: bytes, base: int, swp
         return
     if len(runtime.instruments) == len(swm.instruments):
         swm.instruments = runtime.instruments
-        swm.dummy_instrument = runtime.dummy_instrument
-        swm.spare_instruments = runtime.spare_instruments
+        swm.player = replace(
+            swm.player,
+            dummy_instrument=runtime.player.dummy_instrument,
+            spare_instruments=runtime.player.spare_instruments,
+        )
 
 
 def read_sid(path: Union[str, os.PathLike[str]]) -> SWMFile:
@@ -841,7 +808,6 @@ def _assemble(
     tuning type, ...). It is ``None`` for a packed export that omits the
     ``SWM1`` header, in which case the model's own field defaults are kept.
     """
-    slots = slots or {}
     meta = {}
     if swm_header is not None:
         meta = dict(
@@ -866,8 +832,15 @@ def _assemble(
         tempo_table=tempo_table,
         subtune_tempos=subtune_tempos,
         load_address=load,
-        dummy_instrument=slots.get(0),
-        spare_instruments={k: ins for k, ins in slots.items() if k},
+        player=(
+            PlayerImage(
+                features_for_driver(meta.get("driver_type", 0)),
+                dummy_instrument=slots.get(0),
+                spare_instruments={k: ins for k, ins in slots.items() if k},
+            )
+            if slots
+            else None
+        ),
         **meta,
     )
 

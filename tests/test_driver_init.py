@@ -18,17 +18,16 @@ from pysidwizard import (
     parse_sid_song,
     straight_tempo,
 )
-from pysidwizard.features import features_for_driver
+from pysidwizard.features import detect_quirks, features_for_driver
 from pysidwizard.formats import FORMAT
 from pysidwizard.player import NOTE_FREQ_HI, NOTE_FREQ_LO, TRACK_STRIDE, SWMPlayer, freq_tables
 from pysidwizard.sidreader import (
-    _filter_stop_rewinds,
-    _first_frame_freq_by_track,
     _play_gate,
     _player_bases,
     _subtune_operands,
 )
 from tests._hvsc_fetch import resolve
+from tests._variant import with_image
 
 
 def _tune(relpath):
@@ -99,7 +98,7 @@ def test_first_call_of_a_multispeed_tune_is_mulply():
 
 def test_init_register_state_is_where_the_first_call_starts():
     swm = _swm(bytes([0x1A, 0x0F, 0x00]), row=Row())
-    swm.sid_init = bytes([0x08] * 25)
+    with_image(swm, sid_init=bytes([0x08] * 25))
     frame = _grid(swm, 1)[0]
     assert frame[:0x15] == [0x08] * 0x15
     assert frame[0x18] == 0x0F  # COMMONREGS writes $D418 on every call
@@ -108,7 +107,7 @@ def test_init_register_state_is_where_the_first_call_starts():
 def test_filter_operands_the_init_leaves_reach_the_first_call():
     """RESONIB / CTFHGHO / CTFLGHO / FSWITCH as the init left them (player.asm:749-797)."""
     swm = _swm(bytes([0x1A, 0x0F, 0x00]), row=Row())
-    swm.filter_init = (0xA0, 0x0B, 0x07, 0x01)
+    with_image(swm, filter_init=(0xA0, 0x0B, 0x07, 0x01))
     assert _grid(swm, 1)[0][0x15:0x18] == [0x07, 0x0B, 0xA1]
     assert _grid(swm.subtune(0), 1)[0][0x15:0x18] == [0x07, 0x0B, 0xA1]
 
@@ -165,8 +164,8 @@ def test_a_chord_row_the_table_cannot_resolve_still_writes_the_pitch(chord):
 def test_fswitch_is_the_operand_the_init_leaves(relpath, song, image, expect):
     """FSWITCH (player.asm:750) is read after the init, which zeroes it only under FILT_CTRL_FX_ON."""
     data = _tune(relpath)
-    assert parse_sid(data).filter_init[3] == image
-    assert parse_sid_song(data, song).filter_init[3] == expect
+    assert parse_sid(data).player.filter_init[3] == image
+    assert parse_sid_song(data, song).player.filter_init[3] == expect
 
 
 @pytest.mark.parametrize(
@@ -202,14 +201,16 @@ def test_pre_18_first_frame_pitch_indexes_freqtbh_by_track():
     """ChangeLog.txt:101: STRTSND's ``lda FREQTBH,x`` typo before SID-Wizard 1.8."""
     swm = _swm(bytes([0x1A, 0x0F, 0x00]))
     assert _grid(swm, 3)[2][1] == NOTE_FREQ_HI[49]
-    swm.first_frame_freq_by_track = True
+    with_image(swm, first_frame_freq_by_track=True)
     assert _grid(swm, 3)[2][1] == NOTE_FREQ_HI[0]
 
 
 @pytest.mark.parametrize("opcode, by_track", [(0xB9, False), (0xBD, True), (None, False)])
 def test_first_frame_freq_index_is_read_from_the_player_code(opcode, by_track):
     code = b"" if opcode is None else bytes([0x29, 0x08, 0xF0, 0x10, 0xBC, 0x4A, 0x10, opcode])
-    assert _first_frame_freq_by_track(b"\x00" * 8 + code + b"\x00" * 8) is by_track
+    quirks = detect_quirks(b"", b"\x00" * 8 + code + b"\x00" * 8)
+    assert quirks.first_frame_freq_by_track is by_track
+    assert detect_quirks(code, b"").first_frame_freq_by_track is False
 
 
 def test_player_bases_need_a_jump_pair_below_the_tracker_text():
@@ -223,9 +224,9 @@ def test_player_bases_need_a_jump_pair_below_the_tracker_text():
 def test_ntsc_export_plays_its_own_frequency_table():
     pal = parse_sid(_tune("DEMOS/0-9/8-Bit_Bard.sid"))
     ntsc = parse_sid(_tune("DEMOS/A-F/Fallen_Down_Reprise.sid"))
-    assert pal.freq_lo_image[:96] == NOTE_FREQ_LO and pal.freq_hi_image[:96] == NOTE_FREQ_HI
-    assert ntsc.freq_lo_image[:96] != NOTE_FREQ_LO
-    assert SWMPlayer(ntsc).freq_lo == ntsc.freq_lo_image
+    assert pal.player.freq_lo[:96] == NOTE_FREQ_LO and pal.player.freq_hi[:96] == NOTE_FREQ_HI
+    assert ntsc.player.freq_lo[:96] != NOTE_FREQ_LO
+    assert SWMPlayer(ntsc).freq_lo == ntsc.player.freq_lo
 
 
 def test_song_runs_init_to_pick_the_subtune():
@@ -273,7 +274,7 @@ def test_song_follows_a_patched_jump_table():
 def test_song_reports_init_sid_writes():
     """An early INITER clears the SID with the test bit ($08) rather than zero."""
     swm = parse_sid_song(_tune("MUSICIANS/A/Ant1/Techno_2.sid"), 1)
-    assert swm.sid_init[:0x18] == bytes([0x08] * 0x18)
+    assert swm.player.sid_init[:0x18] == bytes([0x08] * 0x18)
 
 
 def test_song_beyond_the_decoded_subtunes_is_a_parse_error(monkeypatch):
@@ -289,7 +290,7 @@ def test_song_beyond_the_decoded_subtunes_is_a_parse_error(monkeypatch):
 def test_song_starts_from_the_psid_drivers_volume():
     """The PSID driver writes $0F to $D418 before init; INITER's clear stops at $D417."""
     swm = parse_sid_song(_tune("DEMOS/0-9/8-Bit_Bard.sid"), 1)
-    assert swm.sid_init[0x18] == 0x0F
+    assert swm.player.sid_init[0x18] == 0x0F
 
 
 def _gate_image(branch: int, sta: int = 0x1007) -> bytes:
@@ -315,12 +316,12 @@ def test_play_gate_decodes_a_self_toggling_player_entry(mem, expect):
 def test_song_reads_the_play_gate_of_its_player():
     assert parse_sid_song(
         _tune("MUSICIANS/D/Deetsay/Kauas_pilvet_scrollaavat.sid"), 1
-    ).play_gate == (
+    ).player.play_gate == (
         0x00,
         0x80,
         0x00,
     )
-    assert parse_sid(_tune("DEMOS/0-9/8-Bit_Bard.sid")).play_gate == ()
+    assert parse_sid(_tune("DEMOS/0-9/8-Bit_Bard.sid")).player.play_gate == ()
 
 
 @pytest.mark.parametrize(
@@ -329,12 +330,12 @@ def test_song_reads_the_play_gate_of_its_player():
 def test_gated_player_ticks_on_alternate_calls(gate, first):
     """Each PLAYER tick lands on every other call; a skipped call leaves the registers be."""
     swm = _swm(bytes([0x1A, 0x0F, 0x00]))
-    swm.sid_init = bytes([0x08] * 25)
+    with_image(swm, sid_init=bytes([0x08] * 25))
     ungated = _grid(swm, 20)
-    gated = _grid(replace(swm, play_gate=gate), 2 * 20 + first)
+    gated = _grid(with_image(replace(swm), play_gate=gate), 2 * 20 + first)
     assert [row[:0x18] for row in gated[:first]] == [[0x08] * 0x18] * first
     assert gated[first:] == [row for row in ungated for _ in range(2)]
-    assert _grid(replace(swm, play_gate=gate).subtune(0), 2 * 20 + first) == gated
+    assert _grid(with_image(replace(swm), play_gate=gate).subtune(0), 2 * 20 + first) == gated
 
 
 @pytest.mark.parametrize(
@@ -344,14 +345,14 @@ def test_gated_player_ticks_on_alternate_calls(gate, first):
 def test_stopflt_is_read_from_the_player_code(tail, rewinds):
     """SETFLTP's ``bne wriFswi`` falls into STOPFLT's ``cpx FLTCTRL`` (player.asm:2003), 1.7 on."""
     setfltp = bytes.fromhex("c9fff00e8e97148c9b14bd87100d0711d006")
-    assert _filter_stop_rewinds(b"\x00" * 8 + setfltp + tail) is rewinds
-    assert _filter_stop_rewinds(b"\x00" * 8) is True
+    assert detect_quirks(b"\x00" * 8 + setfltp + tail, b"").filter_stop_rewinds is rewinds
+    assert detect_quirks(b"\x00" * 8, b"").filter_stop_rewinds is True
 
 
 def test_parse_sid_reads_stopflt_from_the_entered_player():
     """A pre-1.7 export's SETFLTP leaves FLTPOSI walking past an $FF-first filter table."""
     data = _tune("MUSICIANS/S/Sta64/Funkito_Reloaded.sid")
-    assert parse_sid_song(data, 1).filter_stop_rewinds is False
+    assert parse_sid_song(data, 1).player.quirks.filter_stop_rewinds is False
 
 
 @pytest.mark.parametrize(
@@ -368,8 +369,13 @@ def test_v10_player_reads_every_subtune_from_its_setstune_table():
     assert parse_sid(data).subtune_count == 10
     swm = parse_sid_song(data, 1)
     assert [seq[0] for seq in swm.sequences] == [PlayPattern(10), PlayPattern(11), PlayPattern(12)]
-    assert swm.first_frame_fixed_waveform is True
-    assert parse_sid_song(_tune("DEMOS/0-9/8-Bit_Bard.sid"), 1).first_frame_fixed_waveform is False
+    assert swm.player.quirks.first_frame_fixed_waveform is True
+    assert (
+        parse_sid_song(
+            _tune("DEMOS/0-9/8-Bit_Bard.sid"), 1
+        ).player.quirks.first_frame_fixed_waveform
+        is False
+    )
 
 
 def test_v10_first_frame_is_a_fixed_waveform_without_pitch():
@@ -377,7 +383,7 @@ def test_v10_first_frame_is_a_fixed_waveform_without_pitch():
     swm = _swm(bytes([0x1A, 0x0F, 0x00]))
     swm.instruments[0].first_waveform = 0x11
     assert _grid(swm, 3)[2][1:5:3] == [NOTE_FREQ_HI[49], 0x11]
-    swm.first_frame_fixed_waveform = True
+    with_image(swm, first_frame_fixed_waveform=True)
     grid = _grid(swm, 3)
     assert grid[2][1:5:3] == [grid[1][1], 0x09]
 
@@ -385,8 +391,7 @@ def test_v10_first_frame_is_a_fixed_waveform_without_pitch():
 def _pw_swm():
     swm = _swm(bytes([0x1A, 0x0F, 0x00]))
     swm.instruments[0].pw_table = bytes([0x84, 0x40, 0x00])
-    swm.sid_init = bytes([0x08] * 25)
-    return swm
+    return with_image(swm, sid_init=bytes([0x08] * 25))
 
 
 def test_new_note_ticks_leave_the_init_pulse_width():
@@ -398,5 +403,5 @@ def test_new_note_ticks_leave_the_init_pulse_width():
 def test_all_ghost_registers_write_the_pulse_width_every_call():
     """ALLGHOSTREGS' COMMONREGS copies SIDG.PLSW to the chip on every call (player.asm:603-614)."""
     swm = _pw_swm()
-    swm.features = replace(features_for_driver(0), allghostregs=True)
+    with_image(swm, features=replace(features_for_driver(0), allghostregs=True))
     assert _grid(swm, 1)[0][2:4] == [0x00, 0x00]
