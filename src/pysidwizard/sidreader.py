@@ -73,7 +73,8 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, List, Optional, Union
+from functools import lru_cache
+from typing import Any, Dict, List, Optional, Union
 
 from pysidtracker import (
     MEM_SIZE,
@@ -87,6 +88,7 @@ from pysidtracker import (
     wire_mpu,
 )
 from pysidtracker.oracle import DRIVER_VOLUME, SID_VOLUME
+from pysidtracker.poweron import power_on_ram
 from pysidtracker.registers import sid_model_for_flags
 
 from .constants import (
@@ -101,6 +103,7 @@ from .constants import (
     FRAMESPEED_POS,
     HIGHLIGHT_POS,
     INST_FILTER_TABLE_PTR_POS,
+    INST_HEADER_SIZE,
     INSTRUMENT_AMOUNT_POS,
     KEYBOARD_TYPE_POS,
     MUTE_POS,
@@ -356,6 +359,17 @@ def _player_features(data: bytes, driver_type: int):
 _SETFLTP_END = re.compile(rb"\xc9\xff\xf0.\x8e(..)\x8c..\xbd..\x0d..\xd0.(\xec\1)?", re.S)
 
 
+# FLADVAN (1.4+, player.asm:1829-1836): ``lda (zp),y ; bpl wrKbTrk ; cmp #$90 ; bcs wrKbTrk ; and #$0F ; sta F_SWITCH``.
+_FLADVAN_FSWITCH = re.compile(rb"\xb1.\x10.\xc9\x90\xb0.\x29\x0f\x8d", re.S)
+# FLADVAN before 1.4: ``iny ; lda (zp),y ; sta CKBDTRK+1 ; iny ; sty FLTPOSI+1``.
+_FLADVAN_KBTRACK = re.compile(rb"\xc8\xb1.\x8d..\xc8(?:\x98)?[\x8c\x8d]", re.S)
+
+
+# SMALFXE: ``lda WFGHOST,x ; jsr SETNIBL`` then a store (``sta WFGHOST,x ; rts`` or
+# ``jmp WRITEWF``) or a bare ``rts``, before SMALFXF's ``asl x4 ; sta RESONIB+1``.
+_SMALFXE = re.compile(rb"\xbd..\x20..(?:(\x9d..\x60|\x4c..)|\x60)\x0a\x0a\x0a\x0a\x8d", re.S)
+
+
 def _filter_stop_rewinds(code: bytes) -> bool:
     """Whether ``code``'s SETFLTP has STOPFLT; True when no SETFLTP matches."""
     match = _SETFLTP_END.search(code)
@@ -377,6 +391,10 @@ def parse_sid(data: bytes) -> SWMFile:
     code = _player_code(data)[0]
     swm.filter_stop_rewinds = _filter_stop_rewinds(code)
     swm.first_frame_fixed_waveform = _INSCTRL_FIXED_WAVEFORM.search(code) is not None
+    swm.kbtrack_fswitch = _FLADVAN_KBTRACK.search(code) is None or bool(
+        _FLADVAN_FSWITCH.search(code)
+    )
+    swm.wfctrl_fx_stores = any(m.group(1) for m in _SMALFXE.finditer(code))
     image = SidImage.from_sid(data)
     swm.play_gate = _play_gate(image.mem, image.header.init_address or image.load)
     swm.freq_lo_image, swm.freq_hi_image = _freq_table_images(data)
@@ -614,8 +632,11 @@ def parse_sid_song(data: bytes, song: int) -> SWMFile:
         swm, subtune = parse_sid(data), song - 1
     else:
         mem, base, subtune, swp = found
-        direct = base == (header.init_address or header.real_load_address)
-        swm = parse_sid(data if direct else _module_window(data, mem, base, swp))
+        if base == (header.init_address or header.real_load_address):
+            swm = parse_sid(data)
+            _patched_instruments(swm, data, after, base, swp)
+        else:
+            swm = parse_sid(_module_window(data, mem, base, swp))
     if not 0 <= subtune < swm.subtune_count:
         raise SIDFormatError(
             f"song {song} selects subtune {subtune}, but the module decodes "
@@ -624,9 +645,28 @@ def parse_sid_song(data: bytes, song: int) -> SWMFile:
     swm.sid_init = sid
     # INITER zeroes FSWITCH only under FILT_CTRL_FX_ON (player.asm:418), so read the operands it left.
     swm.filter_init = _filter_init(after[found[1] if found else 0 :])
+    zp = after[_PLAYERZP] | (after[_PLAYERZP + 1] << 8)
+    swm.zp_init = (after + after)[zp : zp + _ZP_REACH]
     if found is not None:
         swm.play_gate = _play_gate(after, found[1])
     return swm.subtune(subtune)
+
+
+def _patched_instruments(swm: SWMFile, data: bytes, after: bytes, base: int, swp: int) -> None:
+    """Take ``swm``'s instruments as the whole init left them in memory.
+
+    A wrapper may patch instrument bytes per song before INITER (a table of
+    address / per-song value rows), and PLAYERZP reads the patched memory. Only
+    the instruments are taken: the init also rewrites the SWM header region.
+    """
+    try:
+        runtime = parse_sid(_module_window(data, after, base, swp))
+    except SIDFormatError:
+        return
+    if len(runtime.instruments) == len(swm.instruments):
+        swm.instruments = runtime.instruments
+        swm.dummy_instrument = runtime.dummy_instrument
+        swm.spare_instruments = runtime.spare_instruments
 
 
 def read_sid(path: Union[str, os.PathLike[str]]) -> SWMFile:
@@ -726,7 +766,7 @@ def _build(
     if inst_lo <= load:
         raise _LayoutError("pointer tables underflow the load address")
 
-    instruments, dummy = _decode_instruments(byte, chunk, inst_lo, inst_hi, inst_amount, load, end)
+    instruments, slots = _decode_instruments(byte, chunk, inst_lo, inst_hi, inst_amount, load, end)
     patterns, min_pattern = _decode_patterns(byte, chunk, ptn_lo, ptn_hi, pat_amount, load, end)
 
     subtune_base = _locate_subtune_table(byte, inst_lo, subtunes, seq_amount, load, min_pattern)
@@ -757,7 +797,7 @@ def _build(
         chord_table,
         tempo_table,
         subtune_tempos,
-        dummy,
+        slots,
     )
 
 
@@ -793,7 +833,7 @@ def _assemble(
     chord_table: bytes,
     tempo_table: bytes,
     subtune_tempos,
-    dummy_instrument: Optional[Instrument] = None,
+    slots: Optional[Dict[int, Instrument]] = None,
 ) -> SWMFile:
     """Build the :class:`SWMFile` from decoded regions and the tune header.
 
@@ -801,6 +841,7 @@ def _assemble(
     tuning type, ...). It is ``None`` for a packed export that omits the
     ``SWM1`` header, in which case the model's own field defaults are kept.
     """
+    slots = slots or {}
     meta = {}
     if swm_header is not None:
         meta = dict(
@@ -825,7 +866,8 @@ def _assemble(
         tempo_table=tempo_table,
         subtune_tempos=subtune_tempos,
         load_address=load,
-        dummy_instrument=dummy_instrument,
+        dummy_instrument=slots.get(0),
+        spare_instruments={k: ins for k, ins in slots.items() if k},
         **meta,
     )
 
@@ -889,7 +931,7 @@ def _build_swp(data: bytes, load: int, base: int, swp_off: int) -> SWMFile:
     ptn_hi = swp_base + offs["ptn_hi"]
     subtune_base = swp_base + offs["subtunes"]
 
-    instruments, dummy = _decode_instruments(
+    instruments, slots = _decode_instruments(
         byte, chunk, inst_lo, inst_hi, inst_amount, load, end, ptr_base=swp_base
     )
     patterns, _ = _decode_patterns(
@@ -919,7 +961,7 @@ def _build_swp(data: bytes, load: int, base: int, swp_off: int) -> SWMFile:
         chord_table,
         tempo_table,
         subtune_tempos,
-        dummy,
+        slots,
     )
     # The tune's real author is in the SWP1 block; the SWM1 header's is the template's.
     auth_end = swp_off + AUTHOR_POS + AUTHOR_LEN
@@ -962,18 +1004,18 @@ def _filter_table_end(byte, start: int, bound: int) -> Optional[int]:
 def _decode_instruments(
     byte, chunk, inst_lo, inst_hi, inst_amount, load, end, ptr_base=0, reloc_delta=0
 ):
-    """Decode the ``inst_amount`` instruments (1-based) and the slot-0 dummy.
+    """Decode the ``inst_amount`` instruments (1-based) and the image slots past them.
 
     Each instrument is a 16-byte header followed by three inline ``$FF``-
     terminated tables (waveform / pulse-width / filter). The body runs to the
     filter table's terminating ``$FF`` row (column 0) and is handed to
-    :meth:`Instrument.decode`. Returns ``(instruments, dummy)`` (see
-    :func:`_decode_dummy`).
+    :meth:`Instrument.decode`. Returns ``(instruments, slots)`` (see
+    :func:`_decode_slots`).
     """
     instruments: List[Instrument] = []
     addrs = [
-        _resolve_ptr(byte(inst_lo + k) | (byte(inst_hi + k) << 8), ptr_base, load, end, reloc_delta)
-        for k in range(inst_amount + 1)
+        _resolve_ptr(_slot_ptr(byte, inst_lo, inst_hi, k), ptr_base, load, end, reloc_delta)
+        for k in range(MAX_INSTRUMENT_SLOT + 1)
     ]
     for k in range(1, inst_amount + 1):
         addr = addrs[k]
@@ -988,32 +1030,75 @@ def _decode_instruments(
             raise
         except Exception as exc:  # SWMFormatError from a malformed body
             raise _LayoutError(f"instrument {k} did not decode: {exc}") from exc
-    return instruments, _decode_dummy(byte, chunk, addrs, inst_lo, lambda a: load <= a < end)
+    return instruments, _decode_slots(
+        byte, chunk, addrs, inst_amount, inst_lo, lambda a: load <= a < end
+    )
 
 
-def _decode_dummy(byte, chunk, addrs, bound, inrange) -> Optional[Instrument]:
-    """The instrument INSPTLO/HI slot 0 (``addrs[0]``) points at, where it is not instrument 1.
+# SEL_INS's ``cmp #maxinstamount`` bound: CURINS ranges over slots 1..$3E.
+MAX_INSTRUMENT_SLOT = 0x3E
+
+
+@lru_cache(maxsize=1)
+def _power_on() -> bytes:
+    return bytes(power_on_ram())
+
+
+def _booted(byte):
+    """``byte`` over the image, and libsidplayfp's power-on RAM everywhere else."""
+    ram = _power_on()
+
+    def read(addr: int) -> int:
+        try:
+            return byte(addr)
+        except _LayoutError:
+            return ram[addr & 0xFFFF]
+
+    return read
+
+
+def _slot_ptr(byte, inst_lo: int, inst_hi: int, k: int) -> int:
+    """INSPTLO/HI slot ``k``; a slot past the tables reads whatever bytes follow them."""
+    byte = _booted(byte) if k else byte
+    return byte(inst_lo + k) | (byte(inst_hi + k) << 8)
+
+
+def _decode_slots(byte, chunk, addrs, amount, bound, inrange) -> Dict[int, Instrument]:
+    """The instruments INSPTLO/HI slot 0 and the slots past ``amount`` point at.
 
     PLAYERZP reads slot 0 whenever a path loads CURINS=0 without testing it.
     The exporter links it to instrument 1 (packdepack.inc:621-633), but a
     re-packed image can point it elsewhere, e.g. at a blank instrument while
-    instrument 1's own pointer is left stale. ``None`` when slot 0 is
-    instrument 1's pointer or does not hold a decodable instrument.
+    instrument 1's own pointer is left stale; slot 0 is left out when it is
+    instrument 1's pointer or does not hold a decodable instrument. A slot past
+    the count (SEL_INS takes any reference below $3F) reads the pointer bytes
+    that follow the tables, so it is decoded leniently from wherever it lands.
     """
+    slots: Dict[int, Instrument] = {}
     addr = addrs[0]
-    if addr in addrs[1:2] or not inrange(addr):
-        return None
-    try:
-        cursor = _filter_table_end(byte, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), bound)
-        if cursor is None:
-            return None
-        return _decode_at(byte, chunk, addr, cursor, name=b"INST 00")
-    except SWMFormatError:
-        return None
+    if addr not in addrs[1:2] and inrange(addr):
+        try:
+            cursor = _filter_table_end(byte, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), bound)
+            if cursor is not None:
+                slots[0] = _decode_at(byte, chunk, addr, cursor, name=b"INST 00")
+        except SWMFormatError:
+            pass
+    booted = _booted(byte)
+    for k in range(amount + 1, len(addrs)):
+        ram = bytes(booted((addrs[k] + y) & 0xFFFF) for y in range(_ZP_REACH))
+        start = max(ram[INST_FILTER_TABLE_PTR_POS], INST_HEADER_SIZE + 1)
+        end = _filter_table_end(ram.__getitem__, start, _SPARE_BODY)
+        body = ram[: _SPARE_BODY if end is None else end]
+        slots[k] = Instrument.decode(body, name=b"INST %02d" % k, strict=False)
+        slots[k].ram = ram
+    return slots
 
 
-# PLAYERZP's ``lda (PLAYERZP),y`` reach.
+# PLAYERZP's ``lda (PLAYERZP),y`` reach, and its zeropage address (player.asm:7).
 _ZP_REACH = 0x100
+_PLAYERZP = 0xFE
+# The longest body whose re-encoded table pointers still fit a byte.
+_SPARE_BODY = _ZP_REACH - 3
 
 
 def _decode_at(byte, chunk, addr: int, cursor: int, name: bytes) -> Instrument:
@@ -1271,7 +1356,7 @@ def _try_codescan_layout(
     pat_amount = ptn_hi - ptn_lo
     if inst_amount < 0 or pat_amount < 0 or inst_lo <= load or ptn_lo <= load:
         raise _LayoutError("code-scan: implausible table geometry")
-    instruments, dummy = _decode_instruments(
+    instruments, slots = _decode_instruments(
         byte, chunk, inst_lo, inst_hi, inst_amount, load, end, reloc_delta=reloc
     )
     patterns, min_pattern = _decode_patterns(
@@ -1309,7 +1394,7 @@ def _try_codescan_layout(
             chord_table,
             tempo_table,
             subtune_tempos,
-            dummy,
+            slots,
         )
     raise last or _LayoutError("code-scan: no coherent subtune table")
 
@@ -1646,7 +1731,7 @@ def _build_via_player(data: bytes, load: int, base: int) -> SWMFile:
     patterns, ref_inst = _player_patterns(
         byte, chunk, ptn_lo, ptn_hi, pat_amount, data_hi, inrange, ref_all, ref_primary, default_len
     )
-    instruments, dummy = _player_instruments(
+    instruments, slots = _player_instruments(
         byte, chunk, data, swm_pos, ordered, ptn_lo, data_hi, inrange, ref_inst
     )
     chord_table, tempo_table = _player_chord_tempo(image, chunk, swm_header, data_lo)
@@ -1662,7 +1747,7 @@ def _build_via_player(data: bytes, load: int, base: int) -> SWMFile:
         chord_table,
         tempo_table,
         subtune_tempos,
-        dummy,
+        slots,
     )
 
 
@@ -1733,7 +1818,7 @@ def _player_instruments(byte, chunk, data, swm_pos, ordered, ptn_lo, ceil, inran
 
 def _decode_player_instruments(byte, chunk, inst_lo, inst_hi, amount, ceil, inrange, ref_inst):
     instruments: List[Instrument] = []
-    addrs = [byte(inst_lo + k) | (byte(inst_hi + k) << 8) for k in range(amount + 1)]
+    addrs = [_slot_ptr(byte, inst_lo, inst_hi, k) for k in range(MAX_INSTRUMENT_SLOT + 1)]
     for k in range(1, amount + 1):
         name = b"INST %02d" % k
         addr = addrs[k]
@@ -1753,7 +1838,7 @@ def _decode_player_instruments(byte, chunk, inst_lo, inst_hi, amount, ceil, inra
             if k in ref_inst:
                 raise _LayoutError(f"referenced instrument {k} did not decode: {exc}") from exc
             instruments.append(Instrument(name=name))
-    return instruments, _decode_dummy(byte, chunk, addrs, ceil, inrange)
+    return instruments, _decode_slots(byte, chunk, addrs, amount, ceil, inrange)
 
 
 def _player_chord_tempo(image, chunk, swm_header, min_data):

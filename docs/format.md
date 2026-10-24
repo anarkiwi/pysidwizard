@@ -359,7 +359,22 @@ the first play call:
   players are assembled from an edited `settings.cfg`, and some exports carry no
   header. Each modelled flag is read at its `.if feature.X_ON` site, matched
   relocation-free in both its on and off form; a flag whose site is missing keeps
-  the driver byte's build.
+  the driver byte's build. TRANSPOSESUPP is read at CLEGATO and RETAINZEROPAGE at
+  PLAYER's `PLAYERZP` push.
+- Release differences the reader takes from the player code: FLADVAN reads a
+  filter row's `$80-$8F` third column as FSWITCH from 1.4 on
+  (`SWMFile.kbtrack_fswitch`); SMALFXE stores its WFGHOST merge before 1.5
+  (`SWMFile.wfctrl_fx_stores`).
+- DPITCH is latched when CLEGATO starts a note (note + the PLAYERZP
+  instrument's octave shift + TRANSP). An instrument selected without a note,
+  or a later transpose, does not move a held note.
+- SEL_INS takes any instrument below `$3F`. A slot past the count reads the
+  INSPTLO/HI bytes that follow the tables, and the instrument at that pointer
+  (the image, else libsidplayfp's power-on RAM) is
+  `SWMFile.spare_instruments`; a bare `.swm` uses the depacker's blank
+  instrument.
+- PLAYERZP starts where the init left it (`SWMFile.zp_init`). A RETAINZEROPAGE
+  PLAYER restores it every call, so a TICK_2 with CURINS = 0 reads it.
 
 ### Song selection
 
@@ -375,6 +390,9 @@ the first play call:
 - **Module.**
   - Plain player: the module runs from the jump table to the next player.
   - SWP player: the module starts at the SWP base passed in X / Y.
+  - An init that enters its only player directly may still patch tune bytes per
+    song before INITER. The instruments are read from the memory the whole init
+    left, the rest from the file.
 - **Errors.** A subtune that the module does not decode raises
   `SIDFormatError`.
 

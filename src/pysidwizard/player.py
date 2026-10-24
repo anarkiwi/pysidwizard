@@ -237,9 +237,8 @@ class VoiceState:
     # advance, before the new pattern's note triggers). SID-Wizard stores
     # the value in TRANSP2 and only copies it into the active TRANSP when
     # the new note is set up (player.asm:247,1237 — "DELAYER TO COMPENSATE
-    # EARLY SEQ.FX"). We mirror that: _advance_sequence stashes here, and
-    # _start_note promotes it to ``transpose`` so the change lands on the
-    # new note rather than leaking into the previous note's held tail.
+    # EARLY SEQ.FX"). PTN_SEQ promotes it to TRANSP each row, which only
+    # CLEGATO reads, so it lands in :attr:`dpitch` with the next note.
     transpose_pending: int = 0
     # Set when the voice reaches its orderlist terminator ($FE End or a
     # $FF loop that resolves to no pattern). Per player.asm $FE handling
@@ -270,7 +269,8 @@ class VoiceState:
     note: int = 0  # discrete pitch (0..0x5F)
     instrument_idx: int = 0
     instrument: Optional[Instrument] = None
-    octave_shift: int = 0  # signed semitones from instrument.octave_shift
+    # DPITCH: CLEGATO's note + CURINS octave shift + TRANSP, latched at the note.
+    dpitch: int = 0
     detune: int = 0  # signed adjustment from WF-table column 2
 
     # Hard-restart countdown: number of frames remaining in the HR phase.
@@ -503,8 +503,10 @@ class SWMPlayer(MemPlayer):
         # Chord-table base offsets, one per (1-indexed) chord. Computed
         # once at construction so each ``$7F`` arp hit is an O(1) lookup.
         self._chord_starts: List[int] = _parse_chord_starts(swm.chord_table)
-        # PLAYERZP images of instruments and patterns, keyed by object identity.
-        self._zp_images: dict[int, bytes] = {}
+        # PLAYERZP images of instruments and patterns, keyed by object identity; a spare slot is its image window.
+        self._zp_images: dict[int, bytes] = {
+            id(ins): ins.ram for ins in swm.spare_instruments.values()
+        }
 
         # Per-voice state. SID-Wizard assigns the SWM sequences in the
         # order [V0, V1, V2] for subtune 0 (sequences 0, 1, 2).
@@ -577,8 +579,8 @@ class SWMPlayer(MemPlayer):
         self.filt_pos = 0
         # PLAYERZP's target: the bytes ``lda (PLAYERZP),y`` reads. One pointer shared by
         # every track, so a TICK_2 with CURINS=0 (LEGATOO's INSPTFX) reads whatever the
-        # last pattern or instrument load left; empty until the first load.
-        self._zp = b""
+        # last pattern or instrument load left, starting where the init left it.
+        self._zp = swm.zp_init
         # CWEPCNT (player.asm ~line 1761) is a single global byte —
         # the sweep-cycle countdown for whichever voice currently owns
         # FilterProgram. Mirror that here as a player-level (not per-
@@ -616,7 +618,7 @@ class SWMPlayer(MemPlayer):
         is_multispeed_tick = self.swm.frame_speed > 1 and self._multispeed_phase != 0
         if self.features.retainzeropage:
             # PLAYER restores the caller's PLAYERZP on return (player.asm:1229-1235).
-            self._zp = b""
+            self._zp = self.swm.zp_init
         # SID-Wizard's PLAYER calls DOTRACK in REVERSE voice order
         # (channel 3, 2, 1 = v2, v1, v0; player.asm lines 613-656).
         # State updates that race across voices in the same frame
@@ -1042,7 +1044,7 @@ class SWMPlayer(MemPlayer):
                 v.pattern_row = 0
                 return
             if isinstance(cmd, Transpose):
-                # Delayed: store in TRANSP2; _start_note promotes it.
+                # Delayed: store in TRANSP2; CLEGATO reads it.
                 v.transpose_pending = cmd.semitones
                 continue
             if isinstance(cmd, TempoOverride):
@@ -1074,11 +1076,11 @@ class SWMPlayer(MemPlayer):
         v.sequence_ended = True
 
     def _resolve_instrument(self, ref: int) -> Optional[Instrument]:
-        """Map a 1..0x3E reference to an instrument; past the count -> the empty one."""
+        """Map a 1..0x3E reference to an instrument; past the count -> the image's slot, else the empty one."""
         if 1 <= ref <= len(self.swm.instruments):
             return self.swm.instruments[ref - 1]
         if 1 <= ref <= 0x3E:
-            return self._empty
+            return self.swm.spare_instruments.get(ref, self._empty)
         return None
 
     def _apply_row(self, v: VoiceState, row) -> None:
@@ -1130,7 +1132,6 @@ class SWMPlayer(MemPlayer):
             ins = self._resolve_instrument(instrument)
             if ins is not None:
                 v.instrument = ins
-                v.octave_shift = ins.octave_shift if self.features.octaveshift else 0
         # Inst-column small-FX (CURIFX $40..$7F) applies INDEPENDENTLY
         # of any small-FX in the FX column — player.asm INSPTFX
         # dispatches CURIFX first (SMALPFX) and THEN CURFX2. Apply
@@ -1151,6 +1152,7 @@ class SWMPlayer(MemPlayer):
         # WF / PW / Filter table walks continue. Mirror that here.
         if note is not None and note != 0 and v.instrument is not None:
             if note < NOTE_FX_MIN:
+                self._clegato(v, note)
                 if fx == 0x03:
                     # Portamento big-fx: skip HR / table reset and
                     # set up the slide. ``fx_value`` is the portamento
@@ -1158,7 +1160,6 @@ class SWMPlayer(MemPlayer):
                     # seeds vibrato_offset from the previous freq so
                     # the slide starts at the old note and drifts to
                     # the new target.
-                    v.note = note
                     self._begin_portamento(v, fx_value if fx_value is not None else 0)
                     portamento_applied = True
                 elif v.slide_vib == 0xFF:
@@ -1170,13 +1171,12 @@ class SWMPlayer(MemPlayer):
                     # LEGATO: SETPRTA sets SLIDEVIB=$83 (FREQMODL was
                     # already set by NPORTAM) and LEGATOO -> WRWFGHO.
                     # No STRTSND, no table reset.
-                    target_freq = self._dpitch_freq(note + v.octave_shift + v.transpose)
+                    target_freq = self._dpitch_freq(v.dpitch)
                     # SID-Wizard reads ZP FREQLO/HI (pre-carry, pre-detune)
                     # for portamento seeding — see _begin_portamento.
                     previous_freq = (v.zp_freq_hi << 8) | v.zp_freq_lo
                     v.vibrato_offset = (previous_freq - target_freq) & 0xFFFF
                     v.slide_vib = 0x83
-                    v.note = note
                 elif instrument == 0x3F:
                     # Legato (CURIFX=$3F): SID-Wizard's CHILEGA branch
                     # at player.asm line 1373-1379 sets up a maximal-speed
@@ -1189,16 +1189,14 @@ class SWMPlayer(MemPlayer):
                     # We seed vibrato_offset from previous_freq - target
                     # like _begin_portamento does, then set the slide
                     # state directly.
-                    target_freq = self._dpitch_freq(note + v.octave_shift + v.transpose)
+                    target_freq = self._dpitch_freq(v.dpitch)
                     # ZP read; see _begin_portamento.
                     previous_freq = (v.zp_freq_hi << 8) | v.zp_freq_lo
                     v.vibrato_offset = (previous_freq - target_freq) & 0xFFFF
                     v.slide_vib = 0x83
                     v.vibrato_freqmod_hi = 0x7F
-                    v.note = note
                 else:
                     # New pitched note -> start sound.
-                    v.note = note
                     self._start_note(v, instrument_selected)
                     started_note = True
             elif note == GATE_OFF_FX:
@@ -1226,7 +1224,7 @@ class SWMPlayer(MemPlayer):
                 # A=DEFAULTPORTA (= 110 = $6E). The next pitched note's
                 # CLEGATO will then take the NONEWNO branch.
                 v.slide_vib = 0xFF
-                lo, hi = self._freqmod(110, v.note + v.octave_shift + v.transpose)
+                lo, hi = self._freqmod(110, v.dpitch)
                 v.vibrato_freqmod_lo = lo
                 v.vibrato_freqmod_hi = hi
             elif NOTE_FX_MIN <= note < PORTAMENTO_FX and v.instrument is not None:
@@ -1298,7 +1296,7 @@ class SWMPlayer(MemPlayer):
                     v.vibrato_freqmod_lo = 0
                     v.vibrato_freqmod_hi = 0
                 else:
-                    lo, hi = self._freqmod(fx_value, v.note + v.octave_shift + v.transpose)
+                    lo, hi = self._freqmod(fx_value, v.dpitch)
                     v.vibrato_freqmod_lo = lo
                     v.vibrato_freqmod_hi = hi
             elif fx == 0x02 and fx_value is not None:
@@ -1308,7 +1306,7 @@ class SWMPlayer(MemPlayer):
                     v.vibrato_freqmod_lo = 0
                     v.vibrato_freqmod_hi = 0
                 else:
-                    lo, hi = self._freqmod(fx_value, v.note + v.octave_shift + v.transpose)
+                    lo, hi = self._freqmod(fx_value, v.dpitch)
                     v.vibrato_freqmod_lo = lo
                     v.vibrato_freqmod_hi = hi
             elif fx == 0x03 and fx_value is not None and not portamento_applied:
@@ -1316,9 +1314,7 @@ class SWMPlayer(MemPlayer):
                 # SLIDEVIB=$83 and SETFMOD recomputes the speed against the held DPITCH,
                 # so PORTAME keeps sliding toward the note already playing.
                 v.slide_vib = 0x83
-                v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = self._freqmod(
-                    fx_value, v.note + v.octave_shift + v.transpose
-                )
+                v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = self._freqmod(fx_value, v.dpitch)
             elif fx == 0x04 and fx_value is not None:
                 # BIGFX04 = WRITEWF (player.asm:3509): WFGHOST := value, unmasked by PTNGATE.
                 v.sid_ctrl = fx_value
@@ -1465,8 +1461,10 @@ class SWMPlayer(MemPlayer):
             # SMALFX4 (player.asm:3298) merges the value nibble into WFGHOST's high nibble.
             v.sid_ctrl = (low << 4) | (v.sid_ctrl & 0x0F)
         elif high == 0xE0:
-            # SMALFXE (player.asm:3407) merges a low nibble but never stores it -- its ``jmp WRITEWF`` is commented out in 1.94, so it is a no-op.
-            pass
+            # SMALFXE (player.asm:2748) merges the nibble into WFGHOST's low nibble; from 1.5 its
+            # ``jmp WRITEWF`` is commented out, leaving a no-op.
+            if self.swm.wfctrl_fx_stores and self.features.wfctrl_smallfx:
+                v.sid_ctrl = (v.sid_ctrl & 0xF0) | low
         elif high == 0x70:
             self._select_chord(v, low)
         elif high == 0xC0:
@@ -1561,9 +1559,7 @@ class SWMPlayer(MemPlayer):
             v.vibrato_freqmod_lo = 0
             v.vibrato_freqmod_hi = 0
             return
-        v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = self._freqmod(
-            amp_nibble << 3, v.note + v.octave_shift + v.transpose
-        )
+        v.vibrato_freqmod_lo, v.vibrato_freqmod_hi = self._freqmod(amp_nibble << 3, v.dpitch)
 
     def _select_chord(self, v: VoiceState, chord: int) -> None:
         """SMALFX7 (player.asm:3325): CURCHORD := chord, CHORDPOS := CHDPTRLO[chord]."""
@@ -1624,10 +1620,6 @@ class SWMPlayer(MemPlayer):
 
     def _start_note(self, v: VoiceState, instrument_selected: bool = False) -> None:
         """Re-trigger the voice: reset gates / tables / hard-restart."""
-        # Promote any pending orderlist transpose now (TRANSP2 -> TRANSP):
-        # the change takes effect with this new note, not on the previous
-        # note's held tail during the pre-trigger HR frames.
-        v.transpose = v.transpose_pending
         v.ptn_gate = 0xFF
         # SID-Wizard runs the HR test-bit sequence on every note
         # trigger (including the first one on a fresh F1 playback).
@@ -1921,7 +1913,7 @@ class SWMPlayer(MemPlayer):
         """
         # Target freq: the row's note column with octave + transpose
         # (= the play note we just stored in v.note).
-        target_note = (v.note + v.octave_shift + v.transpose) & 0xFF
+        target_note = v.dpitch
         target_freq = self._dpitch_freq(target_note)
         # SID-Wizard's portamento seed reads ZP FREQLO/FREQHI (= the
         # pre-carry, pre-detune ghost) — that's the value the prior
@@ -2100,17 +2092,30 @@ class SWMPlayer(MemPlayer):
             v.chord_pos = chord_start
             if v.chord_pos < len(table):
                 byte = table[v.chord_pos]
-        v.wf_arp_pitch = byte
-        v.wf_arp_absolute = False
-        # PLYCHRD's normal-pitch path falls through to RELPTCH which
-        # overwrites FREQLO/FREQHI ZP, wiping any accumulated vibrato
-        # mutation (same as ABSPTCH/RELPTCH in _tick_wf_table). Mirror
-        # that so our compose doesn't carry stale vibrato over a chord
-        # pitch write.
-        v.vibrato_offset = 0
-        v.wf_did_pitch_write = True
+        # DOCHORD falls through to RELPTCH.
+        self._relptch(v, byte)
         v.chord_pos += 1
         return False
+
+    def _clegato(self, v: VoiceState, note: int) -> None:
+        """CLEGATO's DPITCH: the note plus the PLAYERZP instrument's octave shift and TRANSP."""
+        v.note = note
+        octave = v.instrument.octave_shift if self.features.octaveshift else 0
+        transpose = v.transpose_pending if self.features.transposesupp else 0
+        v.dpitch = (note + octave + transpose) & 0xFF
+
+    @staticmethod
+    def _relptch(v: VoiceState, arp: int) -> None:
+        """RELPTCH: ``clc ; adc DPITCH,x`` then the FREQTBL load into FREQLO/FREQHI.
+
+        The load wipes any vibrato mutation of the ZP pitch, and the add's carry
+        reaches WRPITCH's ``adc DETUNER`` untouched (player.asm:2035-2050).
+        """
+        v.wf_arp_pitch = arp - 0x100 if arp >= 0x80 else arp
+        v.wf_arp_absolute = False
+        v.vibrato_offset = 0
+        v.wf_did_pitch_write = True
+        v.wf_pitch_carry = arp + (v.dpitch) > 0xFF
 
     # ---- instrument WF / PW / Filter table ticks ---------------------
 
@@ -2205,46 +2210,53 @@ class SWMPlayer(MemPlayer):
                 return
         v.arp_speed_counter = v.arp_speed_reload & 0x3F
         # Loop in case of jump commands.
+        jumped = False
         for _ in range(4):
             pos = v.wf_pos
-            if pos >= len(table):
-                # Past the implicit 0xFF end-marker; freeze on current
-                # state. SID-Wizard's CMP #$FE with A=$FF sets carry
-                # before falling through to WRPITCH; mirror that here.
-                v.wf_pitch_carry = True
-                return
-            byte0 = table[pos]
-            if byte0 == WF_TABLE_END:
-                # Same as past-end above — CMP #$FE with A=$FF sets carry.
-                v.wf_pitch_carry = True
-                return
-            if byte0 == WF_TABLE_JUMP:
-                # WFAJUMP (player.asm:2449): ``BMIauto ENDWFTB`` abandons the
-                # jump for a target >= $80; otherwise ``sta WFTPOS,x`` takes
-                # the byte verbatim as an offset from the instrument base.
-                raw = table[pos + 1] if pos + 1 < len(table) else 0
-                if raw >= 0x80:
-                    v.wf_pitch_carry = True  # RDWFROW's ``cmp #$FE`` carry reaches WRPITCH
-                    return
-                if raw >= len(table):
-                    return
-                v.wf_pos = raw
-                continue
-            if byte0 < 0x10 and arp_speed:
-                # Per-row ARP-speed override — player.asm WFTdone branch:
-                # ``sta ARPSCNT,x ; bcc SETJARP``. ARPSCNT is set to the
-                # wave byte, the SEWFARP waveform-write is skipped, but
-                # the arp byte IS still read and pitch updated this
-                # frame. The ARPSCNT-DEC at the next frame's WFARPTB
-                # then SKIPWFTs the row read until the counter wraps
-                # past $FF, holding the just-played note for ``byte0``
-                # additional frames.
-                v.arp_speed_counter = byte0
+            if jumped:
+                # WFAJUMP reads the target's waveform column straight into SEWFARP: no
+                # end, jump or ARP-speed test (player.asm:1965-1968).
+                v.sid_ctrl = table[pos] & v.ptn_gate
             else:
-                # Apply the waveform: the byte is the SID voice-control
-                # value, AND-ed with the gate mask to gate it off when
-                # appropriate.
-                v.sid_ctrl = byte0 & v.ptn_gate
+                if pos >= len(table):
+                    # Past the implicit 0xFF end-marker; freeze on current
+                    # state. SID-Wizard's CMP #$FE with A=$FF sets carry
+                    # before falling through to WRPITCH; mirror that here.
+                    v.wf_pitch_carry = True
+                    return
+                byte0 = table[pos]
+                if byte0 == WF_TABLE_END:
+                    # Same as past-end above — CMP #$FE with A=$FF sets carry.
+                    v.wf_pitch_carry = True
+                    return
+                if byte0 == WF_TABLE_JUMP:
+                    # WFAJUMP (player.asm:2449): ``BMIauto ENDWFTB`` abandons the
+                    # jump for a target >= $80; otherwise ``sta WFTPOS,x`` takes
+                    # the byte verbatim as an offset from the instrument base.
+                    raw = table[pos + 1] if pos + 1 < len(table) else 0
+                    if raw >= 0x80:
+                        v.wf_pitch_carry = True  # RDWFROW's ``cmp #$FE`` carry reaches WRPITCH
+                        return
+                    if raw >= len(table):
+                        return
+                    v.wf_pos = raw
+                    jumped = True
+                    continue
+                if byte0 < 0x10 and arp_speed:
+                    # Per-row ARP-speed override — player.asm WFTdone branch:
+                    # ``sta ARPSCNT,x ; bcc SETJARP``. ARPSCNT is set to the
+                    # wave byte, the SEWFARP waveform-write is skipped, but
+                    # the arp byte IS still read and pitch updated this
+                    # frame. The ARPSCNT-DEC at the next frame's WFARPTB
+                    # then SKIPWFTs the row read until the counter wraps
+                    # past $FF, holding the just-played note for ``byte0``
+                    # additional frames.
+                    v.arp_speed_counter = byte0
+                else:
+                    # Apply the waveform: the byte is the SID voice-control
+                    # value, AND-ed with the gate mask to gate it off when
+                    # appropriate.
+                    v.sid_ctrl = byte0 & v.ptn_gate
             if pos + 1 < len(table):
                 arp = table[pos + 1]
                 # Match SID-Wizard's player.asm NORMARP branch
@@ -2255,11 +2267,15 @@ class SWMPlayer(MemPlayer):
                 #   $81..$DF  -> absolute pitch      (arp & 0x7F)
                 #   $E0..$FF  -> relative pitch down (arp - 0x100)
                 if arp == WF_ARP_CHORD and self.features.chordsupport:
+                    # PLYCHRD: ``lda (PLAYERZP),y ; sta DETUNER,x`` with no $FF NOP test.
+                    detune = table[pos + 2] if pos + 2 < len(table) else 0
+                    v.detune = detune - 0x100 if detune >= 0x80 else detune
                     if self._tick_chord(v):
                         # $7E chord end: player.asm advances past this
                         # row and immediately re-processes the next
                         # one in the same frame (``jmp RDWFROW``).
                         v.wf_pos += WF_ROW_STRIDE
+                        jumped = False
                         continue
                     # Chord pitch was applied ($7F loop or normal
                     # pitch). SID-Wizard's PLYCHRD branch leaves
@@ -2275,39 +2291,15 @@ class SWMPlayer(MemPlayer):
                     # of FREQLO/FREQHI ZP is NOT wiped here, so the
                     # accumulated vibrato_offset must persist.
                     v.wf_pitch_carry = True
-                elif arp >= WF_ARP_REL_DOWN_BASE:
-                    v.wf_arp_pitch = arp - 0x100
-                    v.wf_arp_absolute = False
-                    # RELPTCH overwrites FREQLO/FREQHI ZP via
-                    # ``adc DPITCH; tay; lda FREQTBL,y; sta FREQLO,x``
-                    # (player.asm line 2035-2048). Vibrato's mutation
-                    # is wiped — reset our accumulated offset to match,
-                    # and flag so the in-flight vibrato step is also
-                    # suppressed.
-                    v.vibrato_offset = 0
-                    v.wf_did_pitch_write = True
-                    # RELPTCH's ``clc ; adc DPITCH`` sets carry when
-                    # ``arp + DPITCH > $FF``. The carry propagates
-                    # intact through ``and #$7F ; tay ; lda FREQTBL ;
-                    # sta FREQLO ; lda FREQTBH ; sta FREQHI ; lda
-                    # FREQLO`` (none affect carry) into ``adc DETUNER``
-                    # = +1 on SID FREQ_LO. For arp $E0..$FE (signed
-                    # -32..-2), this happens whenever DPITCH > $100-arp.
-                    dpitch = (v.note + v.octave_shift + v.transpose) & 0xFF
-                    if arp + dpitch > 0xFF:
-                        v.wf_pitch_carry = True
-                elif arp >= 0x80:
+                elif 0x80 <= arp < WF_ARP_REL_DOWN_BASE:
                     v.wf_arp_pitch = arp & 0x7F
                     v.wf_arp_absolute = True
                     # ABSPTCH overwrites FREQLO/FREQHI ZP, same as RELPTCH.
                     v.vibrato_offset = 0
                     v.wf_did_pitch_write = True
                 else:
-                    # $00..$7E: relative pitch up.
-                    v.wf_arp_pitch = arp
-                    v.vibrato_offset = 0
-                    v.wf_arp_absolute = False
-                    v.wf_did_pitch_write = True
+                    # $00..$7E relative up, $E0..$FF relative down.
+                    self._relptch(v, arp)
             if pos + 2 < len(table):
                 detune = table[pos + 2]
                 if detune != 0xFF:
@@ -2397,7 +2389,7 @@ class SWMPlayer(MemPlayer):
         """
         if not (self.features.pwkeybtrack and v.pw_kbd_track):
             return v.pw_hi & 0xFF, False
-        dpitch = (v.note + v.octave_shift + v.transpose) & 0x7F
+        dpitch = v.dpitch
         carry = (dpitch + v.pw_kbd_track) >> 8
         idx = (dpitch + v.pw_kbd_track) & 0xFF
         e_y = self.exptabh[idx]
@@ -2405,6 +2397,16 @@ class SWMPlayer(MemPlayer):
         term = e_y - e_ym - 1 + carry
         total = (v.pw_hi & 0xFF) + (term & 0xFF) + (1 if term >= 0 else 0)
         return total & 0xFF, total > 0xFF
+
+    def _fladvan(self, table: bytes, pos: int) -> None:
+        """FLADVAN: the row's third column is the keyboard track, or from 1.4 a $8x FSWITCH."""
+        if not self.features.filtkbtrack:
+            return
+        track = table[pos + 2] if pos + 2 < len(table) else 0
+        if self.swm.kbtrack_fswitch and 0x80 <= track < 0x90:
+            self.filter_switch = track & 0x0F
+            track = 0
+        self.filter_kbd_track = track
 
     def _tick_filt_table(self, v: VoiceState) -> None:
         """Advance the filter table by one step.
@@ -2466,7 +2468,7 @@ class SWMPlayer(MemPlayer):
                 # commit cutoff_hi; cutoff_lo resets to 0.
                 cutoff_hi = table[pos + 1] if pos + 1 < len(table) else 0
                 self.filter_cutoff_hi = cutoff_hi
-                self.filter_kbd_track = table[pos + 2] if pos + 2 < len(table) else 0
+                self._fladvan(table, pos)
                 if self.features.finefiltsweep:
                     self.filter_cutoff_lo = 0
                 # $D417 high nibble = resonance; low nibble (routing) is
@@ -2486,7 +2488,7 @@ class SWMPlayer(MemPlayer):
             # (low 3 bits of delta go to CTFL with overflow into CTFH,
             # high 5 bits via ``LSR LSR LSR`` add to CTFH).
             if self.filter_sweep_count >= byte0:
-                self.filter_kbd_track = table[pos + 2] if pos + 2 < len(table) else 0
+                self._fladvan(table, pos)
                 self.filt_pos += FILT_ROW_STRIDE
                 self.filter_sweep_count = 0
                 return
@@ -2552,7 +2554,7 @@ class SWMPlayer(MemPlayer):
                 if self.swm.first_frame_freq_by_track:
                     index = v.channel * TRACK_STRIDE
                 else:
-                    index = (v.note + v.octave_shift + v.transpose) & 0xFF
+                    index = v.dpitch
                 v.sid_freq_hi = self.freq_hi[index]
             return
 
@@ -2574,7 +2576,7 @@ class SWMPlayer(MemPlayer):
             if v.wf_arp_absolute:
                 note = v.wf_arp_pitch
             else:
-                note = v.note + v.wf_arp_pitch + v.transpose + v.octave_shift
+                note = v.dpitch + v.wf_arp_pitch
             # ABSPTCH (player.asm:2525) MASKS with ``and #$7F``, it does not clamp: sums past 95 read past FREQTBL and sums past 127 wrap back into it.
             note &= 0x7F
             # ZP FREQLO/FREQHI: pre-detune, pre-carry, with vibrato_offset folded in as NORMVIB's ADDFREQ/SUBFREQ writes it back before WRPITCH runs.
@@ -2606,8 +2608,10 @@ class SWMPlayer(MemPlayer):
         # the chip. But SID-Wizard's WRPULS path writes the full
         # PWHIGHO byte (already AND-masked with $7F at SETPULW), so
         # bits 4-6 of the SID register MAY be non-zero — mirror that.
-        v.sid_pw_hi = self._wrpuls(v)[0]
-        v.sid_pw_lo = v.pw_lo
+        # ENDPWTB alone writes SIDG.PLSW, so a tick without SETPWID keeps the ghost.
+        if v.pw_written:
+            v.sid_pw_hi = self._wrpuls(v)[0]
+            v.sid_pw_lo = v.pw_lo
 
         # NOTE: SID-Wizard's CNTPLY1/2 steady-state path never writes
         # SIDG.AD/SR; those only change via STRTSND (compose HR branch
@@ -2684,7 +2688,7 @@ class SWMPlayer(MemPlayer):
             and self.filter_controller_voice is not None
         ):
             cv = self.filter_controller_voice
-            dpitch = (cv.note + cv.octave_shift + cv.transpose) & 0x7F
+            dpitch = cv.dpitch
             idx = (dpitch + self.filter_kbd_track) & 0xFF
             cutoff_hi += self.exptabh[idx] + ((dpitch + self.filter_kbd_track) >> 8)
         self._wr(SID_REG_BASE + 0x16, (cutoff_hi + self.filter_shift + (cutoff_hi >> 8)) & 0xFF)

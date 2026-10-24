@@ -144,6 +144,7 @@ BUILD_FLAGS: Dict[int, PlayerFeatures] = {
     DRIVER_LIGHT: _build(  # altplayers.inc:434-473
         DRIVER_LIGHT,
         "light",
+        transposesupp=False,
         chordsupport=False,
         calcvibrato=False,
         vibratotypes=False,
@@ -237,6 +238,8 @@ _SITES: Dict[str, re.Pattern[bytes]] = {
         "wfarp_nop_supp": rb"\x10.(?:(\xc9\x80\xf0.)|)\xc9\xe0\x90",
         # CLEGATO (1786): ``ldy #9 ; adc (zp),y`` before the transpose and ``sta DPITCH,x``.
         "octaveshift": rb"\x4c..\x18(?:(\xa0\x09\x71.)|)(?:\x18\x7d..)?\x9d",
+        # CLEGATO: ``clc ; adc TRANSP,x`` after the octave shift, before ``sta DPITCH,x``.
+        "transposesupp": rb"\x4c..\x18(?:\xa0\x09\x71.)?(?:(\x18\x7d..)|)\x9d",
         # STRTSND (1882): ``bit INSCTRL ; bvs ENDPWRESET`` before ``ldy #$0A ; lda (zp),y ; sta PWTPOS,x``.
         "pwresetsw": rb"(?:(\x2c..\x70.)|)\xa0\x0a\xb1.\x9d",
         # ENDPWRESET (1889): ``bit INSCTRL ; BMIauto ENDFILRESET``.
@@ -255,13 +258,15 @@ _SITES: Dict[str, re.Pattern[bytes]] = {
         "fastspeedbind": rb"(?:(\x29\x7f\xc9\x02\x10\x03\x4c..)|)(?:\xa9\x02)?\xbc..\xf0.\xc0\x60\x90",
         # PLAYER's channel loop (835): ``lda #$FF ; sta TRDELAY,x`` before ``txa ; sec ; sbc #7``.
         "delaysupport": rb"(?:(\xa9\xff\x9d..)|)\x8a\x38\xe9\x07",
+        # PLAYER (609): ``lda PLAYERZP ; pha ; lda PLAYERZP+1 ; pha`` before ``ldx #(3-1)*7``.
+        "retainzeropage": rb"(\xa5.\x48\xa5.\x48\xa2\x0e)",
         # BIGFX1F (3758): ``pha ; and #$0F ; sta FSWITCH ; pla ; and #$F0 ; sta RESONIB``; else the label is ``rts``.
         "filt_ctrl_fx": rb"(\x48\x29\x0f\x8d..\x68\x29\xf0\x8d)",
     }.items()
 }
 
 # Sites with no flag-off anchor: their absence reads as the flag off.
-_ON_ONLY = frozenset({"filt_ctrl_fx"})
+_ON_ONLY = frozenset({"filt_ctrl_fx", "retainzeropage"})
 
 # HRENDER (1593) loads the instrument pointer then ``jmp CNTPLY2|FILTPRG|SETPWID|WFARPTB``.
 _INSPT = rb"\xb9..(?:\x18\x6d..)?\x85.\xb9..(?:\x6d..)?\x85."
