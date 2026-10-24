@@ -33,6 +33,7 @@ from .errors import (
     SWMFormatError,
     SWMUnsupportedEffectWarning,
 )
+from .features import PlayerQuirks
 from .model import (
     End,
     Instrument,
@@ -77,6 +78,7 @@ from .swi import (
     read_swi,
     write_swi,
 )
+from .variant import PlayerImage
 from .writer import build_swm, write_swm
 
 __all__ = [
@@ -85,6 +87,8 @@ __all__ = [
     "Loop",
     "MainVolume",
     "Pattern",
+    "PlayerImage",
+    "PlayerQuirks",
     "PlayPattern",
     "PsidHeader",
     "RawSequenceByte",

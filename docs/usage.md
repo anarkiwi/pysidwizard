@@ -61,7 +61,7 @@ for _ in range(500):
 This path is read-only and lossy (see [format.md](format.md#sid-wizard-sid-export-read-only-lossy)).
 
 A `.sid` also carries its player image, so `parse_sid` captures
-`SWMFile.freq_table_tail`: the bytes the assembler placed after the player's
+`SWMFile.player.freq_table_tail`: the bytes the assembler placed after the player's
 96-note `FREQTBL`. SID-Wizard's arp pitch lookup *masks* its note index
 (`and #$7F`, `player.asm:2525`) rather than clamping it, so a relative arp step
 or transpose summing past 95 reads those bytes and one summing past 127 wraps
@@ -76,8 +76,8 @@ remap it to another subtune, patch the tune data, or call one of several
 embedded players (each with its own module). `parse_sid_song(data, song)` runs
 the init in the 6502 emulator up to the SID-Wizard player it enters and returns
 the single-subtune module that song actually plays, along with
-`SWMFile.sid_init` (the SID registers the init wrote) and the image's own
-`FREQTBL`/`FREQTBH` (`freq_lo_image` / `freq_hi_image`, NTSC exports included):
+`SWMFile.player.sid_init` (the SID registers the init wrote) and the image's own
+`FREQTBL`/`FREQTBH` (`player.freq_lo` / `player.freq_hi`, NTSC exports included):
 
 ```python
 from pysidwizard import SWMPlayer, parse_sid_song

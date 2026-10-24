@@ -101,19 +101,14 @@ def collect() -> Dict[Tuple[str, int], _Image]:
                 s = parse_sid(data)
             except Exception:
                 continue  # not a single-SID export with a FREQTBL load
-            if not (s.freq_lo_image and s.freq_hi_image):
+            if not (s.player.freq_lo and s.player.freq_hi):
                 continue
             key = (src["version"], s.driver_type)
+            found = (s.player.freq_lo, s.player.freq_hi, s.player.quirks.first_frame_freq_by_track)
             img = groups.get(key)
             if img is None:
-                groups[key] = _Image(
-                    s.freq_lo_image, s.freq_hi_image, s.first_frame_freq_by_track, [srcname]
-                )
-            elif (
-                img.lo != s.freq_lo_image
-                or img.hi != s.freq_hi_image
-                or img.first_frame != s.first_frame_freq_by_track
-            ):
+                groups[key] = _Image(*found, [srcname])
+            elif (img.lo, img.hi, img.first_frame) != found:
                 failures.append(f"{key} disagrees with {srcname}")
             else:
                 img.sources.append(srcname)
@@ -135,7 +130,7 @@ def render(groups: Dict[Tuple[str, int], _Image]) -> str:
         "# Latest release; the default for player_version.",
         f"LATEST_PLAYER_VERSION = {latest!r}",
         "",
-        "# (version, driver_type) -> (freq_lo_image, freq_hi_image, first_frame_freq_by_track);",
+        "# (version, driver_type) -> (freq_lo, freq_hi, first_frame_freq_by_track);",
         "# the 256-byte FREQTBL / FREQTBH spans as the 6502 pitch table for that build.",
         "_PLAYER_IMAGES = {",
     ]

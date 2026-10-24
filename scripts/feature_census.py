@@ -2,7 +2,8 @@
 
 ``python scripts/feature_census.py tunes.txt [--csv out.csv] [--jobs N]`` reads one
 ``.sid`` path per line and prints, per flag, the tunes whose detection disagrees with
-the build their SWM header's driver byte names.
+the build their SWM header's driver byte names; ``--csv`` also lists each tune's
+release quirks (:func:`~pysidwizard.features.detect_quirks`).
 """
 
 from __future__ import annotations
@@ -11,17 +12,24 @@ import argparse
 import csv
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import asdict, fields
 from pathlib import Path
 
 from tqdm import tqdm
 
 from pysidwizard.constants import DRIVER_TYPE_POS, SWM_MAGIC
-from pysidwizard.features import BUILD_FLAGS, DETECTED_FLAGS, detect_flags
+from pysidwizard.features import (
+    BUILD_FLAGS,
+    DETECTED_FLAGS,
+    PlayerQuirks,
+    detect_flags,
+    detect_quirks,
+)
 from pysidwizard.sidfile import parse_psid_header
 
 
 def census_one(path: str):
-    """``(path, header driver or None, {flag: detected})``, or None when unreadable."""
+    """``(path, header driver or None, {flag: detected}, {quirk: detected})``, or None."""
     try:
         data = Path(path).read_bytes()
         header = parse_psid_header(data)
@@ -29,7 +37,13 @@ def census_one(path: str):
         return None
     pos = data.find(SWM_MAGIC, header.data_start)
     driver = data[pos + DRIVER_TYPE_POS] if pos >= 0 else None
-    return path, driver, detect_flags(data[header.data_start :], header.real_load_address)
+    code = data[header.data_start :]
+    return (
+        path,
+        driver,
+        detect_flags(code, header.real_load_address),
+        asdict(detect_quirks(code, data)),
+    )
 
 
 def main() -> None:
@@ -45,7 +59,7 @@ def main() -> None:
         mapped = pool.map(census_one, paths, chunksize=16)
         rows = [r for r in tqdm(mapped, total=len(paths), desc="tunes") if r]
     disagree, examples, headerless = Counter(), defaultdict(list), 0
-    for path, driver, found in rows:
+    for path, driver, found, _ in rows:
         if driver not in BUILD_FLAGS:
             headerless += 1
             continue
@@ -61,9 +75,11 @@ def main() -> None:
     if args.csv:
         with args.csv.open("w", newline="") as fh:
             out = csv.writer(fh)
-            out.writerow(["path", "driver", *DETECTED_FLAGS])
-            for path, driver, found in rows:
-                out.writerow([path, driver, *(found.get(f, "") for f in DETECTED_FLAGS)])
+            quirks = [f.name for f in fields(PlayerQuirks)]
+            out.writerow(["path", "driver", *DETECTED_FLAGS, *quirks])
+            for path, driver, found, quirk in rows:
+                flags = (found.get(f, "") for f in DETECTED_FLAGS)
+                out.writerow([path, driver, *flags, *(quirk[q] for q in quirks)])
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 """Tests for the high-level :class:`SWMFile`, :class:`Instrument`, and
 :class:`Row` / sequence models."""
 
+from dataclasses import fields
+
 import pytest
 
 from pysidwizard import (
@@ -9,6 +11,7 @@ from pysidwizard import (
     Loop,
     MainVolume,
     Pattern,
+    PlayerImage,
     PlayPattern,
     RawSequenceByte,
     Row,
@@ -20,6 +23,7 @@ from pysidwizard import (
     decode_sequence,
     encode_sequence,
 )
+from pysidwizard.features import features_for_driver
 
 # --- SWMFile defaults / derived properties ---------------------------------
 
@@ -376,3 +380,17 @@ def test_loop_rejects_out_of_range_position():
 def test_raw_sequence_byte_rejects_out_of_range_value():
     with pytest.raises(SWMFormatError, match="raw sequence byte"):
         RawSequenceByte(256).encode()
+
+
+def test_deprecated_player_aliases_warn_and_read_the_player_image():
+    """``features`` / ``filter_init`` / ``play_gate`` read ``SWMFile.player`` for one release."""
+    bare = SWMFile()
+    image = PlayerImage(features_for_driver(2), filter_init=(1, 2, 3, 4), play_gate=(0, 0x80, 0))
+    loaded = SWMFile(player=image)
+    assert {"features", "filter_init", "play_gate"}.isdisjoint(f.name for f in fields(SWMFile))
+    for name, default in (("features", None), ("filter_init", (0, 0, 0, 0)), ("play_gate", ())):
+        with pytest.warns(DeprecationWarning, match=f"SWMFile.player.{name}"):
+            assert getattr(bare, name) == default
+        with pytest.warns(DeprecationWarning, match=f"SWMFile.player.{name}"):
+            assert getattr(loaded, name) == getattr(image, name)
+    assert loaded == SWMFile(player=image) and loaded != bare

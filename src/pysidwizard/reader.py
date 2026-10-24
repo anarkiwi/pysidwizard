@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from typing import Union
 
 from .constants import (
@@ -18,23 +19,38 @@ from .constants import (
     subtunes_for,
 )
 from .errors import SWMFormatError
+from .features import features_for_driver
 from .model import Instrument, Pattern, SWMFile, decode_sequence, unpack_pattern
 from .player_images import LATEST_PLAYER_VERSION, image_for
+from .variant import PlayerImage
 
 
 def apply_player_image(swm: SWMFile, player_version: str | None) -> SWMFile:
     """Fill a mono module's FREQTBL image from the named release's build.
 
     A ``.swm`` has no player image, so past-``FREQTBL`` lookups would
-    otherwise read a fallback; this sets the ``freq_*_image`` fields from the
-    shipped image for the driver (no-op if unshipped or for multi-SID files).
+    otherwise read a fallback; this sets :attr:`SWMFile.player`'s tables and
+    first-frame quirk from the shipped image for the driver (no-op if unshipped
+    or for multi-SID files).
     """
-    if swm.sid_amount != 1 or player_version is None or (swm.freq_lo_image and swm.freq_hi_image):
+    player = swm.player
+    if (
+        swm.sid_amount != 1
+        or player_version is None
+        or (player and player.freq_lo and player.freq_hi)
+    ):
         return swm
     image = image_for(player_version, swm.driver_type)
     if image is None:
         return swm
-    swm.freq_lo_image, swm.freq_hi_image, swm.first_frame_freq_by_track = image
+    lo, hi, by_track = image
+    player = player or PlayerImage(features_for_driver(swm.driver_type))
+    swm.player = replace(
+        player,
+        freq_lo=lo,
+        freq_hi=hi,
+        quirks=replace(player.quirks, first_frame_freq_by_track=by_track),
+    )
     return swm
 
 

@@ -38,6 +38,7 @@ from pysidwizard.player import (
     VoiceState,
     freq_tables,
 )
+from tests._variant import with_image
 
 # INITER zeroes SPDCNT, so play calls 0 and 1 are row 0's TICK_0 and TICK_1 and
 # its note first applies on call 2 (TICK_2).
@@ -85,8 +86,7 @@ def _wf_arp_swm(note: int, arp: int, tail: bytes = b"") -> SWMFile:
     swm = _toy_swm()
     swm.instruments[0].wf_table = bytes([0x41, arp, 0x00, 0xFF])
     swm.patterns[0].rows[0] = Row(note=note, instrument=1)
-    swm.freq_table_tail = tail
-    return swm
+    return with_image(swm, freq_table_tail=tail)
 
 
 def _zp_freq(swm: SWMFile) -> tuple:
@@ -1200,7 +1200,7 @@ def test_freqmod_reads_the_images_own_freqtbh(calcvibrato):
     swm = _toy_swm()
     lo, hi = freq_tables(features_for_driver(0))
     retuned = bytes((b + 1) & 0xFF for b in hi[:96]) + hi[96:]
-    swm.freq_lo_image, swm.freq_hi_image = lo, retuned
+    with_image(swm, freq_lo=lo, freq_hi=retuned)
     p = SWMPlayer(swm)
     p.features = dataclasses.replace(p.features, calcvibrato=calcvibrato)
     assert p.exptabh[11:] == retuned
@@ -1507,12 +1507,12 @@ def test_the_slot_0_instrument_is_the_one_curins_0_walks():
     swm = _toy_swm()
     swm.patterns[0].rows[0] = Row(note=49)
     linked = SWMPlayer(swm).render_grid(1)[0]
-    swm.dummy_instrument = blank
+    with_image(swm, dummy_instrument=blank)
     own = SWMPlayer(swm).render_grid(1)[0]
     # WFTPOS is 0, so RDWFROW reads header bytes 0..2: control, then HR-AD as a relative arp.
     assert (linked[0], linked[1]) == (NOTE_FREQ_LO[0], NOTE_FREQ_HI[0])
     assert (own[0], own[1]) == (NOTE_FREQ_LO[0x0F], NOTE_FREQ_HI[0x0F])
-    assert swm.subtune(0).dummy_instrument is blank
+    assert swm.subtune(0).player.dummy_instrument is blank
 
 
 def test_a_track_tempo_set_at_tick_2_rows_from_the_next_frame():
@@ -1850,7 +1850,7 @@ def test_a_spare_slot_plays_the_images_instrument():
     swm = _toy_swm()
     spare = Instrument(control=0x10, attack=3)
     spare.ram = bytes([0x55]) * 0x100
-    swm.spare_instruments = {3: spare}
+    with_image(swm, spare_instruments={3: spare})
     p = SWMPlayer(swm)
     assert p._resolve_instrument(3) is spare  # pylint: disable=protected-access
     assert p._resolve_instrument(2) is p._empty  # pylint: disable=protected-access
@@ -1861,9 +1861,9 @@ def test_a_spare_slot_plays_the_images_instrument():
 def test_retainzeropage_restores_the_inits_playerzp_every_frame(retain, sr):
     """PLAYER pushes and pulls the caller's PLAYERZP (player.asm:609-613, 888-892)."""
     swm = _curins0_swm(Row(fx=0x6F))
-    swm.zp_init = bytes([0, 0, 0, 0, 0xA3])
+    with_image(swm, zp_init=bytes([0, 0, 0, 0, 0xA3]))
     p = SWMPlayer(swm)
-    assert p._zp == swm.zp_init  # pylint: disable=protected-access
+    assert p._zp == swm.player.zp_init  # pylint: disable=protected-access
     p.features = dataclasses.replace(p.features, retainzeropage=retain)
     assert p.render_grid(SETUP_FRAMES + 1)[SETUP_FRAMES][0x0D] == sr
 
@@ -1876,7 +1876,7 @@ def test_fladvan_reads_a_8x_third_column_as_fswitch(fswitch, filtkbtrack, switch
     """FLADVAN (player.asm:1827-1836): from 1.4 a $80-$8F keyboard track is FSWITCH."""
     swm = _toy_swm()
     swm.instruments[0].filter_table = bytes([0x91, 0x40, 0x83, 0xFF])
-    swm.kbtrack_fswitch = fswitch
+    with_image(swm, kbtrack_fswitch=fswitch)
     p = SWMPlayer(swm)
     p.features = dataclasses.replace(p.features, filtkbtrack=filtkbtrack)
     for _ in range(SETUP_FRAMES + HR_FRAMES + 2):
@@ -1941,7 +1941,7 @@ def test_small_fx_e_merges_the_waveform_low_nibble_before_1_5(stores, wfctrl_sma
     """SMALFXE's ``jmp WRITEWF`` (player.asm:2748-2753) stores the merged nibble until 1.5."""
     swm = _fx_swm(0x02, 0x00)
     swm.patterns[0].rows[1] = Row(fx=0xEA)
-    swm.wfctrl_fx_stores = stores
+    with_image(swm, wfctrl_fx_stores=stores)
     p = SWMPlayer(swm)
     p.features = dataclasses.replace(p.features, wfctrl_smallfx=wfctrl_smallfx)
     for _ in range(SETUP_FRAMES + 4):

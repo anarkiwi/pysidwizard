@@ -21,8 +21,9 @@ byte-exact: see ``tests/test_roundtrip.py``.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from .constants import (
     AUTHOR_LEN,
@@ -58,7 +59,9 @@ from .constants import (
     subtunes_for,
 )
 from .errors import SWMFormatError
-from .features import PlayerFeatures
+
+if TYPE_CHECKING:
+    from .variant import PlayerImage
 
 # --------------------------------------------------------------------------
 # Pattern NOP-packing primitives.
@@ -678,6 +681,21 @@ class Instrument:
 # --------------------------------------------------------------------------
 
 
+def _player_alias(name: str, default):
+    """A read-only ``SWMFile.<name>`` property for ``SWMFile.player.<name>``, warning on use."""
+
+    def get(self: SWMFile):
+        warnings.warn(
+            f"SWMFile.{name} is deprecated; use SWMFile.player.{name}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return default if self.player is None else getattr(self.player, name)
+
+    get.__doc__ = f"Deprecated alias of ``SWMFile.player.{name}``, kept for one release."
+    return property(get)
+
+
 @dataclass
 class SWMFile:
     """A SID-Wizard SWM module.
@@ -711,46 +729,14 @@ class SWMFile:
     tempo_table: bytes = b""
     subtune_tempos: List[Tuple[int, int]] = field(default_factory=list)
     load_address: Optional[int] = DEFAULT_LOAD_ADDRESS
-    # Image bytes following the player's FREQTBL. Indexed pitch loads past the table's 96 notes read them (player.asm:2523-2535), so a ``.sid`` carries its own; empty for a bare ``.swm``, which has no player image.
-    freq_table_tail: bytes = b""
-    # Pre-1.8 drivers index STRTSND's first-frame FREQTBH load by X (the track offset) instead of Y = DPITCH (ChangeLog.txt:101).
-    first_frame_freq_by_track: bool = False
-    # V1.0's INSCTRL gives a control-bit-3 instrument a fixed $09 first frame and no FREQTBH pitch.
-    first_frame_fixed_waveform: bool = False
-    # The image's own FREQTBL / FREQTBH spans (256 bytes each from each table base): PAL or NTSC, plus the bytes past each table; empty for a bare ``.swm``.
-    freq_lo_image: bytes = b""
-    freq_hi_image: bytes = b""
-    # SID registers ($D400-$D418) as the ``.sid``'s init left them over the PSID driver's $0F
-    # volume; empty for a bare ``.swm`` (all zero).
-    sid_init: bytes = b""
-    # ``(RESONIB, CTFHGHO, CTFLGHO, FSWITCH)`` operands as the tune's init leaves them
-    # (player.asm:418, 749-797), which the first call writes; zero for a bare ``.swm``.
-    filter_init: Tuple[int, int, int, int] = (0, 0, 0, 0)
-    # What ``lda (PLAYERZP),y`` reads where the tune's init left PLAYERZP ($FE/$FF), which a
-    # RETAINZEROPAGE PLAYER restores every call (player.asm:609-613, 888-892); empty for a bare ``.swm``.
-    zp_init: bytes = b""
-    # ``(operand, mask, play_sign)`` of a PLAYER entry that toggles its own ``lda #`` operand
-    # with ``eor #mask`` each call and returns unless bit 7 equals ``play_sign``; empty when it
-    # always plays.
-    play_gate: Tuple[int, ...] = ()
-    # Whether SETFLTP has STOPFLT (player.asm:2003-2005): a filter table starting $FF on the
-    # filter-controller track points FLTPOSI at that $FF. Without it FLTCTRL and FLTPOSI stay,
-    # so the walk goes on through whatever instrument the track plays next.
-    filter_stop_rewinds: bool = True
-    # Whether FLADVAN reads a filter row's $80-$8F third column as FSWITCH (and a zero keyboard
-    # track) rather than as the keyboard track; 1.4 on (player.asm:1827-1836).
-    kbtrack_fswitch: bool = True
-    # Whether SMALFXE stores its merged low nibble to WFGHOST (``jmp WRITEWF``, before 1.5);
-    # later releases comment the store out (player.asm:2748-2753).
-    wfctrl_fx_stores: bool = False
-    # The build flags read from a ``.sid``'s player code; None for a bare ``.swm`` (the driver byte's build).
-    features: Optional[PlayerFeatures] = None
-    # The instrument INSPTLO/HI slot 0 points at in a ``.sid`` image, when it is not instrument 1 (which a bare ``.swm`` and the exporter's own link imply).
-    dummy_instrument: Optional[Instrument] = None
-    # The instruments INSPTLO/HI slots past the count point at in a ``.sid`` image, by slot; a bare ``.swm`` has none (the depacker's blank).
-    spare_instruments: Dict[int, Instrument] = field(default_factory=dict)
+    # The ``.sid``'s player build, release quirks and init state; None for a bare ``.swm`` until :func:`~pysidwizard.reader.apply_player_image`.
+    player: Optional[PlayerImage] = None
     # ".P00" wrapper name (16-byte PETSCII field from disk); transport metadata, excluded from equality.
     p00_name: bytes = field(default=b"", compare=False)
+
+    features = _player_alias("features", None)
+    filter_init = _player_alias("filter_init", (0, 0, 0, 0))
+    play_gate = _player_alias("play_gate", ())
 
     @property
     def sequence_count(self) -> int:
@@ -798,21 +784,7 @@ class SWMFile:
             tempo_table=self.tempo_table,
             subtune_tempos=tempos,
             load_address=self.load_address,
-            freq_table_tail=self.freq_table_tail,
-            first_frame_freq_by_track=self.first_frame_freq_by_track,
-            first_frame_fixed_waveform=self.first_frame_fixed_waveform,
-            sid_init=self.sid_init,
-            filter_init=self.filter_init,
-            zp_init=self.zp_init,
-            play_gate=self.play_gate,
-            filter_stop_rewinds=self.filter_stop_rewinds,
-            kbtrack_fswitch=self.kbtrack_fswitch,
-            wfctrl_fx_stores=self.wfctrl_fx_stores,
-            features=self.features,
-            freq_lo_image=self.freq_lo_image,
-            freq_hi_image=self.freq_hi_image,
-            dummy_instrument=self.dummy_instrument,
-            spare_instruments=self.spare_instruments,
+            player=self.player,
         )
 
     def author_str(self) -> str:
