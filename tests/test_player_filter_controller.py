@@ -1,6 +1,6 @@
 """Filter-controller swap + global CWEPCNT regression tests.
 
-These cover the two coupled bugs that the player.py TODO at HEAD~1
+These cover the two coupled bugs that the player TODO at HEAD~1
 called out (and that none of the four reference SWMs exercise, since
 each uses a single filter controller throughout with set-mode-starting
 filter tables):
