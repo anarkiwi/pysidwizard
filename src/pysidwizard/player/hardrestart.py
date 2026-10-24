@@ -173,7 +173,6 @@ class HardRestart:
             # BPL check and reloads from ARPSPED; only MULTISPEEDSUPP_ON builds it.
             if self.features.multispeedsupp:
                 v.arp_speed_counter = 0xFF
-            v.pitch_held = True
             # Latch ARPSPED for the WF tick's reload + multispeed flags.
             v.arp_speed_reload = v.instrument.arp_speed
             v.detune = 0

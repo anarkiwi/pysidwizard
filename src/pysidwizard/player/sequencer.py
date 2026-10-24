@@ -212,9 +212,8 @@ class Sequencer:
         # (player.asm line ~1632): vibrato first mutates FREQLO/FREQHI
         # ZP, then WFARPTB's RELPTCH/ABSPTCH/chord-pitch paths
         # OVERWRITE those ZP bytes. So when WF arp writes pitch, the
-        # vibrato step from this frame has zero net effect. Match by
-        # ticking vibrato first; _tick_wf_table wipes vibrato_offset
-        # on pitch-write rows (RELPTCH / ABSPTCH / chord).
+        # vibrato step from this frame has zero net effect, which ticking
+        # vibrato first reproduces.
         if pre_incr_sc < apply_sc and self._pre_hr_instrument(v, pre_incr_sc) is not None:
             # HRGTOFF (player.asm:1568) sets PTNGATE before HRENDER walks the
             # WF table, so this tick's waveform is already gated off.

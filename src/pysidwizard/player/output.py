@@ -70,32 +70,6 @@ class Output:
                 v.sid_freq_hi = self.freq_hi[index]
             return
 
-        # Post-HR: effective pitch composition. For ABSOLUTE arp
-        # ($81..$DF in the WF table) the player uses the arp byte
-        # directly without further transposition (player.asm ABSPTCH at
-        # line 2037 just AND #$7F, no DPITCH/transpose addition). For
-        # relative arp, transpose and octave_shift fold in via DPITCH.
-        v.pitch_held = v.pitch_held and not v.wf_did_pitch_write  # SKIPWFT / NOP since STRTSND
-        if (not ins.wf_table and not v.zp_dummy) or v.pitch_held:
-            # Instrument with NO WF table: the asm's WFARPTB reads the
-            # table terminator immediately (ENDWFTB) and never writes
-            # FREQLO/FREQHI ZP, so the freq HOLDS the previous note's
-            # value rather than snapping to this (often test-bit-muted)
-            # note's pitch. Leave zp_freq_lo/hi untouched; WRPITCH below
-            # still re-applies detune/carry to the held value.
-            pass
-        else:
-            if v.wf_arp_absolute:
-                note = v.wf_arp_pitch
-            else:
-                note = v.dpitch + v.wf_arp_pitch
-            # ABSPTCH (player.asm:2525) MASKS with ``and #$7F``, it does not clamp: sums past 95 read past FREQTBL and sums past 127 wrap back into it.
-            note &= 0x7F
-            # ZP FREQLO/FREQHI: pre-detune, pre-carry, with vibrato_offset folded in as NORMVIB's ADDFREQ/SUBFREQ writes it back before WRPITCH runs.
-            zp_word = (self.freq_hi[note] << 8) | self.freq_lo[note]
-            zp_word = (zp_word + v.vibrato_offset) & 0xFFFF
-            v.zp_freq_lo = zp_word & 0xFF
-            v.zp_freq_hi = (zp_word >> 8) & 0xFF
         # WRPITCH (player.asm ~2051): explicit 8-bit ADC chain.
         #
         #   lda FREQLO ; adc DETUNER ; sta SID.FREQ+0

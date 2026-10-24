@@ -371,6 +371,11 @@ the first play call:
   filter row's `$80-$8F` third column as FSWITCH from 1.4 on
   (`PlayerQuirks.kbtrack_fswitch`); SMALFXE stores its WFGHOST merge before 1.5
   (`PlayerQuirks.wfctrl_fx_stores`).
+- FREQLO/FREQHI are per-track state, as in the player: the WF table's RELPTCH /
+  ABSPTCH / chord rows load them from FREQTBL, VIBSLIDE's vibrato and slides
+  add or subtract FREQMOD, PORTAME steps them (an unsigned 16-bit compare)
+  toward FREQTBL at DPITCH and TARGETN snaps to it, and WRPITCH adds the
+  detune. Rows that write no pitch leave them as they are.
 - DPITCH is latched when CLEGATO starts a note (note + the PLAYERZP
   instrument's octave shift + TRANSP). An instrument selected without a note,
   or a later transpose, does not move a held note.
