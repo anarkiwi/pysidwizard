@@ -238,7 +238,7 @@ EXCLUDED_MULTI_SID = [
 ]
 
 # Recovered by running the tune's own player (:func:`pysidwizard.sidreader.
-# _build_via_player`): the static image has no coherent layout, so ``run_init``
+# _player_layouts`): the static image has no coherent layout, so ``run_init``
 # materialises the runtime image and each table base is read from the player's
 # own instruction operands. This set deliberately spans every hard shape --
 # init-materialised data behind a CIA/IRQ starter (Blissed_Out, Transforming,

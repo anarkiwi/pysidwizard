@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple
 
-from pysidtracker.facets import Source
+from pysidtracker.facets import DEFAULT_SOURCE, Entry, Source, Variant
+from pysidtracker.locate import VARIANT_FACET
 
-from .features import PlayerFeatures, PlayerQuirks
+from .features import FACETS, PlayerFeatures, PlayerQuirks
 from .model import Instrument
 
 
@@ -25,6 +26,8 @@ class PlayerImage:
     quirks: PlayerQuirks = PlayerQuirks()
     # Where each facet read from the image came from (``detected@$addr`` / ``inferred(...)``), keyed by facet name; a facet absent here keeps the driver byte's default.
     provenance: Dict[str, Source] = field(default_factory=dict, compare=False)
+    # The ``locate()`` strategy that found the tune's tables (``swm-header``, ``swp``, ``codescan`` or ``via-player``); empty for a bare ``.swm``.
+    layout: str = field(default="", compare=False)
     # The image's own FREQTBL / FREQTBH spans (256 bytes each from each table base): PAL or NTSC, plus the bytes past each table.
     freq_lo: bytes = b""
     freq_hi: bytes = b""
@@ -42,3 +45,16 @@ class PlayerImage:
     dummy_instrument: Optional[Instrument] = None
     # The instruments INSPTLO/HI slots past the count point at, by slot; none means the depacker's blank.
     spare_instruments: Dict[int, Instrument] = field(default_factory=dict)
+
+    def variant(self) -> Variant:
+        """Every facet's value with its provenance, plus the layout strategy: the full variant."""
+        entries = {}
+        for facet in FACETS:
+            owner = self.quirks if facet.kind == "release" else self.features
+            source = self.provenance.get(facet.name, DEFAULT_SOURCE)
+            entries[facet.name] = Entry(getattr(owner, facet.name), source)
+        if self.layout:
+            entries[VARIANT_FACET] = Entry(
+                self.layout, self.provenance.get(VARIANT_FACET, DEFAULT_SOURCE)
+            )
+        return Variant(entries, self.features.name)

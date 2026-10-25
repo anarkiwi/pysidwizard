@@ -316,9 +316,17 @@ returns `n` forward-filled 25-register rows.
 
 A `.sid`'s build flags, release quirks and init state are one `SWMFile.player`
 (`pysidwizard.PlayerImage`); a bare `.swm` has none, so the player takes its
-driver byte's build and the latest release's behaviour. A new release difference
-is one `_QUIRK_SITES` entry plus one `PlayerQuirks` field in
-`pysidwizard.features`.
+driver byte's build and the latest release's behaviour. Every build flag and
+release difference is one facet in `pysidwizard.features.FACETS`, keyed by its
+`player.asm` site (a `SitePattern`); `PlayerImage.provenance` records where each
+detected facet value was read (`detected@$addr`) and `PlayerImage.variant()` is
+the full variant (with the `locate()` strategy that found the tables) that
+`scripts/oracle_hvsc.py` emits. A new release difference is one `_quirk(...)` entry.
+
+The `.sid` reader finds a tune's tables with `pysidtracker.locate()` strategies
+(`swm-header`, `swp`, `codescan`, `via-player`), each yielding a `Layout` (table
+bases, counts, `ptr_base`, `reloc`, header, tolerant read) that one decode reads
+and validates.
 
 ### Player correctness
 
@@ -361,7 +369,7 @@ the first play call:
   CHORDSUPPORT, arp `$7F` is a relative step. Without WFARP_NOP_SUPP, `$80` is
   absolute pitch 0.
 - A `.sid`'s build flags come from its player code (`PlayerImage.features`,
-  `pysidwizard.features.detect_features`), not the header's driver byte: SWP game
+  `pysidwizard.features.detect_variant`), not the header's driver byte: SWP game
   players are assembled from an edited `settings.cfg`, and some exports carry no
   header. Each modelled flag is read at its `.if feature.X_ON` site, matched
   relocation-free in both its on and off form; a flag whose site is missing keeps
