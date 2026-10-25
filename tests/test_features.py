@@ -1,6 +1,8 @@
 """The player-build feature table, transcribed from settings.cfg + altplayers.inc."""
 
-from dataclasses import replace
+import re
+from dataclasses import fields, replace
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +16,8 @@ from pysidwizard.features import (
     DRIVER_LIGHT,
     DRIVER_MEDIUM,
     DRIVER_NORMAL,
+    FACETS,
+    PlayerFeatures,
     PlayerQuirks,
     detect_features,
     detect_flags,
@@ -225,3 +229,40 @@ _KBTRACK = "c8b1fe8d0000c88c0000"
 def test_each_quirk_reads_from_its_site(code, changed):
     """A quirk without its site keeps its default; the first SETFLTP decides STOPFLT."""
     assert detect_quirks(bytes.fromhex(code), b"") == replace(PlayerQuirks(), **changed)
+
+
+# Facets recorded per build (settings.cfg / altplayers.inc) that the Python player has no behaviour for.
+UNMODELLED = {
+    "portame_notefx",
+    "tempoprgsupp",
+    "subtunejump",
+    "subtunesupport",
+    "filteralways",
+    "pulsealways",
+    "filtshift_supp",
+    "seq_fx_support",
+    "volset_support",
+    "vibfreqfx_supp",
+    "filter_smallfx",
+    "detune_smallfx",
+}
+_PLAYER_SRC = Path(__file__).resolve().parent.parent / "src" / "pysidwizard"
+
+
+def _player_references(kind: str) -> set:
+    """The attributes the player reads off ``features`` / ``quirks``."""
+    pattern = re.compile(rf"\bself\.(?:image\.)?{kind}\.(\w+)")
+    refs: set = set()
+    for path in (_PLAYER_SRC / "player").glob("*.py"):
+        refs.update(pattern.findall(path.read_text()))
+    return refs
+
+
+def test_registry_and_player_references_match_both_ways():
+    """Every facet is a field the player reads (or is recorded only) and every read is a facet."""
+    builds = {f.name for f in FACETS.of_kind("build")}
+    releases = {f.name for f in FACETS.of_kind("release")}
+    assert {f.name for f in fields(PlayerFeatures)} - {"driver_type", "name"} == builds
+    assert {f.name for f in fields(PlayerQuirks)} == releases
+    assert _player_references("features") == builds - UNMODELLED
+    assert _player_references("quirks") == releases

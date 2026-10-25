@@ -27,8 +27,9 @@ dependencies = [
     # --format sidwizard --state``). 0.24 adds the survey renderer's
     # ``cadence_info``, the oracle-free ``survey scope`` and the pinned-archive
     # fixture fetch (``fetch_archive_member``) the test suite uses. 0.36 has
-    # ``pathdiff`` and its strict-xfail manifest (tests/test_pathdiff.py).
-    "pysidtracker>=0.36.0",
+    # ``pathdiff`` and its strict-xfail manifest (tests/test_pathdiff.py). 0.38 has the facet
+    # registry (``SitePattern`` sites with provenance) and the ``locate()`` layout strategies.
+    "pysidtracker>=0.38.0",
 ]
 
 [project.optional-dependencies]

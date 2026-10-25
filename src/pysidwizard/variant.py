@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple
 
+from pysidtracker.facets import Source
+
 from .features import PlayerFeatures, PlayerQuirks
 from .model import Instrument
 
@@ -21,6 +23,8 @@ class PlayerImage:
     # The build flags read from the player code (the driver byte's build for a bare ``.swm``).
     features: PlayerFeatures
     quirks: PlayerQuirks = PlayerQuirks()
+    # Where each facet read from the image came from (``detected@$addr`` / ``inferred(...)``), keyed by facet name; a facet absent here keeps the driver byte's default.
+    provenance: Dict[str, Source] = field(default_factory=dict, compare=False)
     # The image's own FREQTBL / FREQTBH spans (256 bytes each from each table base): PAL or NTSC, plus the bytes past each table.
     freq_lo: bytes = b""
     freq_hi: bytes = b""

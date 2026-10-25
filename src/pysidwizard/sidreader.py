@@ -121,7 +121,7 @@ from .constants import (
     TUNING_TYPE_POS,
 )
 from .errors import SIDFormatError, SWMFormatError
-from .features import detect_features, detect_quirks, features_for_driver
+from .features import detect_variant, features_for_driver
 from .model import (
     End,
     Instrument,
@@ -341,7 +341,7 @@ def parse_sid(data: bytes) -> SWMFile:
     """Parse a single-SID SID-Wizard ``.sid`` image into a :class:`SWMFile`.
 
     Its :attr:`~pysidwizard.model.SWMFile.player` holds the image's build flags
-    (:func:`~pysidwizard.features.detect_features`), release quirks and tables,
+    (:func:`~pysidwizard.features.detect_variant`), release quirks and tables,
     so the player reproduces its code and past-table pitch lookups exactly.
     """
     swm = _parse_sid_layout(data)
@@ -349,10 +349,12 @@ def parse_sid(data: bytes) -> SWMFile:
     image = SidImage.from_sid(data)
     base = swm.player or PlayerImage(features_for_driver(swm.driver_type))
     freq_lo, freq_hi = _freq_table_images(data)
+    features, quirks, provenance = detect_variant(code, load, data, base.features)
     swm.player = replace(
         base,
-        features=detect_features(code, load, base.features),
-        quirks=detect_quirks(code, data),
+        features=features,
+        quirks=quirks,
+        provenance=provenance,
         freq_lo=freq_lo,
         freq_hi=freq_hi,
         freq_table_tail=_freq_table_tail(data),
