@@ -148,6 +148,58 @@ SW197_MEMBERS: Dict[str, Tuple[str, str]] = {
 
 SW197_NAMES: Tuple[str, ...] = tuple(SW197_MEMBERS.keys())
 
+# issue #59: SID-Maker exporter outputs (runnable .exe.prg, bare player+tune .prg) and their
+# .sid / .swm twins, keyed by member path under the 1.97 tarball's root.
+SW197_EXPORT_SHA256: Dict[str, str] = {
+    "native/examples/prg-exports/bronkosaurus.exe.prg": "310a527de7f1193054af7c470714410f5cb0a3dcd332f48f31d68bf759de75af",
+    "native/examples/sid-exports/bronkosaurus.sid": "0f65d71e4ef81a67f79f0cf808e7600f083cddeaa8c5dbc9ba905ec2c7ae16e6",
+    "native/examples/prg-exports/c0z-50shades.exe.prg": "a637f31e6d7486817951ddc12ac894e907d4ed1420249ec23042bcdf513bd3a2",
+    "native/examples/sid-exports/c0z-50shades.sid": "0b07d096c18a1126ee555806f6e7c983dfacf09c544fa89866c6a73369977cf7",
+    "native/examples/prg-exports/cloudlessr.exe.prg": "894633327deabe308531461c4d997969cb1ba26c9eafb5a9a4186e02019b2589",
+    "native/examples/sid-exports/cloudlessr.sid": "8a0b8e39bc21274e2ef6a3e9f143e5d65c2dc7fd9c00c323f34895a4b8f061fc",
+    "native/examples/prg-exports/congabeat.exe.prg": "e0be59da6564b259328e834139a9fc552c01b948a9be01db89a37e84bb6e7002",
+    "native/examples/sid-exports/congabeat.sid": "144e542115c1cbe988192e898902069e006f91421cbd3450384092673a1fe2d1",
+    "native/examples/prg-exports/demo-example.exe.prg": "f9b79f1861a2d61396b39b9a88f4c1236fcd4f3d01661c96c2bd0b00408f749a",
+    "native/examples/sid-exports/demo-example.sid": "8457724a9e93c529f7f1639d9dab10da99847d764dcd4051a9fccacf8e55718c",
+    "native/examples/prg-exports/euphoria.exe.prg": "2a4bec3d54d5d292cec1e5845a2ca4359264234df38471a6e022fabd1c792bde",
+    "native/examples/sid-exports/euphoria.sid": "92c0b644c7159b25c36c08a47c56ef38d98fd960d9e67635d26b50451b114c65",
+    "native/examples/prg-exports/flashitback.exe.prg": "d1eaffd59508dff3ede7eb905efd7f185766b6e02fa124c6b75207a96d20473f",
+    "native/examples/sid-exports/flashitback.sid": "05366df389629c6013b3b9a83c9f38c2b0edb1e2e1b7ba4f0c60d7077e313f50",
+    "native/examples/prg-exports/futuco.exe.prg": "191463baa3182bb35144c4999c56d213793e8b14f4284e443eb27ae44d696dc2",
+    "native/examples/sid-exports/futuco.sid": "3a6b91f3d70556c35d6669a3066f4ea09edd94b3e7553ef33b55e03641cf20f7",
+    "native/examples/prg-exports/glacialblues.exe.prg": "9d97c291cb86e9b2247ac1812a0b68010e0943cf29a4d32f39ba4276109cfe5e",
+    "native/examples/sid-exports/glacialblues.sid": "494e3ca6e937c9d1904bcb001cbcbb2d20a84d997679caa4a51dab7abebfb18e",
+    "native/examples/prg-exports/kerekesintro.exe.prg": "494c6e98a43901e9314a5b05bb091d97768835b5b379861d9689c3036f13a3bd",
+    "native/examples/sid-exports/kerekesintro.sid": "f0349c97d0eee7d5ad7ac26c3243cfeeee57455a3e7213acca65dbbba9087ca8",
+    "native/examples/prg-exports/kicksamule.exe.prg": "8be41d4e0eb817745041fff9ffe29c87042ee4fd1fc1660d99427c9f655206bf",
+    "native/examples/sid-exports/kicksamule.sid": "74024e71c15c287e553c2b857b20212cf9e49e2a42b7b4cc7a9fdf97c183e4a4",
+    "native/examples/prg-exports/lenore.exe.prg": "96a5c8f396fe1c6cb031c7e9095ba7e1372d933b926bb22c1badc7264eaff393",
+    "native/examples/sid-exports/lenore.sid": "e5da03524b3567d345d7817200a400fb83fdc9285a2ce69cdfb40129085cb406",
+    "native/examples/prg-exports/nepzenek.exe.prg": "fa3427068ad3bc2db1b44fa365198d21140b57d5cf42ee0669f2f87cd4231a06",
+    "native/examples/sid-exports/nepzenek.sid": "4ba1371ae072c27a760ebcd5390ff295a27934b774bc234b4344e57c3e13fc1a",
+    "native/examples/prg-exports/oakyardmemo.exe.prg": "fed3bbdc53ae2bf0d206a7974a98c2e28218903dd33c7d6993cb516bdcda5c3f",
+    "native/examples/sid-exports/oakyardmemo.sid": "62c4b5f1ff8729cf661e3c37d6783d7026a9d90f631abe12d72b1c518628d673",
+    "native/examples/prg-exports/pimpmycomm.exe.prg": "566a542b2dc6cf1f2ce817ef5e78d047dc8a2f42b6202c59853175a1c5e0362a",
+    "native/examples/sid-exports/pimpmycomm.sid": "6e2b83bb5e5f4f4d2347fff71b8c1b15bc9ac8796fb8a5c59a231a852f2a487b",
+    "native/examples/prg-exports/rain8580.exe.prg": "3092faa5fb6b32b703129dd180741475151cdc21e8607b1ee52dee3fc6edbc99",
+    "native/examples/sid-exports/rain8580.sid": "7882c170bd401167f7fbf77fb8a74472bdeb10bf884894413e9c7fa0c1b84931",
+    "native/examples/prg-exports/versenyvagym.exe.prg": "7bdefad7b862186180a6fd401e2d4632bf6fc2d32769f09d5fda142a8f1886e4",
+    "native/examples/sid-exports/versenyvagym.sid": "9df2754c7034b3193dff82d50ca0930fcaa3d55dba93157f1b5909c449140ecb",
+    "native/examples/prg-exports/vn-waiting.exe.prg": "b5f5b98e1730a65263242f011aad23d060e83d45a7a122345666855e9bfe20db",
+    "native/examples/sid-exports/vn-waiting.sid": "107f015f1355194feee88c03062d9a33a7206b2e98a444a0015d94ea13b5b107",
+    "native/examples/prg-exports/childhood-2SID.exe.prg": "f7e70d46ff2e007042ab89fb016ae11bdaaabf49d09cfb2381377732be2a37b0",
+    "native/examples/prg-exports/egblues-2SID.exe.prg": "3b724617aaca1d551136cd6c99635586a7c8e17c42dc63adce500fa48a5f8f7e",
+    "native/examples/prg-exports/newwave-3SID.exe.prg": "69211a56dc068720b83b711bb49d3027701cec45bbcd3e76c6e9fe5c1e6ca3bc",
+    "native/examples/prg-exports/ramos-3SID.exe.prg": "d1a865030ee2b9de47b74fa3ef1b9818654a143a081595284359ca7dda66c926",
+    "native/examples/prg-exports/techno-3SID.exe.prg": "a728078a1f20a4bf794c138ee4504a385446aad3d7784aa01bc389093ceb050f",
+    "native/examples/prg-exports/thizizda-3SID.exe.prg": "efd7399d11300663382075ff7085a22d627379f5de198175fc1cf721fb9c30f7",
+    "native/examples/prg-exports/rastarok.exe.prg": "b7ca0c802bcb056c9eeeb53176d4feaaf324a5127bd002d63d099c5c56370a0e",
+    "native/examples/prg-exports/echo-test.exe.prg": "a84b01e42604311460ad0d90229254bb56fd92fad550b6b4bf6f87ff7211ee35",
+    "native/examples/sid-exports/echo-test.sid": "daed02398f0a13d6ddebb849b8afbf9d906b66bf583f2a29f747ecd658ecd1a5",
+    "native/examples/echo-test.swm": "f66f8bc894dcbbbc0ec0ca5b82c79bce0b478e61bcc2940937dbabef42c53424",
+    "native/sources/SFX-example/pimpnotersfx.prg": "2d3cbb6cb9711ef04c2785aed2cee3a6abcf82250f532897d8285c62d7a7a2b4",
+}
+
 # issue #61: quickscore .P00 container + .prg twin from the SID-Wizard 1.4 release (csdb 115599).
 SW14_ZIP_URL = "https://csdb.dk/getinternalfile.php/113613/SID-Wizard-1.4-with-source.zip"
 SW14_ZIP_SHA256 = "6cd2e4c482f872a4e12a5ca2989039c6f3df079cab96a55562276a6973364ecc"
@@ -210,6 +262,16 @@ def quickscore_path() -> Path:
 def sw197_path(name: str) -> Path:
     """Path to a 1.97 release member (``.swm`` or ``.sid``)."""
     return release_member(SW197, *SW197_MEMBERS[name], f"sw197-{name}")
+
+
+def sw197_export_path(member: str) -> Path:
+    """Path to a 1.97 exporter-output member (issue #59), e.g. ``native/sources/SFX-example/pimpnotersfx.prg``."""
+    return release_member(
+        SW197,
+        f"{_SW197_ROOT}/{member}",
+        SW197_EXPORT_SHA256[member],
+        "sw197-" + member.replace("/", "-"),
+    )
 
 
 def p00_pair() -> Tuple[Path, Path]:
