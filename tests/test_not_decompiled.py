@@ -56,19 +56,16 @@ def _xfail(reason: str):
     return pytest.mark.xfail(strict=True, reason=f"#52: {reason}")
 
 
-@_xfail("in-range unrelocated instrument pointers are not re-read through the relocation delta")
 @pytest.mark.parametrize("rel, song", PARTIAL_RELOCATION)
 def test_partially_relocated_module_song_is_exact(rel, song):
     assert _compare(rel, song)["verdict"] == "exact"
 
 
-@_xfail("the player base is the wrapper's jmp;jmp pair below the SID-WIZARD marker")
 @pytest.mark.parametrize("rel, song", WRAPPER_JUMP_TABLE)
 def test_wrapper_dispatched_module_song_is_exact(rel, song):
     assert _compare(rel, song)["verdict"] == "exact"
 
 
-@_xfail("a player without the SID-WIZARD marker is never entered")
 def test_markerless_player_song_tracks_its_oracle_as_far_as_song_1():
     first = _compare(TRANSFORMING, 1)
     second = _compare(TRANSFORMING, 2)
@@ -77,7 +74,6 @@ def test_markerless_player_song_tracks_its_oracle_as_far_as_song_1():
     assert second["first_diff"] == first["first_diff"]
 
 
-@_xfail("a song whose init enters a foreign player reports a subtune index")
 def test_foreign_player_song_is_rejected_as_such():
     with pytest.raises(SIDFormatError, match="no SID-Wizard player"):
         parse_sid_song(_path(BRICKS).read_bytes(), 15)

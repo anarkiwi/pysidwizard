@@ -97,6 +97,7 @@ from pysidtracker.locate import STATIC, VARIANT_FACET
 from pysidtracker.oracle import DRIVER_VOLUME, SID_VOLUME
 from pysidtracker.poweron import power_on_ram
 from pysidtracker.registers import sid_model_for_flags
+from pysidtracker.sidid import identify
 
 from .constants import (
     AUTHOR_LEN,
@@ -473,7 +474,8 @@ def _player_bases(mem) -> List[int]:
     """Jump-table addresses of the SID-Wizard players in ``mem``, ascending.
 
     A base is the lowest ``jmp ; jmp`` pair within :data:`_MARK_REACH` bytes
-    below a ``SID-WIZARD`` tracker-info text.
+    below a ``SID-WIZARD`` tracker-info text whose first ``jmp`` (INITER) lands
+    past that text, so a wrapper's own jump table below the player is skipped.
     """
     buf = bytes(mem)
     bases = []
@@ -483,7 +485,7 @@ def _player_bases(mem) -> List[int]:
             (
                 a
                 for a in range(max(0, mark - _MARK_REACH), mark)
-                if buf[a] == _JMP and buf[a + _JMP_LEN] == _JMP
+                if buf[a] == _JMP and buf[a + _JMP_LEN] == _JMP and _word(buf, a + 1) >= mark
             ),
             None,
         )
@@ -491,6 +493,28 @@ def _player_bases(mem) -> List[int]:
             bases.append(base)
         mark = buf.find(_PLAYER_MARK, mark + 1)
     return sorted(set(bases))
+
+
+def _word(buf, addr: int) -> int:
+    return buf[addr] | (buf[addr + 1] << 8)
+
+
+def _wrapped_bases(header, mem) -> List[int]:
+    """The player base a wrapper init calls when no ``SID-WIZARD`` text marks it: the jump
+    table the header's play address enters (``playsub``), unless init is that table."""
+    play = header.play_address
+    if play < _JMP_LEN or header.init_address == play - _JMP_LEN:
+        return []
+    return [play - _JMP_LEN] if mem[play - _JMP_LEN] == mem[play] == _JMP else []
+
+
+def _play_target(mem, play: int) -> int:
+    """``play`` followed through ``jmp``s (a wrapper's init may patch them)."""
+    seen = set()
+    while mem[play] == _JMP and play not in seen:
+        seen.add(play)
+        play = _word(mem, play + 1)
+    return play
 
 
 def _song_entry(data: bytes, song: int):
@@ -508,7 +532,7 @@ def _song_entry(data: bytes, song: int):
     """
     image = SidImage.from_sid(data)
     header = image.header
-    bases = _player_bases(image.mem)
+    bases = _player_bases(image.mem) or _wrapped_bases(header, image.mem)
     bounds = dict(zip(bases, bases[1:] + [MEM_SIZE], strict=False))
     subtpos = {
         m.addr + 1: base
@@ -540,6 +564,15 @@ def _song_entry(data: bytes, song: int):
             entry = (bytes(image.mem), mpu.pc, (mpu.y << 8) | mpu.x)
         mpu.step()
     if entry is None:
+        target = _play_target(image.mem, header.play_address) if header.play_address else None
+        if target is not None:
+            stop = min([b for b in bases if b > target] + [image.end])
+            foreign = identify(bytes(image.mem[target:stop]))
+            if foreign and "SidWizard" not in foreign:
+                raise SIDFormatError(
+                    f"song {song + 1}'s init enters no SID-Wizard player "
+                    f"({foreign} at ${target:04X})"
+                )
         return None, bytes(sid), bytes(image.mem)
     snapshot, base, swp = entry
     value = written.get(base)
@@ -771,21 +804,33 @@ def _decode_instruments(
         for k in range(MAX_INSTRUMENT_SLOT + 1)
     ]
     for k in range(1, inst_amount + 1):
-        addr = addrs[k]
-        if not (load <= addr < end):
-            raise _LayoutError(f"instrument {k} pointer {addr:#06x} out of range")
-        cursor = _filter_table_end(byte, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), inst_lo)
-        if cursor is None:
-            raise _LayoutError(f"instrument {k} filter table unterminated")
-        try:
-            instruments.append(_decode_at(byte, chunk, addr, cursor, name=b"INST %02d" % k))
-        except _LayoutError:
-            raise
-        except Exception as exc:  # SWMFormatError from a malformed body
-            raise _LayoutError(f"instrument {k} did not decode: {exc}") from exc
+        tries = (addrs[k], addrs[k] + reloc_delta) if reloc_delta else (addrs[k],)
+        for n, addr in enumerate(tries, 1):
+            try:
+                instruments.append(_decode_slot(byte, chunk, addr, k, load, end, inst_lo))
+                addrs[k] = addr
+                break
+            except _LayoutError:
+                if n == len(tries):
+                    raise
     return instruments, _decode_slots(
         byte, chunk, addrs, inst_amount, inst_lo, lambda a: load <= a < end
     )
+
+
+def _decode_slot(byte, chunk, addr: int, k: int, load: int, end: int, inst_lo: int) -> Instrument:
+    """Instrument ``k`` at ``addr``, or :class:`_LayoutError`."""
+    if not load <= addr < end:
+        raise _LayoutError(f"instrument {k} pointer {addr:#06x} out of range")
+    cursor = _filter_table_end(byte, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), inst_lo)
+    if cursor is None:
+        raise _LayoutError(f"instrument {k} filter table unterminated")
+    try:
+        return _decode_at(byte, chunk, addr, cursor, name=b"INST %02d" % k)
+    except _LayoutError:
+        raise
+    except Exception as exc:  # SWMFormatError from a malformed body
+        raise _LayoutError(f"instrument {k} did not decode: {exc}") from exc
 
 
 # SEL_INS's ``cmp #maxinstamount`` bound: CURINS ranges over slots 1..$3E.
@@ -1080,6 +1125,11 @@ def _codescan_chord_tempo(image, chunk, subtune_base, min_pattern, chord_len, te
     return chord_table, tempo_table
 
 
+# SID-Maker builds the player and tune data at PLAYERADDR (settings.cfg); a relocator that misses
+# pointer-table entries leaves them at their PLAYERADDR-based address.
+PLAYERADDR = 0x1000
+
+
 def _reloc_delta_candidates(pairs, load, end):
     """Relocation deltas read straight from the player code.
 
@@ -1100,6 +1150,8 @@ def _reloc_delta_candidates(pairs, load, end):
             for b in outside:
                 if a - b:
                     deltas.add(a - b)
+    if load != PLAYERADDR:
+        deltas.add(load - PLAYERADDR)
     return sorted(deltas)
 
 

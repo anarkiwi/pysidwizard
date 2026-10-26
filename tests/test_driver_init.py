@@ -215,7 +215,7 @@ def test_first_frame_freq_index_is_read_from_the_player_code(opcode, by_track):
 
 def test_player_bases_need_a_jump_pair_below_the_tracker_text():
     mem = bytearray(0x100)
-    mem[0x10:0x16] = bytes([0x4C, 0, 0, 0x4C, 0, 0])
+    mem[0x10:0x16] = bytes([0x4C, 0x30, 0, 0x4C, 0x30, 0])  # INITER past the text
     mem[0x20:0x2A] = b"SID-WIZARD"
     mem[0x80:0x8A] = b"SID-WIZARD"  # no jump table within reach
     assert _player_bases(mem) == [0x10]
