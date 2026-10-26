@@ -198,6 +198,24 @@ SW197_EXPORT_SHA256: Dict[str, str] = {
     "native/examples/sid-exports/echo-test.sid": "daed02398f0a13d6ddebb849b8afbf9d906b66bf583f2a29f747ecd658ecd1a5",
     "native/examples/echo-test.swm": "f66f8bc894dcbbbc0ec0ca5b82c79bce0b478e61bcc2940937dbabef42c53424",
     "native/sources/SFX-example/pimpnotersfx.prg": "2d3cbb6cb9711ef04c2785aed2cee3a6abcf82250f532897d8285c62d7a7a2b4",
+    "native/examples/sid-exports/childhood-2SID.sid": (
+        "055592975d70a19227ce9f63b5c4e58818cce6d4143bdff2cefa6a29c9470864"
+    ),
+    "native/examples/sid-exports/egblues-2SID.sid": (
+        "e5eebaf82b10fd8673e0db281e811b67119272ca39e0a2caf83087846679dddd"
+    ),
+    "native/examples/sid-exports/newwave-3SID.sid": (
+        "bfc0446cfc8607e227772d4120abb6d454ed1b8f4b2e889b8ef92624d9abea6c"
+    ),
+    "native/examples/sid-exports/ramos-3SID.sid": (
+        "e21c290f463a8b5dc13ab4a6713133c828b08e5876182314f52844135f02a804"
+    ),
+    "native/examples/sid-exports/techno-3SID.sid": (
+        "739ca33f66f557ac274c428c28797d965cde3ed1438bf775984a1081283b136b"
+    ),
+    "native/examples/sid-exports/thizizda-3SID.sid": (
+        "e2941329b620cab298a4070ee710ff3f6854f4e87197b21343692be6d16c8292"
+    ),
 }
 
 # issue #61: quickscore .P00 container + .prg twin from the SID-Wizard 1.4 release (csdb 115599).
