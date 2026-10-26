@@ -52,8 +52,8 @@ def _compare(rel: str, song: int) -> dict:
     return compare_file(_path(rel), oracle_hvsc.render, frames=FRAMES, song=song)
 
 
-def _xfail(reason: str):
-    return pytest.mark.xfail(strict=True, reason=f"#52: {reason}")
+def _xfail(reason: str, raises=AssertionError):
+    return pytest.mark.xfail(strict=True, raises=raises, reason=f"#52: {reason}")
 
 
 @pytest.mark.parametrize("rel, song", PARTIAL_RELOCATION)
@@ -79,7 +79,7 @@ def test_foreign_player_song_is_rejected_as_such():
         parse_sid_song(_path(BRICKS).read_bytes(), 15)
 
 
-@_xfail("multi-SID .sid exports are rejected")
+@_xfail("multi-SID .sid exports are rejected", raises=SIDFormatError)
 @pytest.mark.parametrize("sid, native", MULTI_SID)
 def test_multi_sid_export_reads_its_native_tables(sid, native):
     got = parse_sid(sw197_export_path(f"native/examples/sid-exports/{sid}.sid").read_bytes())
