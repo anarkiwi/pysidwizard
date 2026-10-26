@@ -6,6 +6,8 @@ import os
 from dataclasses import replace
 from typing import Union
 
+from pysidtracker.facets import inferred
+
 from .constants import (
     INSTRUMENT_NAME_LEN,
     P00_HEADER_SIZE,
@@ -50,6 +52,10 @@ def apply_player_image(swm: SWMFile, player_version: str | None) -> SWMFile:
         freq_lo=lo,
         freq_hi=hi,
         quirks=replace(player.quirks, first_frame_freq_by_track=by_track),
+        provenance={
+            **player.provenance,
+            "first_frame_freq_by_track": inferred(f"player image {player_version}"),
+        },
     )
     return swm
 

@@ -13,9 +13,10 @@ PLAYER = "sidwizard"
 
 
 def render(data, song, nframes):
-    """Render 1-based ``song`` of a SID-Wizard ``.sid`` and the build options it decoded."""
+    """Render 1-based ``song`` of a SID-Wizard ``.sid`` and the full variant (every facet's value and where it came from) it decoded."""
     swm = parse_sid_song(data, song)
     info = {"driver": swm.driver_type, "frame_speed": swm.frame_speed}
+    info.update(swm.player.variant().as_info())
     info.update(cadence_info(data, song))
     grid = SWMPlayer(swm).render_grid(nframes)
     return np.asarray(grid, np.int16), info
