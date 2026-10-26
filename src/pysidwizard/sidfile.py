@@ -7,9 +7,8 @@ header fields and resolves the real C64 load address; :func:`is_sidwizard_sid`
 is a cheap predicate used to gate the SID-Wizard reader in
 :mod:`pysidwizard.sidreader`.
 
-Only what the Phase-1 reader needs is modelled. Multi-SID detection and the
-RSID magic are surfaced so the reader can give clear "not supported yet"
-errors rather than mis-parsing.
+:func:`sid_chips` and :func:`sid_format` give the chip count the header
+advertises and the work-file format of the embedded module.
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ from pysidtracker import (
     write_psid,
 )
 
-from .constants import SWM_MAGIC
+from .constants import SWM_FORMATS, SWMFormat
 from .errors import SIDFormatError
 
 # The decoded SID-container header is the shared :class:`pysidtracker.SidHeader`
@@ -55,6 +54,23 @@ def find_player_signature(image: SidImage) -> Optional[int]:
     return match.addr if match is not None else None
 
 
+def sid_chips(header: SidHeader) -> int:
+    """SID chips the container header advertises (v3 adds a 2nd, v4 a 3rd)."""
+    second = header.version >= 3 and header.second_sid != 0
+    return 1 + second + (header.version >= 4 and header.third_sid != 0)
+
+
+def sid_format(data: bytes, header: Optional[SidHeader] = None) -> SWMFormat:
+    """The work-file format of the module in ``.sid`` ``data``: its tune header's magic (the first
+    in the image), else the format of the chip count the container header advertises."""
+    header = header or parse_psid_header(data)
+    found = [(data.find(f.magic, header.data_start), f) for f in SWM_FORMATS.values()]
+    found = [(pos, f) for pos, f in found if pos >= 0]
+    if found:
+        return min(found, key=lambda pf: pf[0])[1]
+    return SWM_FORMATS[sid_chips(header)]
+
+
 def parse_psid_header(data: bytes) -> SidHeader:
     """Decode the SID-container header at the start of ``data``.
 
@@ -70,14 +86,14 @@ def parse_psid_header(data: bytes) -> SidHeader:
 
 
 def is_sidwizard_sid(data: bytes) -> bool:
-    """Return True if ``data`` looks like a single-SID SID-Wizard tune.
+    """Return True if ``data`` looks like a SID-Wizard tune.
 
-    Cheap predicate: a ``PSID`` or ``RSID`` magic, single-SID (version below 3
-    with no advertised second/third SID), and an ``SWM1`` tune-header magic, an
-    ``SWP1`` packed-export magic, or the SID-Wizard 1.x player-code signature
-    (magic-less exports) somewhere in the memory image. Both container types
-    carry the same SID-Wizard tune-data layout, so both are accepted. Does not
-    attempt a full parse.
+    Cheap predicate: a ``PSID`` or ``RSID`` magic, and a work-file tune-header
+    magic (``SWM1`` / ``SWMS`` / ``SWMT`` / ``SWMQ``) driving every chip the
+    container advertises, an ``SWP1`` packed-export magic, or the SID-Wizard
+    1.x player-code signature (magic-less exports) somewhere in the memory
+    image. Both container types carry the same SID-Wizard tune-data layout, so
+    both are accepted. Does not attempt a full parse.
     """
     try:
         data = as_container(data)
@@ -86,10 +102,10 @@ def is_sidwizard_sid(data: bytes) -> bool:
         return False
     if not (header.is_psid or header.is_rsid):
         return False
-    if header.version >= 3 or header.is_multi_sid:
+    if sid_format(data, header).sid_amount < sid_chips(header):
         return False
     if (
-        data.find(SWM_MAGIC, header.data_start) >= 0
+        any(data.find(f.magic, header.data_start) >= 0 for f in SWM_FORMATS.values())
         or data.find(_SWP_MAGIC, header.data_start) >= 0
     ):
         return True
@@ -140,7 +156,7 @@ def as_container(data: bytes) -> bytes:
     if exe is not None:
         return exe
     if container or (
-        image.find(SWM_MAGIC) < 0
+        all(image.find(f.magic) < 0 for f in SWM_FORMATS.values())
         and image.find(_SWP_MAGIC) < 0
         and find_player_signature(image) is None
     ):

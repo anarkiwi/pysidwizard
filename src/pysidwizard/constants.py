@@ -76,6 +76,50 @@ class SWMFormat:
         """Number of reserved header bytes."""
         return len(self.reserved)
 
+    @property
+    def subtune_block(self) -> int:
+        """Bytes per runtime ``SUBTUNES`` block: the orderlist pointers, then the funktempo pair
+        in its last two bytes, padded to 8 / 16 / 32 (settings.cfg ``PPTRLO``)."""
+        return 8 << min(self.sid_amount - 1, 2)
+
+    @property
+    def restemp_shift(self) -> int:
+        """``RESTEMP - TEMPOTBL`` (settings.cfg): the selected-subtune tempos the exporter
+        reserves ahead of the tempo programs."""
+        return 2 + 2 * self.channels
+
+    def field(self, header: bytes, name: str, default: int = 0) -> int:
+        """Scalar header field ``name``; ``default`` when the layout has no such byte."""
+        pos = self.fields.get(name)
+        return header[pos[0]] if pos is not None else default
+
+    def field_bytes(self, header: bytes, name: str) -> bytes:
+        """Multi-byte header field ``name``."""
+        off, width = self.fields[name]
+        return bytes(header[off : off + width])
+
+    def header_meta(self, header: bytes) -> dict:
+        """The :class:`~pysidwizard.model.SWMFile` metadata fields ``header`` holds."""
+        scalars = (
+            "frame_speed",
+            "highlight",
+            "auto_advance",
+            "config_bits",
+            "default_pattern_length",
+            "color_theme",
+            "keyboard_type",
+            "driver_type",
+            "tuning_type",
+        )
+        return {
+            **{name: self.field(header, name) for name in scalars},
+            "mute": self.field_bytes(header, "mute"),
+            "author": self.field_bytes(header, "author"),
+            "sid_amount": self.sid_amount,
+            "sid_addresses": [header[p] for p in self.sid_addresses],
+            "reserved": bytes(header[p] for p in self.reserved),
+        }
+
 
 SWM1_FORMAT = SWMFormat(
     sid_amount=1,

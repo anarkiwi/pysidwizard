@@ -40,7 +40,7 @@ Input forms: a plain `.sid`; SID-Maker's runnable `.exe.prg` (a BASIC `SYS 2064`
 starter that copies the `.sid` image to its target, read as the `.sid` it
 embeds); the SID-Maker-Echo `.sid` (an RSID wrapping that same EXE); and a bare
 player+tune `.prg` (`ExpoBIN`), wrapped in a PSID when it carries `SWM1`/`SWP1`
-or the player signature. Multi-SID EXEs raise the usual multi-SID error.
+or the player signature. Multi-SID EXEs read as their `.sid` exports do.
 
 SID-Wizard's editor exports a `.sid` by bundling its 6502 player code with the
 tune data, transforming the serialized SWM body into the player's runtime
@@ -87,11 +87,12 @@ path above (so nothing to trust from any container header), the load prefix (if
 any) only sets the model's `load_address`, and the same read-only/lossy caveats
 as the `.sid` path apply.
 
-Scope is **single-SID** `PSID`/`RSID` tunes (plain or `SWP`) — the large majority
-of SID-Wizard tunes in HVSC. Of the 1126 tunes `sidid` labels
-`Hermit/SidWizard_V1.x`, **1076 parse and play** and the remaining 50 are
-multi-SID (out of scope; they raise `SIDFormatError`, a subclass of
-`SWMFormatError`). Of the 1076: most are in-place exports read statically, ~100
+Scope is `PSID`/`RSID` tunes (plain or `SWP`). Of the 1126 tunes `sidid` labels
+`Hermit/SidWizard_V1.x`, **1076 single-SID tunes parse and play** and the
+remaining 50 are multi-SID. 48 of those parse (see *Multi-SID* below); the two
+`Quad_Core` halves run one single-SID player per chip, which no one module
+represents, and raise `SIDFormatError` (a subclass of `SWMFormatError`). Of the
+1076: most are in-place exports read statically, ~100
 are relocated / magic-less exports read from the player-code operands (below),
 and the last 14 only resolve once the tune's own init has run — recovered by
 [running the player](#player-code-recovery).
@@ -421,9 +422,22 @@ the first play call:
 - **Errors.** A subtune that the module does not decode raises
   `SIDFormatError`.
 
+### Multi-SID
+
+The module's format comes from the first `SWM1` / `SWMS` / `SWMT` / `SWMQ` tune
+header in the image, else from the chip count the container header advertises
+(some exports clobber the header magic). The runtime tables keep the single-SID
+layout with `CHN_AMOUNT = 3 * sid_amount` orderlists per subtune: each
+`SUBTUNES` block is padded to 8 / 16 / 32 bytes for 1 / 2 / 3–4 SIDs with the
+funktempo pair in its last two bytes (settings.cfg `PPTRLO`), and the RESTEMP gap
+ahead of the tempo programs is `2 + 2 * CHN_AMOUNT` bytes. The 1.97 multi-SID
+exports decode to their native `.sws` / `.swt` sequences, chord and tempo tables.
+`SWMPlayer` renders one chip, so it raises `SWMFormatError` for a multi-SID
+module.
+
 ### Out of scope
 
-Multi-SID, SFX, slowdown, and non-440 Hz tuning tables.
+Multi-SID playback, SFX, slowdown, and non-440 Hz tuning tables.
 
 ## References
 

@@ -23,8 +23,9 @@ Driver types 0 (normal), 1 (Medium), 2 (Light) and 3 (Extra) are modelled.
 The Extra build's DELAYSUPPORT_ON ``$1D`` / ``$1E``, and the Light build's
 ARPSPEEDSUPP_ON / TEMPOPRGSUPP_ON / FILTKBTRACK_ON, are not yet gated.
 
-Multi-SID / SFX / slowdown / non-440 Hz tuning tables are out of
-scope by intent. Any other effect this player does not implement is
+Multi-SID playback (one chip is rendered, so a multi-SID module raises
+:class:`~pysidwizard.errors.SWMFormatError`), SFX, slowdown and non-440 Hz
+tuning tables are out of scope. Any other effect this player does not implement is
 reported (never swallowed) via
 :class:`~pysidwizard.errors.SWMUnsupportedEffectWarning` and tallied in
 :attr:`SWMPlayer.unsupported_effects`.
@@ -45,6 +46,7 @@ from pysidtracker.registers import (
     SID_VOICE_OFFSET,
 )
 
+from ..errors import SWMFormatError
 from ..features import PlayerFeatures, features_for_driver
 from ..model import Instrument, SWMFile
 from ..variant import PlayerImage
@@ -160,6 +162,10 @@ class SWMPlayer(Sequencer, HardRestart, InstrumentTables, Pitch, Effects, Output
     MASK_PW_HI = True
 
     def __init__(self, swm: SWMFile, features: Optional[PlayerFeatures] = None) -> None:
+        if swm.sid_amount != 1:
+            raise SWMFormatError(
+                f"{swm.sid_amount}-SID playback is not modelled: SWMPlayer renders one chip"
+            )
         self.swm = swm
         # The player variant this module was exported with: its ``.sid``'s image, else the SWM driver byte's build.
         self.image = swm.player or PlayerImage(features_for_driver(swm.driver_type))

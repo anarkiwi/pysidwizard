@@ -11,7 +11,7 @@ Docker).
 Also consumes `.sid` files (PSID/RSID containers), SID-Maker `.exe.prg` and Echo `.sid`
 exports (unwrapped to the `.sid` they embed) and bare `.prg` images through
 the shared [`pysidtracker`](https://github.com/anarkiwi/pysidtracker) base:
-SID-Wizard `.sid` exports (plain or packed `SWP`) are read into the same
+SID-Wizard `.sid` exports (plain or packed `SWP`, single- or multi-SID) are read into the same
 `SWMFile` model, packed/relocating builds are detected, and container headers
 are not trusted. Standalone packed `.swp` files (`SWP1`) are read with the same
 decodable fidelity. The `.sid`/`.swp` paths are read-only and lossy (see

@@ -11,8 +11,9 @@ succeed, that :meth:`SidWizardSidParser.detect` classifies the tune as
 ``DIRECT`` (its ``SWM1``/``SWP1`` anchor is found statically, no init run), and
 that the recovered model plays. :data:`PLAYER_RECOVERED` asserts the same for
 the tunes that only resolve once the player's own init has materialised the
-runtime image, and :data:`EXCLUDED_MULTI_SID` asserts each out-of-scope multi-SID
-tune is rejected with a clear, specific error rather than a silent mis-parse.
+runtime image. :data:`MULTI_SID` asserts each multi-SID tune parses to one
+module driving every chip, and :data:`PLAYER_PER_CHIP` that a wrapper running one
+player per chip is rejected rather than read as its first chip.
 """
 
 from __future__ import annotations
@@ -24,14 +25,18 @@ from pysidwizard import (
     PlayPattern,
     SIDFormatError,
     SidWizardSidParser,
+    SWMFormatError,
     SWMPlayer,
     is_sidwizard_sid,
     parse_psid_header,
     parse_sid,
+    parse_sid_song,
     read_sid,
 )
+from pysidwizard.sidfile import sid_chips
 from tests._hvsc_corpus import (
-    EXCLUDED_MULTI_SID,
+    MULTI_SID,
+    PLAYER_PER_CHIP,
     PLAYER_RECOVERED,
     SAMPLE,
 )
@@ -108,13 +113,30 @@ def test_sample_is_representative():
     assert multisubtune >= 5, "sample lost its multi-subtune coverage"
 
 
-@pytest.mark.parametrize("rel", EXCLUDED_MULTI_SID)
-def test_excluded_multi_sid_rejected(rel):
-    # Multi-SID (2-SID/3-SID) is out of scope: the player and model are
-    # single-SID only, so it must reject rather than misrepresent one SID.
+@pytest.mark.parametrize("rel", MULTI_SID)
+def test_multi_sid_parses_every_chip(rel):
+    data = _read(rel)
+    assert is_sidwizard_sid(data)
+    swm = parse_sid(data)
+    assert swm.sid_amount == sid_chips(parse_psid_header(data)) > 1
+    assert len(swm.subtune(0).sequences) == 3 * swm.sid_amount
+    with pytest.raises(SWMFormatError, match=f"{swm.sid_amount}-SID playback"):
+        SWMPlayer(swm)
+
+
+def test_multi_sid_song_selects_its_subtune():
+    # SETSEQA's SUBTPOS is the subtune times the 2-SID 16-byte SUBTUNES block.
+    data = _read("MUSICIANS/M/M_O_T/Take_em_Out_stereo_2SID.sid")
+    swm = parse_sid(data)
+    assert swm.subtune_count == 2
+    assert parse_sid_song(data, 2).sequences == swm.subtune(1).sequences
+
+
+@pytest.mark.parametrize("rel", PLAYER_PER_CHIP)
+def test_player_per_chip_rejected(rel):
     data = _read(rel)
     assert is_sidwizard_sid(data) is False
-    with pytest.raises(SIDFormatError, match="multi-SID"):
+    with pytest.raises(SIDFormatError, match="one player per chip"):
         parse_sid(data)
 
 
