@@ -2,19 +2,6 @@
  {
   "compare": "lead",
   "frames": 9,
-  "id": "33ac5f99ad38",
-  "key": "('first', '', 'sidwizard:edge:Sequencer._tick_voice:8debb442b1ac>35970899a15e')",
-  "kind": "first",
-  "left": "6502",
-  "md5": "1b03c184ca947a51bd48d40ab7ef339f",
-  "reason": "pysidwizard/player/sequencer.py:90 if v.speed_counter == 0 and not v.sequence_ended: -> 102: reference frame 0, register $0B v2_ctrl",
-  "relpath": "MUSICIANS/B/Bayliss_Richard/Sheepoid_DX.sid",
-  "right": "format:sidwizard",
-  "song": 10
- },
- {
-  "compare": "lead",
-  "frames": 9,
   "id": "8541f9c2745c",
   "key": "('first', '', 'sidwizard:edge:Sequencer._tempo_match:657ecec02262>ee5fc55b8d14')",
   "kind": "first",
@@ -50,6 +37,19 @@
   "relpath": "MUSICIANS/S/Svetlana_Tovarisch/A_Fox_in_My_Box.sid",
   "right": "format:sidwizard",
   "song": 1
+ },
+ {
+  "compare": "lead",
+  "frames": 9,
+  "id": "e3ef8b5c3f12",
+  "key": "('first', '', 'sidwizard:edge:Sequencer._advance_row:fc7c4a63a1a0>ff43e716c3c9')",
+  "kind": "first",
+  "left": "6502",
+  "md5": "1b03c184ca947a51bd48d40ab7ef339f",
+  "reason": "pysidwizard/player/sequencer.py:90 if v.speed_counter == 0 and not v.sequence_ended: -> 102: reference frame 0, register $0B v2_ctrl",
+  "relpath": "MUSICIANS/B/Bayliss_Richard/Sheepoid_DX.sid",
+  "right": "format:sidwizard",
+  "song": 10
  },
  {
   "compare": "lead",
