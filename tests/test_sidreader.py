@@ -38,6 +38,7 @@ from pysidwizard.constants import (
 )
 from pysidwizard.model import encode_sequence, pack_pattern
 from pysidwizard.player import FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
+from pysidwizard.sidfile import sid_chips
 from pysidwizard.sidreader import (
     _decode_instruments,
     _decode_player_instruments,
@@ -704,14 +705,22 @@ def test_parse_sid_rejects_unresolvable_swp_tune():
         parse_sid(bytes(tampered))
 
 
-def test_parse_sid_rejects_multi_sid():
+def test_parse_sid_rejects_a_single_sid_module_in_a_multi_sid_container():
     sid, _ = _build_reference_image()
     tampered = bytearray(sid)
     tampered[0x04:0x06] = (3).to_bytes(2, "big")  # version 3
     tampered[0x7A] = 0x42  # second SID address
-    with pytest.raises(SIDFormatError, match="multi-SID"):
+    with pytest.raises(SIDFormatError, match="drives 2 SIDs but its first module is 1-SID"):
         parse_sid(bytes(tampered))
     assert is_sidwizard_sid(bytes(tampered)) is False
+
+
+def test_parse_sid_reads_a_single_sid_module_in_a_v3_container():
+    sid, _ = _build_reference_image()
+    upgraded = bytearray(sid)
+    upgraded[0x04:0x06] = (3).to_bytes(2, "big")
+    assert parse_sid(bytes(upgraded)) == parse_sid(sid)
+    assert is_sidwizard_sid(bytes(upgraded))
 
 
 def test_parse_sid_rejects_missing_swm1():
@@ -808,6 +817,8 @@ def test_real_corpus_row_parses_and_plays(row):
         if len(swm.patterns) == header[0x0D]:
             assert len(swm.instruments) == header[0x0E]
             assert len(swm.sequences) == header[0x0C]
+    if swm.sid_amount > 1:
+        return  # SWMPlayer renders one chip (test_multi_sid_parses_every_chip)
     # Drive the player for a bounded sample.
     player = SWMPlayer(swm)
     for _ in range(300):
@@ -857,10 +868,9 @@ def test_real_corpus_has_expected_coverage():
 
 @pytest.mark.skipif(not _CORPUS_PRESENT, reason=_CORPUS_SKIP)
 @pytest.mark.parametrize("row", _CORPUS_ROWS, ids=_corpus_id)
-def test_real_corpus_row_rejection_is_clear(row):
-    # Multi-SID tunes must raise a specific, actionable error rather than
-    # parsing into a misleading model. (Packed/SWP tunes are now decoded, not
-    # rejected.) Parametrized per row for isolation.
+def test_real_corpus_row_multi_sid_parses_or_rejection_is_clear(row):
+    # A multi-SID tune parses to one module driving every chip, or (one player
+    # per chip) raises a specific error. Parametrized per row for isolation.
     path = os.path.join(_HVSC, row[0])
     try:
         data = open(path, "rb").read()
@@ -870,11 +880,14 @@ def test_real_corpus_row_rejection_is_clear(row):
         header = parse_psid_header(data)
     except SIDFormatError:
         pytest.skip("not a parseable PSID/RSID header")
-    if header.version >= 3 or header.is_multi_sid:
-        with pytest.raises(SIDFormatError, match="multi-SID"):
-            parse_sid(data)
-    else:
+    if not header.is_multi_sid:
         pytest.skip("not a multi-SID tune")
+    try:
+        swm = parse_sid(data)
+    except SIDFormatError as exc:
+        assert "one player per chip" in str(exc)
+    else:
+        assert swm.sid_amount == sid_chips(header)
 
 
 @pytest.mark.skipif(not _CORPUS_PRESENT, reason=_CORPUS_SKIP)

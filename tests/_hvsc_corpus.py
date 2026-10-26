@@ -10,8 +10,8 @@ Enumeration method (deterministic, reproducible): every ``.sid`` under HVSC was
 classified with ``sidid`` (``SIDIDCFG=.../sidid.cfg sidid <HVSC>``) and the
 ``Hermit/SidWizard_V1.x`` matches taken (``1126`` tunes). That group label also
 covers the ``(SidWizard_2SID)`` / ``(SidWizard_3SID)`` signatures, which are
-split out here via the PSID/RSID header (multi-SID) because pysidwizard is
-single-SID only by design. Of the ``1126`` SID-Wizard tunes found:
+split out here via the PSID/RSID header (multi-SID). Of the ``1126`` SID-Wizard
+tunes found:
 
 * ``1076`` single-SID tunes parse and play. Most are direct-load exports read
   in place; ``100`` are recovered by the relocation-invariant **code-scan**
@@ -34,12 +34,11 @@ single-SID only by design. Of the ``1126`` SID-Wizard tunes found:
   table base straight from the player's instruction operands — no scanning, no
   guessed relocation. Spans direct and subtune-indirect orderlists, inline
   instrument names, the V1.0 contiguous-table idiom, and multi-subtune tunes.
-* ``50`` are multi-SID (2-SID/3-SID) — rejected by design; the
-  player and model are single-SID only (:data:`EXCLUDED_MULTI_SID`).
-
-:data:`EXCLUDED_MULTI_SID` is a deterministic subset used to assert the reader
-rejects each out-of-scope multi-SID tune with a clear, specific error (never a
-silent mis-parse).
+* ``50`` are multi-SID (2-SID/3-SID). ``48`` parse to ``3 * sid_amount``
+  orderlists per subtune (:data:`MULTI_SID`, a deterministic subset); the two
+  ``Quad_Core`` halves run one single-SID player per chip, which no one module
+  represents, and are rejected (:data:`PLAYER_PER_CHIP`). ``SWMPlayer`` renders
+  one chip, so their playback raises.
 """
 
 from __future__ import annotations
@@ -221,8 +220,8 @@ SAMPLE = [
     "MUSICIANS/S/Skuggemannen/Moofistication.sid",
 ]
 
-# Multi-SID (2-SID/3-SID): rejected with a "multi-SID" error (out of scope).
-EXCLUDED_MULTI_SID = [
+# Multi-SID (2-SID/3-SID) tunes: one module driving every chip.
+MULTI_SID = [
     "DEMOS/A-F/Devils_ReSIDence_3SID.sid",
     "MUSICIANS/C/Chabee/Stickman_2SID.sid",
     "MUSICIANS/C/Chiummo_Gaetano/Enchanted_Forest_3SID.sid",
@@ -234,7 +233,12 @@ EXCLUDED_MULTI_SID = [
     "MUSICIANS/S/Stone_James/A_Final_Hyperbase_2SID.sid",
     "MUSICIANS/T/Televicious/Eviltwin_2SID.sid",
     "MUSICIANS/T/Televicious/Ring-a-sync_2SID.sid",
+]
+
+# A wrapper calling one single-SID player per chip.
+PLAYER_PER_CHIP = [
     "MUSICIANS/V/Vincenzo/Quad_Core_bottom_part_2SID.sid",
+    "MUSICIANS/V/Vincenzo/Quad_Core_top_part_2SID.sid",
 ]
 
 # Recovered by running the tune's own player (:func:`pysidwizard.sidreader.

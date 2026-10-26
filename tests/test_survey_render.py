@@ -15,7 +15,7 @@ from pysidtracker.registers import PAL_CLOCK_HZ, PAL_CYCLES_PER_FRAME
 from pysidtracker.sidid import sidid_signatures
 
 from pysidwizard import SIDFormatError, SWMPlayer, parse_sid
-from tests._hvsc_corpus import EXCLUDED_MULTI_SID
+from tests._hvsc_corpus import MULTI_SID
 from tests._hvsc_fetch import resolve
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -84,8 +84,8 @@ def test_non_sidwizard_raises_sid_parse_error(data):
 
 
 def test_multi_sid_is_not_decompiled():
-    with pytest.raises(SidParseError, match="multi-SID"):
-        oracle_hvsc.render(_tune(EXCLUDED_MULTI_SID[0]), 1, 10)
+    with pytest.raises(SidParseError, match="SID playback is not modelled"):
+        oracle_hvsc.render(_tune(MULTI_SID[0]), 1, 10)
 
 
 def test_parse_error_is_survey_not_decompiled():

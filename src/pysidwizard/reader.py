@@ -115,33 +115,11 @@ def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -
 
     header = data[header_offset : header_offset + fmt.header_size]
 
-    def val(name: str, default: int = 0) -> int:
-        """Scalar header field; ``default`` when the layout has no such byte."""
-        pos = fmt.fields.get(name)
-        return header[pos[0]] if pos is not None else default
-
-    def valbytes(name: str) -> bytes:
-        off, width = fmt.fields[name]
-        return bytes(header[off : off + width])
-
-    frame_speed = val("frame_speed")
-    highlight = val("highlight")
-    auto_advance = val("auto_advance")
-    config_bits = val("config_bits")
-    mute = valbytes("mute")
-    default_pattern_length = val("default_pattern_length")
-    sequence_amount = val("sequence_amount")
-    pattern_amount = val("pattern_amount")
-    instrument_amount = val("instrument_amount")
-    chord_length = val("chord_length")
-    tempo_length = val("tempo_length")
-    color_theme = val("color_theme")
-    keyboard_type = val("keyboard_type")
-    driver_type = val("driver_type")
-    tuning_type = val("tuning_type")
-    sid_addresses = [header[p] for p in fmt.sid_addresses]
-    reserved = bytes(header[p] for p in fmt.reserved)
-    author = valbytes("author")
+    sequence_amount = fmt.field(header, "sequence_amount")
+    pattern_amount = fmt.field(header, "pattern_amount")
+    instrument_amount = fmt.field(header, "instrument_amount")
+    chord_length = fmt.field(header, "chord_length")
+    tempo_length = fmt.field(header, "tempo_length")
 
     body_start = header_offset + fmt.header_size
     cursor = len(data)
@@ -255,20 +233,7 @@ def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -
         )
 
     swm = SWMFile(
-        frame_speed=frame_speed,
-        highlight=highlight,
-        auto_advance=auto_advance,
-        config_bits=config_bits,
-        mute=mute,
-        default_pattern_length=default_pattern_length,
-        color_theme=color_theme,
-        keyboard_type=keyboard_type,
-        driver_type=driver_type,
-        tuning_type=tuning_type,
-        sid_amount=fmt.sid_amount,
-        sid_addresses=sid_addresses,
-        reserved=reserved,
-        author=author,
+        **fmt.header_meta(header),
         sequences=sequences,
         patterns=patterns,
         instruments=instruments,

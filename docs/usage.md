@@ -201,8 +201,9 @@ of every HVSC SID-Wizard tune. Its `info` reports the export's `driver` build an
 `frame_speed`, `rsid`, the play `trigger` (`pal_video` / `ntsc_video` /
 `cia_timer`, or `null` when unknown), `speed` (play calls per PAL frame) and
 `dynamic` (variable timer), the last four from
-`pysidtracker.cadence.cadence_info`. Tunes `parse_sid` rejects (multi-SID,
-unresolved layouts) raise `SIDFormatError`, a `pysidtracker.SidParseError`, so the survey
+`pysidtracker.cadence.cadence_info`. Tunes `parse_sid` rejects (one player per
+chip, unresolved layouts) and multi-SID modules `SWMPlayer` cannot render raise
+`SIDFormatError` / `SWMFormatError`, a `pysidtracker.SidParseError`, so the survey
 counts them as `not_decompiled`; `survey scope` lists that bucket (and any
 `library_error`) without Docker.
 

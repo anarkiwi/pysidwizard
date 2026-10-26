@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from pysidtracker.survey import as_sid, file_oracle
 
-from pysidwizard import SIDFormatError, SWMPlayer, is_sidwizard_sid, parse_sid, parse_swm
+from pysidwizard import SWMPlayer, is_sidwizard_sid, parse_sid, parse_swm
 from tests._swm_cache import sw197_export_path
 
 SINGLE_SID = (
@@ -64,9 +64,8 @@ def test_exe_prg_reads_as_its_sid_export(name):
 
 
 @pytest.mark.parametrize("name", MULTI_SID)
-def test_multi_sid_exe_prg_is_rejected_as_multi_sid(name):
-    with pytest.raises(SIDFormatError, match="multi-SID"):
-        parse_sid(_data(EXE.format(name)))
+def test_multi_sid_exe_prg_reads_as_its_sid_export(name):
+    assert parse_sid(_data(EXE.format(name))) == parse_sid(_data(SID.format(name)))
 
 
 @pytest.mark.parametrize(

@@ -1,4 +1,4 @@
-"""Issue #52: the HVSC survey's ``not_decompiled`` songs, one strict xfail per root cause.
+"""Issue #52: the HVSC survey's former ``not_decompiled`` songs, one case per root cause.
 
 Each single-SID case is checked the way ``pysidtracker.survey`` checks it: the
 ``scripts/oracle_hvsc.py`` render against the tune's own 6502 player (jennings).
@@ -52,10 +52,6 @@ def _compare(rel: str, song: int) -> dict:
     return compare_file(_path(rel), oracle_hvsc.render, frames=FRAMES, song=song)
 
 
-def _xfail(reason: str, raises=AssertionError):
-    return pytest.mark.xfail(strict=True, raises=raises, reason=f"#52: {reason}")
-
-
 @pytest.mark.parametrize("rel, song", PARTIAL_RELOCATION)
 def test_partially_relocated_module_song_is_exact(rel, song):
     assert _compare(rel, song)["verdict"] == "exact"
@@ -79,7 +75,6 @@ def test_foreign_player_song_is_rejected_as_such():
         parse_sid_song(_path(BRICKS).read_bytes(), 15)
 
 
-@_xfail("multi-SID .sid exports are rejected", raises=SIDFormatError)
 @pytest.mark.parametrize("sid, native", MULTI_SID)
 def test_multi_sid_export_reads_its_native_tables(sid, native):
     got = parse_sid(sw197_export_path(f"native/examples/sid-exports/{sid}.sid").read_bytes())
