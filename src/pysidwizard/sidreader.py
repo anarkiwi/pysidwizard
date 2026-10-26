@@ -140,7 +140,7 @@ from .model import (
 )
 from .player import FREQ_TABLE_SPAN, FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
 from .reader import LATEST_PLAYER_VERSION, apply_player_image
-from .sidfile import find_player_signature, parse_psid_header
+from .sidfile import as_container, find_player_signature, parse_psid_header
 from .variant import PlayerImage
 
 # SID-Wizard's "packed" (``SWP``) export keeps an ``SWP1`` magic (the ``SWM1``
@@ -350,6 +350,7 @@ def parse_sid(data: bytes) -> SWMFile:
     (:func:`~pysidwizard.features.detect_variant`), release quirks and tables,
     so the player reproduces its code and past-table pitch lookups exactly.
     """
+    data = as_container(data)
     swm = _parse_sid_layout(data)
     code, load = _player_code(data)
     image = SidImage.from_sid(data)
@@ -579,6 +580,7 @@ def parse_sid_song(data: bytes, song: int) -> SWMFile:
     the plain :func:`parse_sid` of the file. Raises :class:`SIDFormatError` when
     the selected subtune is not in the decoded module.
     """
+    data = as_container(data)
     header = _single_sid_header(data)
     found, sid, after = _song_entry(data, song - 1)
     if found is None or found[2] is None:

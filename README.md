@@ -8,7 +8,8 @@ against the [`anarkiwi/sidtrace`](https://github.com/anarkiwi/sidtrace)
 sidplayfp oracle over real HVSC SID-Wizard exports (`pytest -m oracle`, needs
 Docker).
 
-Also consumes `.sid` files (PSID/RSID containers) and bare `.prg` images through
+Also consumes `.sid` files (PSID/RSID containers), SID-Maker `.exe.prg` and Echo `.sid`
+exports (unwrapped to the `.sid` they embed) and bare `.prg` images through
 the shared [`pysidtracker`](https://github.com/anarkiwi/pysidtracker) base:
 SID-Wizard `.sid` exports (plain or packed `SWP`) are read into the same
 `SWMFile` model, packed/relocating builds are detected, and container headers
