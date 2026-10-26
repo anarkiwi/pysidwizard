@@ -49,8 +49,6 @@ ECHO_SWM = "native/examples/echo-test.swm"
 BARE_PRG = "native/sources/SFX-example/pimpnotersfx.prg"
 FRAMES = 1500
 
-ISSUE_59 = pytest.mark.xfail(strict=True, reason="#59: SID-Maker PRG exports are not unwrapped")
-
 
 def _data(member: str) -> bytes:
     return sw197_export_path(member).read_bytes()
@@ -60,20 +58,17 @@ def _grid(swm, frames: int = FRAMES):
     return np.asarray(SWMPlayer(swm).render_grid(frames), np.int16)
 
 
-@ISSUE_59
 @pytest.mark.parametrize("name", SINGLE_SID)
 def test_exe_prg_reads_as_its_sid_export(name):
     assert parse_sid(_data(EXE.format(name))) == parse_sid(_data(SID.format(name)))
 
 
-@ISSUE_59
 @pytest.mark.parametrize("name", MULTI_SID)
 def test_multi_sid_exe_prg_is_rejected_as_multi_sid(name):
     with pytest.raises(SIDFormatError, match="multi-SID"):
         parse_sid(_data(EXE.format(name)))
 
 
-@ISSUE_59
 @pytest.mark.parametrize(
     "member", [EXE.format(n) for n in SINGLE_SID + ("rastarok", "echo-test")] + [BARE_PRG]
 )
@@ -81,12 +76,10 @@ def test_prg_export_is_recognised(member):
     assert is_sidwizard_sid(_data(member))
 
 
-@ISSUE_59
 def test_echo_exe_prg_reads_as_its_sid_export():
     assert parse_sid(_data(ECHO_EXE)) == parse_sid(_data(ECHO_SID))
 
 
-@ISSUE_59
 def test_echo_sid_reads_as_native_swm():
     sid = parse_sid(_data(ECHO_SID))
     swm = parse_swm(_data(ECHO_SWM))
@@ -100,7 +93,6 @@ def test_wrapped_bare_prg_renders_as_its_own_player():
     assert np.array_equal(_grid(parse_sid(sid)), file_oracle(sid, 1, FRAMES)[1])
 
 
-@ISSUE_59
 def test_bare_prg_renders_as_its_own_player():
     prg = _data(BARE_PRG)
     assert np.array_equal(_grid(parse_sid(prg)), file_oracle(as_sid(prg), 1, FRAMES)[1])

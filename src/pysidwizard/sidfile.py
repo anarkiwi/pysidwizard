@@ -17,12 +17,15 @@ from __future__ import annotations
 from typing import Optional
 
 from pysidtracker import (
+    PSID_MAGIC,
     CodePattern,
+    SidError,
     SidFormatError,
     SidHeader,
     SidImage,
     find_code_first,
     parse_sid_header,
+    write_psid,
 )
 
 from .constants import SWM_MAGIC
@@ -77,6 +80,7 @@ def is_sidwizard_sid(data: bytes) -> bool:
     attempt a full parse.
     """
     try:
+        data = as_container(data)
         header = parse_psid_header(data)
     except SIDFormatError:
         return False
@@ -93,3 +97,52 @@ def is_sidwizard_sid(data: bytes) -> bool:
         return find_player_signature(SidImage.from_sid(data)) is not None
     except (SidFormatError, ValueError):
         return False
+
+
+# EXEsrcL..EXEcopy's bcs (exporter.asm): the EXE starter's backward copy of the SIDHEADER image.
+EXE_COPY = CodePattern(
+    "A9 {sl} 85 ?? A9 {sh} 85 ?? A9 {tl} 85 ?? A9 {th} 85 ?? A0 00 B1 ?? 91 ?? "
+    "A5 ?? D0 02 C6 ?? C6 ?? A5 ?? D0 02 C6 ?? C6 ?? A5 ?? C9 {el} A5 ?? E9 {eh} B0 ??"
+)
+_CONTAINERS = (PSID_MAGIC, b"RSID")
+
+
+def _exe_container(image: SidImage) -> Optional[bytes]:
+    """The ``.sid`` ExpoSID saves from the SIDHEADER image an EXE starter copies, or ``None``."""
+    m = find_code_first(image, EXE_COPY)
+    if m is None:
+        return None
+    c = m.captures
+    lo = c["el"] | c["eh"] << 8
+    body = image.slice(lo, (c["sl"] | c["sh"] << 8) - lo)
+    if body[:4] not in _CONTAINERS:
+        return None
+    off = body[7]
+    load = int.from_bytes(body[off : off + 2], "little")
+    init = int.from_bytes(body[10:12], "big")
+    if body[:4] == PSID_MAGIC and init > load:
+        return body[:off] + body[10:12][::-1] + body[off + 2 + init - load :]
+    if not load <= init < load + len(body) - off - 2:
+        return body[:10] + load.to_bytes(2, "big") + body[12:]
+    return body
+
+
+def as_container(data: bytes) -> bytes:
+    """The PSID/RSID a SID-Maker ``.sid``, EXE or bare ``.prg`` export stands for; else ``data``."""
+    container = data[:4] in _CONTAINERS
+    if container:
+        parse_psid_header(data)
+    try:
+        image = SidImage.from_bytes(data)
+    except SidError:
+        return data
+    exe = _exe_container(image)
+    if exe is not None:
+        return exe
+    if container or (
+        image.find(SWM_MAGIC) < 0
+        and image.find(_SWP_MAGIC) < 0
+        and find_player_signature(image) is None
+    ):
+        return data
+    return write_psid(load=0, init=image.load, play=image.load + 3, image=data)

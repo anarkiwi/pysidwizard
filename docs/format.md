@@ -36,6 +36,12 @@ Releases 1.0 RC through 1.7 shipped most demo tunes as VICE PC64 files
 
 ### SID-Wizard `.sid` export (read-only, lossy)
 
+Input forms: a plain `.sid`; SID-Maker's runnable `.exe.prg` (a BASIC `SYS 2064`
+starter that copies the `.sid` image to its target, read as the `.sid` it
+embeds); the SID-Maker-Echo `.sid` (an RSID wrapping that same EXE); and a bare
+player+tune `.prg` (`ExpoBIN`), wrapped in a PSID when it carries `SWM1`/`SWP1`
+or the player signature. Multi-SID EXEs raise the usual multi-SID error.
+
 SID-Wizard's editor exports a `.sid` by bundling its 6502 player code with the
 tune data, transforming the serialized SWM body into the player's runtime
 in-memory layout. This is a **new reader path**, parallel to `parse_swm`, that
