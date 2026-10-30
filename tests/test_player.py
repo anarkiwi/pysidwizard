@@ -2023,3 +2023,13 @@ def test_a_jump_to_a_pw_row_leaves_the_sweep_counter_running():
     p._apply_fx_columns(v, None, 0x0A, 1, False)  # pylint: disable=protected-access
     pw_base = 0x10 + len(v.instrument.wf_table) + 1
     assert (v.pw_pos, v.pw_sweep_count) == (pw_base + 3, 9)
+
+
+def test_a_zero_slide_speed_is_a_zero_freqmod_at_any_pitch():
+    """SETFMOD's ``beq wrFmodL`` stores FREQMOD 0 for an A of 0 instead of indexing EXPTABH by DPITCH."""
+    p = SWMPlayer(_toy_swm())
+    assert p.features.calcvibrato
+    assert [p._freqmod(0, dpitch) for dpitch in (0, 49, 60)] == [
+        (0, 0)
+    ] * 3  # pylint: disable=protected-access
+    assert p._freqmod(1, 49) != (0, 0)  # pylint: disable=protected-access
