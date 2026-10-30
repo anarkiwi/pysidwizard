@@ -196,7 +196,39 @@ SW197_EXPORT_SHA256: Dict[str, str] = {
     "native/examples/prg-exports/rastarok.exe.prg": "b7ca0c802bcb056c9eeeb53176d4feaaf324a5127bd002d63d099c5c56370a0e",
     "native/examples/prg-exports/echo-test.exe.prg": "a84b01e42604311460ad0d90229254bb56fd92fad550b6b4bf6f87ff7211ee35",
     "native/examples/sid-exports/echo-test.sid": "daed02398f0a13d6ddebb849b8afbf9d906b66bf583f2a29f747ecd658ecd1a5",
-    "native/examples/echo-test.swm": "f66f8bc894dcbbbc0ec0ca5b82c79bce0b478e61bcc2940937dbabef42c53424",
+    "native/examples/bronkosaurus.swm": (
+        "96862c8fddf77cf3abbf2ff2010b761bcef4ea0968b5843a9408d1aec99e3591"
+    ),
+    "native/examples/c0z-50shades.swm": (
+        "c61b556208b783c4235c449ecd068b7f796d49b81f320e8cc9569a5c953a2eb3"
+    ),
+    "native/examples/euphoria.swm": (
+        "5f7103f65288bbeb39200aa6f553f2e747742de96dd17edc0ff7675fd8264f7d"
+    ),
+    "native/examples/flashitback.swm": (
+        "53fc4da79248737e28e04caa692c0794653b5db0f3ea0ee3d8917307d57cee60"
+    ),
+    "native/examples/futuco.swm": (
+        "f743c942e2c3fa585ab68e8131dd5553922524d31d409a6a07b0c107121d4daf"
+    ),
+    "native/examples/kerekesintro.swm": (
+        "bc0ecc605710bfbb3adbba8e06cad6056190c3bb9c061437460f1c3a6ecf642d"
+    ),
+    "native/examples/nepzenek.swm": (
+        "62b0d68a982e908d6807d3961e996934a592452d8e604819e3c7a680a99cd250"
+    ),
+    "native/examples/pimpmycomm.swm": (
+        "3c234232d9c578c704b37d5eaab595ed48c9859cd8248cc362e5ffc5de076385"
+    ),
+    "native/examples/rain8580.swm": (
+        "edbd461c0f1d92a18420589b86dcefb685e748e7be68b390681d68030fcafcaf"
+    ),
+    "native/examples/vn-waiting.swm": (
+        "c7f85579f0d09a9abb5468b40dc404e043cbf29cd28ef643a9565eb4a9bd5a83"
+    ),
+    "native/examples/echo-test.swm": (
+        "f66f8bc894dcbbbc0ec0ca5b82c79bce0b478e61bcc2940937dbabef42c53424"
+    ),
     "native/sources/SFX-example/pimpnotersfx.prg": "2d3cbb6cb9711ef04c2785aed2cee3a6abcf82250f532897d8285c62d7a7a2b4",
     "native/examples/sid-exports/childhood-2SID.sid": (
         "055592975d70a19227ce9f63b5c4e58818cce6d4143bdff2cefa6a29c9470864"
@@ -236,7 +268,12 @@ P00_PAIR_MEMBERS: Dict[str, Tuple[str, str]] = {
 
 P00_PAIR_NAMES: Tuple[str, ...] = tuple(P00_PAIR_MEMBERS.keys())
 
+# The SID-Wizard 1.8 release (csdb 165302): its SID-Maker made the 1.94/1.97 example .sid exports.
+SW18_7Z_URL = "https://csdb.dk/getinternalfile.php/168973/SID-Wizard-1.8.7z"
+SW18_7Z_SHA256 = "0eb81cae7df0507e9753b7cb5f7d2edd121f83c91e4d5133317e9dbc0878355e"
+
 SW194 = (TARBALL_URL, TARBALL_SHA256)
+SW18 = (SW18_7Z_URL, SW18_7Z_SHA256)
 SW197 = (SW197_TARBALL_URL, SW197_TARBALL_SHA256)
 SW17 = (SW17_ZIP_URL, SW17_ZIP_SHA256)
 SW14 = (SW14_ZIP_URL, SW14_ZIP_SHA256)

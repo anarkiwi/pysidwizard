@@ -50,6 +50,9 @@ dev = [
     "ruff>=0.4",
     "black>=24.0",
     "zstandard>=0.21",
+    "tqdm>=4.0",
+    # scripts/build_sidmaker.py unpacks the SID-Wizard 1.8 release, a 7z archive.
+    "py7zr>=0.20",
 ]
 
 # The generic ``pysidtracker`` CLI (info / reglog / wav) discovers SID-Wizard
@@ -64,7 +67,7 @@ Homepage = "https://github.com/anarkiwi/pysidwizard"
 where = ["src"]
 
 [tool.setuptools.package-data]
-pysidwizard = ["*.lark", "specs/*.play"]
+pysidwizard = ["*.lark", "specs/*.play", "data/*.prg", "data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

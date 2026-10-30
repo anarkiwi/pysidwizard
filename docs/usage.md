@@ -132,6 +132,25 @@ sequences missing an `End()` / `Loop()` terminator. NOP packing, table
 terminators, and on-disk pointer arithmetic are handled automatically — describe
 content, not bytes.
 
+## Export an SWM to a SID
+
+`pysidwizard.sidmaker` runs SID-Wizard's own exporter (SID-Maker 1.7, 1.8, 1.94 or
+1.97, shipped as package data) on the 6502 and returns the `.sid` it saves: PAL,
+default relocation, the module's own driver type and subtunes.
+
+```python
+from pysidwizard import sidmaker
+
+data = open("tune.swm", "rb").read()
+sid = sidmaker.export(data)                   # SID-Maker 1.97, 8580 in the header
+image = sidmaker.tune(data, "1.8")            # a pysidtracker SidImage of the export
+session = sidmaker.SidMaker("1.8")            # successive exports share its memory
+```
+
+`scripts/build_sidmaker.py` rebuilds the binaries from each release's sources and
+proves each is the release's own SID-Maker. The 1.94/1.97 example `.sid` exports are
+the 1.8 release's files; SID-Maker 1.8 reproduces them byte for byte.
+
 ## Play an SWM
 
 ```python
