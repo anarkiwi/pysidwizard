@@ -60,6 +60,9 @@ Homepage = "https://github.com/anarkiwi/pysidwizard"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+pysidwizard = ["*.lark"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # ``-n auto`` parallelises the unit suite across CPUs via pytest-xdist. The

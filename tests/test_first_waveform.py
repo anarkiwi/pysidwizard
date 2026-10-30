@@ -48,7 +48,7 @@ def test_zero_first_waveform_renders_editor_default_on_hr_frame():
         control=0x1A,  # bit 3 (test-bit HR) set, like every quickscore instrument
         sustain=0xF,
         first_waveform=0,
-        wf_table=bytes([0x41, 0x80, 0x00, 0xFF]),
+        wf_table=bytes([0x41, 0x80, 0x00]),
     )
     pattern = Pattern(rows=[Row(note=49, instrument=1)] + [Row()] * 4, length=5)
     swm = SWMFile(
@@ -77,7 +77,7 @@ def test_stored_nonzero_first_waveform_is_not_substituted():
         control=0x1A,
         sustain=0xF,
         first_waveform=0x40,
-        wf_table=bytes([0x41, 0x80, 0x00, 0xFF]),
+        wf_table=bytes([0x41, 0x80, 0x00]),
     )
     assert inst.effective_first_waveform == 0x40
     pattern = Pattern(rows=[Row(note=49, instrument=1)] + [Row()] * 4, length=5)

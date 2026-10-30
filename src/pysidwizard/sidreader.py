@@ -113,6 +113,7 @@ from .constants import (
 )
 from .errors import SIDFormatError, SWMFormatError
 from .features import detect_variant, features_for_driver
+from .grammar import parse_pattern, parse_sequence
 from .model import (
     End,
     Instrument,
@@ -120,7 +121,6 @@ from .model import (
     PlayPattern,
     Row,
     SWMFile,
-    decode_sequence,
     unpack_pattern,
 )
 from .player import FREQ_TABLE_SPAN, FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
@@ -937,6 +937,15 @@ def _scan_pattern_end(byte, start: int) -> int:
                     addr += 1
 
 
+def _read_pattern(byte, chunk, addr: int, term: int) -> Pattern:
+    """The pattern in ``[addr, term)``. Its original length survives as the byte after the
+    terminator (the exporter only overwrites the size byte); the unpacked size stands in
+    if that looks implausible."""
+    packed = chunk(addr, term - addr)
+    length = byte(term + 1)
+    return parse_pattern(packed, length if 0 < length <= 0xFF else len(unpack_pattern(packed)))
+
+
 def _decode_patterns(byte, chunk, ptn_lo, ptn_hi, pat_amount, load, end, ptr_base=0, reloc_delta=0):
     """Decode the ``pat_amount`` patterns (1-based; index 0 is the reserved slot)."""
     patterns: List[Pattern] = []
@@ -948,14 +957,7 @@ def _decode_patterns(byte, chunk, ptn_lo, ptn_hi, pat_amount, load, end, ptr_bas
             raise _LayoutError(f"pattern {k} pointer {addr:#06x} out of range")
         min_pattern = min(min_pattern, addr)
         term = _scan_pattern_end(byte, addr)
-        unpacked = unpack_pattern(chunk(addr, term - addr))
-        # The original pattern length survives as the byte after the
-        # terminator (the exporter only overwrites the size byte); fall back to
-        # the decoded row count if it looks implausible.
-        length = byte(term + 1)
-        if not 0 < length <= 0xFF:
-            length = len(unpacked)
-        pat = Pattern.decode(unpacked, length=length)
+        pat = _read_pattern(byte, chunk, addr, term)
         pat.ram = _ram_window(byte, addr)
         patterns.append(pat)
     return patterns, min_pattern
@@ -1029,7 +1031,7 @@ def _decode_sequences(
             if command == _SEQUENCE_END_WITH_LOOP:
                 addr += 1  # consume the loop-position byte
                 break
-        sequences.append(decode_sequence(chunk(start, addr - start)))
+        sequences.append(parse_sequence(chunk(start, addr - start)))
     return sequences
 
 
@@ -1301,11 +1303,7 @@ def _player_patterns(
                 raise _LayoutError(f"primary-subtune pattern {k} is absent from the image")
             patterns.append(Pattern(rows=[Row() for _ in range(empty_len)]))
             continue
-        unpacked = unpack_pattern(chunk(addr, term - addr))
-        length = byte(term + 1)
-        if not 0 < length <= 0xFF:
-            length = len(unpacked)
-        pat = Pattern.decode(unpacked, length=length)
+        pat = _read_pattern(byte, chunk, addr, term)
         pat.ram = _ram_window(byte, addr)
         patterns.append(pat)
         if k in ref_all:
@@ -1728,7 +1726,7 @@ def _player_layouts(data: bytes, load: int, base: int, fmt: SWMFormat):
             return floor <= addr < data_hi
 
         try:
-            seqs0 = [decode_sequence(chunk(b, _scan_sequence_end(byte, b) - b)) for b in bases0]
+            seqs0 = [parse_sequence(chunk(b, _scan_sequence_end(byte, b) - b)) for b in bases0]
         except _LayoutError:
             continue
         refs0 = _refs(seqs0)
@@ -1854,7 +1852,7 @@ def _read_tolerant(lay: Layout, rd: _Reader) -> _Tables:
         if b is None:
             sequences.append([End()])
             continue
-        seq = decode_sequence(rd.chunk(b, _scan_sequence_end(rd.byte, b) - b))
+        seq = parse_sequence(rd.chunk(b, _scan_sequence_end(rd.byte, b) - b))
         sequences.append(seq)
         this = {c.pattern for c in seq if isinstance(c, PlayPattern)}
         ref_all |= this

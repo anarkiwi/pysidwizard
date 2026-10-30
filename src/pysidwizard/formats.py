@@ -15,6 +15,7 @@ from typing import Iterable, Sequence
 
 from pysidtracker import SidFormat
 
+from .grammar import GRAMMAR, streams
 from .model import SWMFile
 from .player import SWMPlayer
 from .sidreader import SidWizardSidParser
@@ -45,4 +46,6 @@ FORMAT = SidFormat(
     player=SWMPlayer,
     describe=_describe,
     metadata=_metadata,
+    grammar=GRAMMAR,
+    streams=streams,
 )
