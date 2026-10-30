@@ -1,0 +1,75 @@
+// SID-Wizard playroutine: the pattern row reader of one voice.
+// Every name L.* is a player address resolved from the build's code.
+spec sidwizard;
+
+layout {
+  zp_ptn, ptnpos, nopcnt, curnote, curifx, curfx, fxval: addr;
+}
+
+const RUN_MIN = 0x70;
+const RUN_MAX = 0x78;
+const RUN_BASE = 0x6F;
+const FX_VALUE_MASK = 0xE0;
+
+// The pattern pointer the voice's pattern id selects, in zero page.
+cell zp_ptn: u16 @ L.zp_ptn;
+
+machine voice[x in 0..3] {
+  // Per-voice variables sit seven bytes apart.
+  cell ptnpos: u8 @ L.ptnpos + x * 7;
+  cell nopcnt: u8 @ L.nopcnt + x * 7;
+  cell curnote: u8 @ L.curnote + x * 7;
+  cell curifx: u8 @ L.curifx + x * 7;
+  cell curfx: u8 @ L.curfx + x * 7;
+  cell fxval: u8 @ L.fxval + x * 7;
+
+  step {
+    read_row();
+  }
+
+  // One row of the NOP-packed pattern stream: a note byte, then an instrument byte
+  // if the note's bit 7 is set, then an effect byte if the instrument's bit 7 is set,
+  // then a value byte if the effect is below $20. A note byte of $70..$77 starts a run
+  // of 2..9 empty rows, whose rest NOPCNT counts down. PTNPOS keeps the offset of the last
+  // byte read.
+  proc read_row() {
+    stream pat = zp_ptn @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
+    let row = 0;
+    let y = 0;
+    if nopcnt != 0 {
+      nopcnt -= 1;
+    } else {
+      row := pat[0];
+      if row >= RUN_MIN && row < RUN_MAX {
+        nopcnt := row - RUN_BASE;
+        row := 0;
+      }
+    }
+    if !neg(row) {
+      curnote := row;
+    } else {
+      curnote := row & 0x7F;
+      y += 1;
+      let ins = pat[y];
+      if !neg(ins) {
+        curifx := ins;
+      } else {
+        curifx := ins & 0x7F;
+        y += 1;
+        let fx = pat[y];
+        curfx := fx;
+        if fx & FX_VALUE_MASK == 0 {
+          y += 1;
+          fxval := pat[y];
+        }
+      }
+    }
+    ptnpos += y;
+  }
+}
+
+schedule {
+  for v in 0..3 {
+    voice[v];
+  }
+}

@@ -61,7 +61,7 @@ Homepage = "https://github.com/anarkiwi/pysidwizard"
 where = ["src"]
 
 [tool.setuptools.package-data]
-pysidwizard = ["*.lark"]
+pysidwizard = ["*.lark", "specs/*.play"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

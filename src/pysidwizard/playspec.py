@@ -1,0 +1,50 @@
+"""The SID-Wizard playroutine as a ``pysidtracker.playspec`` spec.
+
+``specs/sidwizard.play`` states the pattern row reader; :func:`binding` resolves its
+``layout`` from the player's own code, which is the same in every build.
+"""
+
+from importlib import resources
+
+from pysidtracker import CodePattern, SidImage, find_code_all
+from pysidtracker.playspec import parse as parse_spec
+
+SPEC = parse_spec(resources.files(__package__).joinpath("specs/sidwizard.play").read_text())
+
+# ``ldy PTNPOS,x ; lda NOPCNT,x ; bne ; lda (zp),y ; cmp #$70 ; bcc ; cmp #$78 ; bcs ;
+# sbc #$6d ; sta NOPCNT,x ; dec NOPCNT,x ; lda #0 ; cmp #0 ; bmi`, then the note, instrument,
+# effect and value columns, then ``tya ; sta PTNPOS,x``.
+ROW_READER = CodePattern(
+    "BC {ptnpos:w} BD {nopcnt:w} D0 ?? B1 {zp} C9 70 90 ?? C9 78 B0 ?? E9 6D 9D {nopcnt:w} "
+    "DE {nopcnt:w} A9 00 C9 00 30 ?? 9D {curnote:w} 10 ?? 29 7F 9D {curnote:w} C8 B1 {zp} "
+    "30 ?? 9D {curifx:w} 10 ?? 29 7F 9D {curifx:w} C8 B1 {zp} 9D {curfx:w} 29 E0 D0 ?? "
+    "C8 B1 {zp} 9D {fxval:w} 98 9D {ptnpos:w}"
+)
+
+
+def image(view) -> SidImage:
+    """The 64 KiB ``view`` as a :class:`~pysidtracker.SidImage`."""
+    return SidImage.from_prg(b"\0\0" + bytes(view))
+
+
+def _row_reader(view):
+    for match in find_code_all(image(view), ROW_READER):
+        return match
+    raise ValueError("no SID-Wizard row reader in the image")
+
+
+def row_reader(view) -> int:
+    """The address of the row reader: its ``LDY PTNPOS,X``."""
+    return _row_reader(view).addr
+
+
+def reader_end(view) -> int:
+    """The address after the row reader's last instruction (``STA PTNPOS,X``)."""
+    return _row_reader(view).addr + ROW_READER.length
+
+
+def binding(view) -> dict:
+    """The playspec layout of the SID-Wizard player in the 64 KiB ``view``."""
+    found = dict(_row_reader(view).captures)
+    found["zp_ptn"] = found.pop("zp")
+    return found
