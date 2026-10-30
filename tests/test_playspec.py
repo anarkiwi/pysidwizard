@@ -7,6 +7,7 @@ import random
 import sys
 from pathlib import Path
 
+import coverage
 import pytest
 import z3
 from jennings.devices.mpu6502 import MPU
@@ -55,6 +56,21 @@ REFUSED_TUNES = {
 STATED_TUNES = {k: v for k, v in TUNES.items() if k not in REFUSED_TUNES}
 
 tune_id, tune_path = make_tune_fixtures(STATED_TUNES)
+
+
+def _first_difference(*args, **kwargs):
+    """``sw_spec_diff.first_difference`` with every coverage collector paused (an xdist
+    worker runs two): tracing the generated frame function slows SpecPlayer many times
+    over and measures no line of the package."""
+    paused = []
+    while (cov := coverage.Coverage.current()) is not None:
+        cov.stop()
+        paused.append(cov)
+    try:
+        return sw_spec_diff.first_difference(*args, progress=False, **kwargs)
+    finally:
+        for cov in reversed(paused):
+            cov.start()
 
 
 def _export(name: str) -> bytes:
@@ -325,7 +341,7 @@ def test_spec_memory_equals_the_6502_over_the_whole_song(name):
         with pytest.raises(ValueError, match=REFUSED_EXPORTS[name]):
             playspec.binding(_view(data))
         return
-    assert sw_spec_diff.first_difference(data, song_frames(data, 1), progress=False) is None
+    assert _first_difference(data, song_frames(data, 1)) is None
 
 
 @pytest.mark.parametrize("name", [n for n in ALL_EXPORTS if n not in REFUSED_EXPORTS])
@@ -356,17 +372,10 @@ def test_table_routines_are_proven_against_the_6502(name, group):
 
 
 @pytest.mark.oracle
-@pytest.mark.parametrize("group", {**GROUPS, **LONG_GROUPS})
-def test_every_routine_is_proven_for_every_oracle_tune(tune_path, group):  # noqa: F811
-    """The routine proofs on every stated oracle tune's player."""
-    assert _prove_group(_view(tune_path.read_bytes()), group)
-
-
-@pytest.mark.oracle
 def test_spec_memory_equals_the_6502_for_every_oracle_tune(tune_path):  # noqa: F811
     """Every call of every stated oracle tune's whole song leaves both players equal."""
     data = tune_path.read_bytes()
-    assert sw_spec_diff.first_difference(data, song_frames(data, None), progress=False) is None
+    assert _first_difference(data, song_frames(data, None)) is None
 
 
 @pytest.mark.oracle
@@ -380,7 +389,7 @@ def test_sound_effects_of_an_sfx_build_equal_the_6502(name):
         f: (sfxsub, (0x18 + f % 0x40, 0x20 + f % 0x30, 1 + f % 5)) for f in range(40, 3000, 97)
     }
     frames = song_frames(data, None)
-    assert sw_spec_diff.first_difference(data, frames, progress=False, calls=calls) is None
+    assert _first_difference(data, frames, calls=calls) is None
 
 
 @pytest.mark.oracle

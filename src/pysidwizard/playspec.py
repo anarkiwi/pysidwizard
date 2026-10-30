@@ -225,7 +225,8 @@ def _commonregs(scan: _Scan, addr: int) -> None:
         "<allghostregs: A2 0E 38 BD {sidg_sr:w} 9D {sid_sr:w} BD ?? ?? 9D ?? ?? BD {sidg:w} "
         "9D ?? ?? BD ?? ?? 9D ?? ?? BD ?? ?? 9D ?? ?? BD ?? ?? 9D ?? ?? BD ?? ?? 9D ?? ?? "
         "8A E9 07 AA B0 ?? |> A9 {at_fswitch} 09 {at_resonib} 8D {sid_resfc:w} A9 {at_mainvol} "
-        "09 {at_fltband} 8D {sid_fmvol:w} 18 <filtkbtrack: A9 {at_ckbdtrk} F0 0A AE {fltctrl_ref:w} "
+        "09 {at_fltband} 8D {sid_fmvol:w} 18 <filtkbtrack: A9 "
+        "{at_ckbdtrk} F0 0A AE {fltctrl_ref:w} "
         "7D {dpitch:w} A8 B9 {exptabh:w} 69 {at_ctfhgho} | A9 {at_ctfhgho} > "
         "<filtshift_supp: 69 {at_flshift} |> 8D {sid_fcut_hi:w} "
         "<finefiltsweep: A9 {at_ctflgho} 8D {sid_fcut_lo:w} |> "
@@ -270,7 +271,8 @@ def _dotrack(scan: _Scan) -> None:
         "the SFX row",
         at,
         "<sfx: E0 0E D0 1F AD {sfxtimer_ref:w} 30 1A A9 00 8D {curfx2_v2:w} 8D {curnot_v2:w} "
-        "AC {curifx_v2:w} F0 0D C0 3F B0 03 8C {curinstemp_ref:w} 8D {curifx_v2:w} 4C {hrender:w} |>"
+        "AC {curifx_v2:w} F0 0D C0 3F B0 03 8C "
+        "{curinstemp_ref:w} 8D {curifx_v2:w} 4C {hrender:w} |>"
         "<fastspeedbind: BC {tmppos:w} B9 {p_tmpt2:w} 29 7F C9 02 10 03 4C {ptn_seq:w} |> "
         "<hardrestypes: A9 02 |>",
     )
@@ -381,7 +383,8 @@ def _cntplay(scan: _Scan) -> None:
         "<portavibra: C0 FF F0 ?? |> BC {dpitch:w} B9 {freqtbl:w} FD {freqlo:w} 8D {storfrl_ref:w} "
         "B9 {freqtbh:w} FD {freqhi:w} A8 A9 {at_storfrl} B0 ?? 7D {freqmodl:w} 98 7D {freqmodh:w} "
         "90 ?? <portavibra: 20 {forcvib:w} 20 {setvib1:w} |> BC {dpitch:w} B9 {freqtbl:w} "
-        "9D {freqlo:w} B9 {freqtbh:w} 4C ?? ?? BC {videlcnt:w} 30 ?? DE {videlcnt:w} 4C {filtprg:w} "
+        "9D {freqlo:w} B9 {freqtbh:w} 4C ?? ?? BC {videlcnt:w} "
+        "30 ?? DE {videlcnt:w} 4C {filtprg:w} "
         "<vibratotypes: BD {freqmodl:w} 18 7D {videlcnt:w} 9D {freqmodl:w} 90 03 FE {freqmodh:w} |>"
         " BD {vibracnt:w} D0 03 BD {vibfrequ:w} 38 E9 01 9D {vibracnt:w} 0A DD {vibfrequ:w} 90 ?? "
         "BD {freqlo:w} FD {freqmodl:w} 9D {freqlo:w} BD {freqhi:w} FD {freqmodh:w} 4C ?? ?? "
@@ -569,7 +572,8 @@ _BIG_FX = {
     6: "9D {sidg_sr:w} 60",
     8: "48 20 {forcvib:w} 68 4C {setvibr:w}",
     9: "20 {multi3c:w} 69 10 9D {wftpos:w} 60",
-    0x0A: "20 {multi3c:w} A0 0A 71 {zp} 9D {pwtpos:w} <table_fx_resets: A9 00 9D {pweepcnt:w} |> 60",
+    0x0A: "20 {multi3c:w} A0 0A 71 {zp} 9D {pwtpos:w} "
+    "<table_fx_resets: A9 00 9D {pweepcnt:w} |> 60",
     0x0B: "20 {multi3c:w} A0 0B 71 {zp} 8D {fltposi_ref:w} "
     "<table_fx_resets: A9 00 8D {cwepcnt_ref:w} |> 60",
     0x0D: "9D {detuner:w} 60",
