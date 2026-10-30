@@ -373,6 +373,7 @@ def parse_sid(data: bytes) -> SWMFile:
         filter_init=_filter_init(data),
         play_gate=_play_gate(image.mem, image.header.init_address or image.load),
     )
+    swm.source = data
     _check_played_instruments(swm)
     return swm
 
@@ -647,7 +648,9 @@ def parse_sid_song(data: bytes, song: int) -> SWMFile:
         init["play_gate"] = _play_gate(after, found[1])
     swm.player = replace(swm.player, **init)
     _check_played_instruments(swm)
-    return swm.subtune(subtune)
+    view = swm.subtune(subtune)
+    view.source, view.song = data, song - 1
+    return view
 
 
 def _patched_instruments(swm: SWMFile, data: bytes, after: bytes, base: int, swp: int) -> None:

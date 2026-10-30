@@ -758,6 +758,9 @@ class SWMFile:
     player: Optional[PlayerImage] = None
     # ".P00" wrapper name (16-byte PETSCII field from disk); transport metadata, excluded from equality.
     p00_name: bytes = field(default=b"", compare=False)
+    # The PSID/RSID the module was read from (its own player plays it), and the 0-based song its init receives; empty for a bare ``.swm``.
+    source: bytes = field(default=b"", compare=False, repr=False)
+    song: int = field(default=0, compare=False)
 
     features = _player_alias("features", None)
     filter_init = _player_alias("filter_init", (0, 0, 0, 0))
@@ -810,6 +813,8 @@ class SWMFile:
             subtune_tempos=tempos,
             load_address=self.load_address,
             player=self.player,
+            source=self.source,
+            song=index if self.source else 0,
         )
 
     @property
