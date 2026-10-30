@@ -27,10 +27,10 @@ CLOCK_SIMPLE = CodePattern(
 # sbc #$6d ; sta NOPCNT,x ; dec NOPCNT,x ; lda #0 ; cmp #0 ; bmi`, then the note, instrument,
 # effect and value columns, then ``tya ; sta PTNPOS,x``.
 ROW_READER = CodePattern(
-    "BC {ptnpos:w} BD {nopcnt:w} D0 ?? B1 {zp} C9 70 90 ?? C9 78 B0 ?? E9 6D 9D {nopcnt:w} "
-    "DE {nopcnt:w} A9 00 C9 00 30 ?? 9D {curnote:w} 10 ?? 29 7F 9D {curnote:w} C8 B1 {zp} "
-    "30 ?? 9D {curifx:w} 10 ?? 29 7F 9D {curifx:w} C8 B1 {zp} 9D {curfx:w} 29 E0 D0 ?? "
-    "C8 B1 {zp} 9D {fxval:w} 98 9D {ptnpos:w}"
+    "BC {ptnpos:w} BD {nopcnt:w} D0 ?? B1 {zp_note} C9 70 90 ?? C9 78 B0 ?? E9 6D 9D {nopcnt:w} "
+    "DE {nopcnt:w} A9 00 C9 00 30 ?? 9D {curnote:w} 10 ?? 29 7F 9D {curnote:w} C8 B1 {zp_inst} "
+    "30 ?? 9D {curifx:w} 10 ?? 29 7F 9D {curifx_long:w} C8 B1 {zp_fx} 9D {curfx:w} 29 E0 D0 ?? "
+    "C8 B1 {zp_value} 9D {fxval:w} 98 9D {ptnpos:w}"
 )
 
 
@@ -82,7 +82,6 @@ def clock_stop(view) -> int:
 def binding(view) -> dict:
     """The playspec layout of the SID-Wizard player in the 64 KiB ``view``."""
     found = dict(_row_reader(view).captures)
-    found["zp_ptn"] = found.pop("zp")
     match, programs = _clock(view)
     found.update({"tmppos": 0, "tmpstart": 0, "tempotbl": 0, "tempo": 0})
     found.update(match.captures)

@@ -25,13 +25,14 @@ tune_id, tune_path = make_tune_fixtures(TUNES)
 def _rows(mem: bytearray, found: dict, rng: random.Random) -> None:
     """A random pattern at a random pointer and random row-reader state."""
     base = rng.choice([0x4000, 0x40C0, 0x7000])
-    mem[found["zp_ptn"]], mem[found["zp_ptn"] + 1] = base & 0xFF, base >> 8
+    for field in ("zp_note", "zp_inst", "zp_fx", "zp_value"):
+        mem[found[field]], mem[found[field] + 1] = base & 0xFF, base >> 8
     row_bytes = [0, 0, 1, 0x31, 0x70, 0x71, 0x77, 0x78, 0x80, 0x85, 0x90, 0xB1, 0xC0, 0xFF]
     for offset in range(0x100):
         mem[base + offset] = rng.choice(row_bytes + [rng.randrange(256)])
     mem[found["ptnpos"]] = rng.randrange(256)
     mem[found["nopcnt"]] = rng.choice([0, 0, 0, 1, 2, 5, 9])
-    for cell in ("curnote", "curifx", "curfx", "fxval"):
+    for cell in ("curnote", "curifx", "curifx_long", "curfx", "fxval"):
         mem[found[cell]] = rng.randrange(256)
 
 
