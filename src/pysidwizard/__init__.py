@@ -17,22 +17,16 @@ Public surfaces:
   write them back; round-trip byte-exactly.
 * :func:`write_swm` / :func:`build_swm` — serialise an :class:`SWMFile`
   back to disk or bytes; round-trips byte-exactly.
-* :class:`SWMPlayer` (in :mod:`pysidwizard.player`) — per-frame
-  emulation of SID-Wizard's 6502 player IRQ. Its per-frame SID
-  register output is validated byte-for-byte against the
-  ``anarkiwi/sidtrace`` sidplayfp oracle over curated HVSC SID-Wizard
-  exports (``pytest -m oracle``).
+* :class:`SWMPlayer` (in :mod:`pysidwizard.player`) — the playspec
+  ``specs/sidwizard.play`` run on the tune's own 6502 image (a bare module's
+  SID-Maker export), validated against its 6502 and the ``anarkiwi/sidtrace``
+  oracle (``pytest -m oracle``).
 """
 
 from pysidtracker import attack_decay, sustain_release
 
 from .constants import Waveform, straight_tempo
-from .errors import (
-    SIDFormatError,
-    SWMError,
-    SWMFormatError,
-    SWMUnsupportedEffectWarning,
-)
+from .errors import SIDFormatError, SWMError, SWMFormatError
 from .features import PlayerQuirks
 from .model import (
     End,
@@ -99,7 +93,6 @@ __all__ = [
     "SWMFile",
     "SWMFormatError",
     "SWMPlayer",
-    "SWMUnsupportedEffectWarning",
     "SequenceCommand",
     "SubtuneJump",
     "SidWizardSidParser",

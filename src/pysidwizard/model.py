@@ -754,17 +754,17 @@ class SWMFile:
     tempo_table: bytes = b""
     subtune_tempos: List[Tuple[int, int]] = field(default_factory=list)
     load_address: Optional[int] = DEFAULT_LOAD_ADDRESS
-    # The ``.sid``'s player build, release quirks and init state; None for a bare ``.swm`` until :func:`~pysidwizard.reader.apply_player_image`.
+    # The ``.sid``'s player build and release quirks; None for a bare ``.swm``.
     player: Optional[PlayerImage] = None
     # ".P00" wrapper name (16-byte PETSCII field from disk); transport metadata, excluded from equality.
     p00_name: bytes = field(default=b"", compare=False)
     # The PSID/RSID the module was read from (its own player plays it), and the 0-based song its init receives; empty for a bare ``.swm``.
     source: bytes = field(default=b"", compare=False, repr=False)
     song: int = field(default=0, compare=False)
+    # The SID-Maker release (:data:`pysidwizard.sidmaker.VERSIONS`) a bare module plays the export of; None is the latest.
+    player_version: Optional[str] = field(default=None, compare=False)
 
     features = _player_alias("features", None)
-    filter_init = _player_alias("filter_init", (0, 0, 0, 0))
-    play_gate = _player_alias("play_gate", ())
 
     @property
     def sequence_count(self) -> int:
@@ -815,6 +815,7 @@ class SWMFile:
             player=self.player,
             source=self.source,
             song=index if self.source else 0,
+            player_version=self.player_version,
         )
 
     @property
