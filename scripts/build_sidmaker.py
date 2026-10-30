@@ -1,8 +1,8 @@
 """Assemble each release's single-SID SID-Maker and ship it as package data.
 
-Usage: ``python scripts/build_sidmaker.py [VERSION ...]``. Each build is proven to be the
-release's own binary, then written to ``src/pysidwizard/data/sidmaker-VERSION.prg`` with
-its 64tass labels in ``sidmaker.json``. Needs 64tass, cc, ld and py7zr.
+Usage: ``python scripts/build_sidmaker.py [BUILD ...]``. Each build is proven to be the
+release's own binary, then written to ``src/pysidwizard/data/sidmaker-BUILD.prg`` with
+its 64tass labels in ``sidmaker.json``. Needs 64tass and py7zr.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import shutil
 import subprocess
 import sys
 import tarfile
@@ -21,8 +20,13 @@ from typing import Dict, NamedTuple, Tuple
 
 import py7zr
 import pydexomizer
+from pysidtracker.editor import RAM_SIZE
+from pysidtracker.emu import run_to_rts_until
+from pysidtracker.kernalhost import sys_addr
 from pysidtracker.testing import default_cache, fetch_verified
 from tqdm import tqdm
+from vagrant_moses import memmap as mm
+from vagrant_moses.cpu import flat_mpu
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
@@ -31,6 +35,7 @@ from tests._swm_cache import (  # noqa: E402  # pylint: disable=wrong-import-pos
     SW17,
     SW18,
     SW194,
+    SW196,
     SW197,
 )
 
@@ -44,6 +49,7 @@ LABELS = (
     "ModelFlag",
     "DRIVERTYPE_POS",
     "NumberOfPlayerTypes",
+    "EXEstarter",
     "compzptr",
     "expoendadd",
     "outputformat",
@@ -55,7 +61,10 @@ LABELS = (
     "setplayer",
     "SetSIDply",
     "SetSIDt",
+    "setsaveparam",
+    "SaveExp",
 )
+OPTIONAL_LABELS = ("ECHO_SUPPORT", "BASIC_STARTADDRESS", "setEXEdetails2")
 _OLD = ("-C", "-a")
 _NEW = _OLD + (
     "-Wno-deprecated",
@@ -63,13 +72,15 @@ _NEW = _OLD + (
     "-DTUI_ONLY=0",
     "-DOSCILLOSCOPE_SHOWS_ALL_CHANNELS=0",
 )
+_ECHO = ("-D", "ECHO_SUPPORT=1", "-D", "ECHO_DIVISOR=4.0", "-D", "ECHO_MILLISECONDS=400")
 _SM = ("-D", "SID_AMOUNT=1", "-D", "SFX_SUPPORT=0", "-D", "SLOWDOWN_SUPP=0", "-D", "SWP_EXPORT=0")
 _ENC = re.compile(rb"(\.enc +)(screen|none)\b")
 _LABEL = re.compile(r"^(\w+)\s*=\s*(\$[0-9a-fA-F]+|\d+)\s*$")
+_MAX_CYCLES = 1_000_000_000
 
 
 class Release(NamedTuple):
-    """Where a release keeps its SID-Maker sources and binary, and how it packed it."""
+    """Where a release keeps its SID-Maker sources and binary, and how it built and packed it."""
 
     archive: Tuple[str, str]
     root: str
@@ -79,6 +90,10 @@ class Release(NamedTuple):
     packer: str
 
 
+_SW196_ROOT = "SID-Wizard-1.96-sources-examples/native"
+_SW197_ROOT = "SID-Wizard-1.97-sources-examples/native"
+_MAKER19 = "application/SID-Maker-1.9.prg"
+_MAKER_ECHO = "application/SID-Maker-echo.prg"
 RELEASES: Dict[str, Release] = {
     "1.7": Release(
         SW17, "SID-Wizard-1.7-smallpack", _OLD, "1.7", "application/SID-Maker-1.7.prg", "exomizer"
@@ -86,17 +101,10 @@ RELEASES: Dict[str, Release] = {
     "1.8": Release(
         SW18, "SID-Wizard-1.8", _OLD, "1.8", "application/SID-Maker-1.8.prg", "exomizer"
     ),
-    "1.94": Release(
-        SW194, "SID-Wizard-1.94/native", _NEW, "1.9", "application/SID-Maker-1.9.prg", "exomizer"
-    ),
-    "1.97": Release(
-        SW197,
-        "SID-Wizard-1.97-sources-examples/native",
-        _NEW,
-        "1.9",
-        "application/SID-Maker-1.9.prg",
-        "compress64k",
-    ),
+    "1.94": Release(SW194, "SID-Wizard-1.94/native", _NEW, "1.9", _MAKER19, "exomizer"),
+    "1.96-echo": Release(SW196, _SW196_ROOT, _NEW + _ECHO, "1.9", _MAKER_ECHO, "compress64k"),
+    "1.97": Release(SW197, _SW197_ROOT, _NEW, "1.9", _MAKER19, "compress64k"),
+    "1.97-echo": Release(SW197, _SW197_ROOT, _NEW + _ECHO, "1.9", _MAKER_ECHO, "compress64k"),
 }
 
 
@@ -142,69 +150,71 @@ def assemble(release: Release, sources: Path, out: Path) -> Dict[str, int]:
     return found
 
 
-def packed_by_compress64k(prg: bytes, tools: Path, work: Path) -> bytes:
-    """``prg`` packed by the release's own ``compress64kSFX``, built from its C sources."""
-    build_dir = work / "compress64k"
-    build_dir.mkdir()
-    blobs = ["selfextract.prg", "selfextract_nomove.prg"]
-    for name in ["compress64k.c", "compressor.c", "decompressor.c", "compression.h", *blobs]:
-        shutil.copy(tools / name, build_dir)
-    subprocess.run(["ld", "-r", "-b", "binary", "-o", "sfx.o", *blobs], cwd=build_dir, check=True)
-    subprocess.run(
-        ["cc", "-O2", "-w", "-o", "compress64kSFX", "compress64k.c", "sfx.o", "-lm"],
-        cwd=build_dir,
-        check=True,
-    )
-    (build_dir / "in.prg").write_bytes(prg)
-    subprocess.run(
-        ["./compress64kSFX", "in.prg", "out.prg"], cwd=build_dir, check=True, capture_output=True
-    )
-    return (build_dir / "out.prg").read_bytes()
+def self_extracted(packed: bytes, start: int) -> bytearray:
+    """RAM after ``packed``'s own self-extractor runs from its ``SYS`` until it reaches ``start``.
+
+    The extractor leaves the loaded PRG for its relocated decruncher, which ends at ``start``.
+    """
+    ram = bytearray(RAM_SIZE)
+    ram[mm.CPU_DDR], ram[mm.CPU_PORT] = mm.DDR_DEFAULT, mm.BANK_DEFAULT
+    load = packed[0] | packed[1] << 8
+    ram[load : load + len(packed) - 2] = packed[2:]
+    mpu, mem = flat_mpu(ram)
+    if not run_to_rts_until(mpu, mem, sys_addr(ram), 0, set(range(load)), _MAX_CYCLES):
+        raise SystemExit("self-extractor never left its PRG")
+    if not run_to_rts_until(mpu, mem, mpu.pc, 0, {start}, _MAX_CYCLES):
+        raise SystemExit(f"self-extractor never reached ${start:04X}")
+    return ram
 
 
-def verify(release: Release, prg: bytes, root: Path, work: Path) -> None:
+def verify(release: Release, prg: bytes, start: int, root: Path) -> None:
     """Raise unless ``prg`` is the release's own SID-Maker binary."""
     shipped = (root / release.binary).read_bytes()
+    load, body = prg[0] | prg[1] << 8, prg[2:]
     if release.packer == "exomizer":
         unpacked = pydexomizer.decrunch_sfx(shipped)
-        same = (unpacked.start, bytes(unpacked.data)) == (prg[0] | prg[1] << 8, prg[2:])
+        same = (unpacked.start, bytes(unpacked.data)) == (load, body)
     else:
-        same = packed_by_compress64k(prg, root / "sources" / "tools", work) == shipped
+        same = self_extracted(shipped, start)[load : load + len(body)] == body
     if not same:
         raise SystemExit(f"assembled SID-Maker differs from {release.binary}")
 
 
-def build(version: str, work: Path) -> Dict[str, int]:
-    """Assemble, verify and write one release's SID-Maker; its shipped labels."""
-    release = RELEASES[version]
+def build(name: str, work: Path) -> Dict[str, int]:
+    """Assemble, verify and write one SID-Maker build; its shipped labels."""
+    release = RELEASES[name]
     archive = fetch_verified(*release.archive, cache_dir=default_cache("archives", REPO))
     extract(archive, work)
     root = work / release.root
     quote_encodings(root / "sources")
-    out = work / f"sidmaker-{version}.prg"
+    out = work / f"sidmaker-{name}.prg"
     labels = assemble(release, root / "sources", out)
     prg = out.read_bytes()
-    verify(release, prg, root, work)
+    verify(release, prg, labels["start"], root)
     (DATA / out.name).write_bytes(prg)
-    return {name: labels[name] for name in LABELS}
+    return {n: labels[n] for n in LABELS + OPTIONAL_LABELS if n in labels}
+
+
+def _order(name: str):
+    version, _, variant = name.partition("-")
+    return tuple(map(int, version.split("."))), variant
 
 
 def main(argv=None) -> None:
-    """Build the requested releases (default: all) and merge their labels."""
+    """Build the requested SID-Makers (default: all) and merge their labels."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("versions", nargs="*", metavar="VERSION", help=", ".join(RELEASES))
-    versions = parser.parse_args(argv).versions or list(RELEASES)
-    unknown = sorted(set(versions) - set(RELEASES))
+    parser.add_argument("builds", nargs="*", metavar="BUILD", help=", ".join(RELEASES))
+    names = parser.parse_args(argv).builds or list(RELEASES)
+    unknown = sorted(set(names) - set(RELEASES))
     if unknown:
-        parser.error(f"unknown release(s): {', '.join(unknown)}")
+        parser.error(f"unknown build(s): {', '.join(unknown)}")
     DATA.mkdir(parents=True, exist_ok=True)
     table = DATA / "sidmaker.json"
     known = json.loads(table.read_text()) if table.exists() else {}
     with tempfile.TemporaryDirectory() as tmp:
-        for version in tqdm(versions, desc="SID-Maker", unit="release"):
-            known[version] = build(version, Path(tmp) / version)
-    ordered = {v: known[v] for v in sorted(known, key=lambda v: tuple(map(int, v.split("."))))}
-    table.write_text(json.dumps(ordered, indent=1) + "\n")
+        for name in tqdm(names, desc="SID-Maker", unit="build"):
+            known[name] = build(name, Path(tmp) / name)
+    table.write_text(json.dumps({n: known[n] for n in sorted(known, key=_order)}, indent=1) + "\n")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@ by SID-Maker 1.8, so that build must match them byte for byte; later builds diff
 only in player code that plays the same.
 """
 
+import re
+
 import pytest
 from pysidtracker import SidImage
 from pysidtracker.disasm import image_after_init
@@ -27,6 +29,8 @@ EXPORTS = (
     "rain8580",
 )
 HEADER = 0x7C
+RELEASED = slice(0x56, 0x76)
+CTIME = re.compile(rb"[A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d \d{4}\0+")
 TEXT_FIELDS = (0x16, 0x36, 0x56)
 FRAMES = 300
 APPVERSION = {"1.7": b"1.7", "1.8": b"1.8", "1.94": b"1.9", "1.97": b"1.9"}
@@ -115,6 +119,30 @@ def test_each_build_exports_with_its_own_player(version):
     assert image.load == 0x1000
 
 
+def test_echo_sid_maker_1_96_saves_echo_test_but_its_host_clock():
+    """The 1.96 echo build saves echo-test.sid but the "released" text, an EMULATOR build's
+    copy of the host's ``ctime()`` that SetSIDt reads from the fake KERNAL at ``$E009``.
+    """
+    release = _sid("echo-test")
+    assert CTIME.fullmatch(release[RELEASED])
+    out = sidmaker.export(_swm("echo-test"), "1.96", "6581", echo=True)
+    assert out == release.replace(release[RELEASED], bytes(32))
+
+
+def test_echo_sid_maker_1_97_changes_only_the_player():
+    """1.97's echo export differs from 1.96's only between PLAYERADDR and MUSICDATA."""
+    swm, maker = _swm("echo-test"), sidmaker.SidMaker("1.97", echo=True)
+    new, old = maker.export(swm, "6581"), sidmaker.export(swm, "1.96", "6581", echo=True)
+    lab = maker.labels
+    moved = [
+        lab["EXEstarter"] + i - HEADER - 2
+        for i, (a, b) in enumerate(zip(new, old, strict=True))
+        if a != b
+    ]
+    assert moved
+    assert all(lab["PLAYERADDR"] <= addr < lab["MUSICDATA"] for addr in moved)
+
+
 def test_swm_file_and_its_bytes_export_alike():
     """An :class:`SWMFile` exports as the module it serialises to."""
     data = _swm("kerekesintro")
@@ -135,6 +163,7 @@ def test_model_selects_the_header_sid_model():
         ({"swm": b"not a module"}, SWMFormatError),
         ({"version": "1.5"}, ValueError),
         ({"model": "6582"}, ValueError),
+        ({"version": "1.8", "echo": True}, ValueError),
     ],
 )
 def test_rejects_what_sid_maker_cannot_export(kwargs, error):

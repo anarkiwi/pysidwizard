@@ -1,8 +1,8 @@
 """SID-Maker, SID-Wizard's own exporter, run on the 6502 to turn a ``.swm`` into a ``.sid``.
 
-Each shipped ``data/sidmaker-VERSION.prg`` is that release's single-SID SID-Maker
-(``scripts/build_sidmaker.py`` proves it). The export runs SID-Maker's ``preptune``
-routines in order with the answers its UI would store: SID output, PAL, default relocation.
+Each shipped ``data/sidmaker-BUILD.prg`` is a release's single-SID SID-Maker, plain or echo
+(``scripts/build_sidmaker.py`` proves it). The export runs ``preptune``'s routines and the
+save setup with the answers its UI would store: SID output, PAL, default relocation.
 """
 
 from __future__ import annotations
@@ -22,20 +22,30 @@ from .writer import build_swm
 
 LATEST = "1.97"
 MODELS = ("6581", "8580")
+_ECHO = "-echo"
 _SID_OUTPUT = 3
 _PAL = 1
 _IO_BANK = 0x35
 _SPEED = slice(0x12, 0x16)
-_ENTRIES = ("setEXEdetails", "preparetunedata", "disPtyp", "setplayer", "SetSIDply", "SetSIDt")
+_ROUTINES = (
+    "disPtyp",
+    "setEXEdetails",
+    "preparetunedata",
+    "setEXEdetails2",
+    "setplayer",
+    "SetSIDply",
+    "SetSIDt",
+)
 _DATA = resources.files(__package__) / "data"
 _TABLE: Dict[str, Dict[str, int]] = json.loads((_DATA / "sidmaker.json").read_text())
-VERSIONS: Tuple[str, ...] = tuple(_TABLE)
+VERSIONS: Tuple[str, ...] = tuple(b for b in _TABLE if not b.endswith(_ECHO))
+ECHO_VERSIONS: Tuple[str, ...] = tuple(b[: -len(_ECHO)] for b in _TABLE if b.endswith(_ECHO))
 
 
 @cache
-def _image(version: str) -> bytes:
-    """64 KiB with SID-Maker ``version`` loaded at its PRG address."""
-    prg = (_DATA / f"sidmaker-{version}.prg").read_bytes()
+def _image(build: str) -> bytes:
+    """64 KiB with SID-Maker ``build`` loaded at its PRG address."""
+    prg = (_DATA / f"sidmaker-{build}.prg").read_bytes()
     ram = bytearray(RAM_SIZE)
     load = prg[0] | prg[1] << 8
     ram[load : load + len(prg) - 2] = prg[2:]
@@ -56,12 +66,14 @@ def _module(swm: Union[bytes, SWMFile]) -> bytes:
 class SidMaker:  # pylint: disable=too-few-public-methods
     """One SID-Maker session: successive exports share its memory, as on the C64."""
 
-    def __init__(self, version: str = LATEST) -> None:
-        if version not in _TABLE:
-            raise ValueError(f"no SID-Maker {version!r}; shipped: {', '.join(VERSIONS)}")
-        self.version = version
-        self.labels = _TABLE[version]
-        self.ram = bytearray(_image(version))
+    def __init__(self, version: str = LATEST, echo: bool = False) -> None:
+        build = version + _ECHO if echo else version
+        if build not in _TABLE:
+            shipped = ", ".join(ECHO_VERSIONS if echo else VERSIONS)
+            raise ValueError(f"no SID-Maker {build!r}; shipped: {shipped}")
+        self.version, self.echo = version, echo
+        self.labels = _TABLE[build]
+        self.ram = bytearray(_image(build))
 
     def export(self, swm: Union[bytes, SWMFile], model: str = "8580") -> bytes:
         """The ``.sid`` SID-Maker saves for ``swm`` with the SID ``model`` selected."""
@@ -78,30 +90,40 @@ class SidMaker:  # pylint: disable=too-few-public-methods
         ram[lab["relocaddr"]] = lab["PLAYERADDR"] >> 8
         flags = lab["SIDflags"] + 1
         ram[flags] = ram[flags] & 0xCF | ram[lab["ModelFlag"] + MODELS.index(model)]
+        entries = [lab[name] for name in _ROUTINES if name in lab]
         mem = run_editor(
             bytes(ram),
             module,
             lab["MUSICDATA"],
-            [lab[name] for name in _ENTRIES],
+            entries + [(lab["setsaveparam"], lab["SaveExp"])],
             load_end=(lab["compzptr"],),
         )
         self.ram = mem
         end = int.from_bytes(mem[lab["expoendadd"] : lab["expoendadd"] + 2], "little")
-        head, player = lab["SIDHEADER"], lab["PLAYERADDR"]
+        head = lab["SIDHEADER"]
         header = bytes(mem[head : head + lab["SIDHEADERSIZE"]])
         if any(header[_SPEED]):
             return bytes(mem[head:end])
-        return header + bytes((player & 0xFF, mem[lab["relocaddr"]])) + bytes(mem[player:end])
+        if lab.get("ECHO_SUPPORT"):
+            start, load = lab["EXEstarter"], lab["BASIC_STARTADDRESS"]
+        else:
+            start = lab["PLAYERADDR"]
+            load = start & 0xFF | mem[lab["relocaddr"]] << 8
+        return header + load.to_bytes(2, "little") + bytes(mem[start:end])
 
 
-def export(swm: Union[bytes, SWMFile], version: str = LATEST, model: str = "8580") -> bytes:
-    """The ``.sid`` a fresh SID-Maker ``version`` saves for ``swm``."""
-    return SidMaker(version).export(swm, model)
+def export(
+    swm: Union[bytes, SWMFile], version: str = LATEST, model: str = "8580", echo: bool = False
+) -> bytes:
+    """The ``.sid`` a fresh SID-Maker ``version`` (its echo build if ``echo``) saves for ``swm``."""
+    return SidMaker(version, echo).export(swm, model)
 
 
-def tune(swm: Union[bytes, SWMFile], version: str = LATEST, model: str = "8580") -> SidImage:
+def tune(
+    swm: Union[bytes, SWMFile], version: str = LATEST, model: str = "8580", echo: bool = False
+) -> SidImage:
     """:func:`export` as a :class:`~pysidtracker.image.SidImage` (64 KiB ``mem``, init, play)."""
-    return SidImage.from_sid(export(swm, version, model))
+    return SidImage.from_sid(export(swm, version, model, echo))
 
 
-__all__ = ["LATEST", "MODELS", "VERSIONS", "SidMaker", "export", "tune"]
+__all__ = ["ECHO_VERSIONS", "LATEST", "MODELS", "VERSIONS", "SidMaker", "export", "tune"]
