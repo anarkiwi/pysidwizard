@@ -242,5 +242,7 @@ class Pitch:
                 return (0 if y == 0 else self.freq_hi[y - 1]), 0
             i = y - NONCALC_THRESHOLD
             return self.freq_lo[i], self.freq_hi[i]
+        if raw_a & 0xFF == 0:
+            return 0, 0  # ``beq wrFmodL``
         # ``adc DPITCH,x ; tay`` (player.asm:2919-2920) keeps the full byte; LOOKUPA's own MAXSLID does the bounding.
         return self._lookup_freqmod(((raw_a + 1) >> 1) + (dpitch & 0xFF))

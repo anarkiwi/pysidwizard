@@ -138,6 +138,18 @@ def _quirk(name: str, default: bool, spec: str, **policy) -> Facet:
     )
 
 
+# SEL_INS stores a row's instrument column into CURINS only below ``cmp #maxinstamount``; exports
+# set it per tune.
+_SEL_INS = SitePattern("BD ?? ?? F0 ?? C9 {limit} 10 ?? 9D ?? ??")
+
+
+def _sel_ins_limit(src: PlayerSource) -> Optional[Finding]:
+    hit = _SEL_INS.find_first(src.code)
+    if hit is None:
+        return None
+    return Finding(hit.captures["limit"], detected(src.load + hit.addr))
+
+
 # One facet per ``feature`` flag (names are the assembly flags lower-cased without ``_ON``), in
 # ``player.asm`` order of the settings.cfg:223-259 block. Per-build defaults are settings.cfg's (normal)
 # and altplayers.inc's (medium 333-372, light 434-473, extra 535-574, bare 636-675 -- everything off --
@@ -347,6 +359,13 @@ _QUIRKS = (
     ),
 )
 
+_QUIRKS = (
+    *_QUIRKS,
+    # The instrument column value below which SEL_INS selects an instrument (player.asm:1777,
+    # ``cmp #maxinstamount ; bpl``); a larger value leaves CURINS as it was.
+    Facet("sel_ins_limit", "release", domain=range(0x100), default=0x3F, detector=_sel_ins_limit),
+)
+
 FACETS = FacetRegistry([*_FLAGS, *_QUIRKS])
 
 FLAG_FACETS: Tuple[Facet, ...] = FACETS.of_kind("build")
@@ -370,7 +389,7 @@ PlayerFeatures = make_dataclass(
 )
 PlayerQuirks = make_dataclass(
     "PlayerQuirks",
-    [(f.name, bool, field(default=f.default)) for f in QUIRK_FACETS],
+    [(f.name, type(f.default), field(default=f.default)) for f in QUIRK_FACETS],
     frozen=True,
     namespace={"__doc__": "Release differences in ``player.asm`` that no ``feature`` flag gates."},
 )
