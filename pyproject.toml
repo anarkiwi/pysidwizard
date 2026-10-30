@@ -32,7 +32,8 @@ dependencies = [
     # module splits no longer stale the manifest, and it has the facet
     # registry (``SitePattern`` sites with provenance) and the ``locate()`` layout strategies.
     # 0.43 adds ``pysidtracker.playspec`` and whole-song oracle fixtures (no ``frames=``); 0.46
-    # adds ``validate(stop=)``, which proves a spec routine against a stretch of a longer one.
+    # adds ``validate(stop=)``, which proves a spec routine against a stretch of a longer one;
+    # 0.48.1 has ``SpecPlayer``'s fallback to the lowest static entry.
     "pysidtracker>=0.48.1",
 ]
 

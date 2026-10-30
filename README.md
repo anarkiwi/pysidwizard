@@ -49,7 +49,8 @@ See [docs/usage.md](docs/usage.md) for building modules from scratch, playback,
 WAV rendering, raw write iteration, and the CLI, and
 [docs/format.md](docs/format.md) for the SWM/`.sid`/`.swp` format, data model,
 and player correctness. The [HVSC oracle survey](docs/usage.md#hvsc-oracle-survey)
-runs the player against every HVSC SID-Wizard tune.
+runs the player against every HVSC SID-Wizard tune. [docs/playspec.md](docs/playspec.md)
+describes the playroutine stated as a `pysidtracker.playspec` spec.
 
 ## Development
 

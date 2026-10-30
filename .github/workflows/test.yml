@@ -64,7 +64,7 @@ jobs:
       - name: Cache downloads
         # HVSC tunes and the pinned SID-Wizard release archives are copyright
         # and never committed; pysidtracker's cache action persists them.
-        uses: anarkiwi/pysidtracker/.github/actions/cache@v0.46.0
+        uses: anarkiwi/pysidtracker/.github/actions/cache@v0.48.1
         with:
           key: ${{ hashFiles('tests/_hvsc_corpus.py', 'tests/_swm_cache.py', 'tests/_swi_cache.py') }}
           tunes: tests/_hvsc_corpus.py
