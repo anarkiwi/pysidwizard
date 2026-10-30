@@ -409,12 +409,12 @@ class InstrumentTables:
             # halves is handled implicitly by the bit-split arithmetic
             # (low 3 bits of delta go to CTFL with overflow into CTFH,
             # high 5 bits via ``LSR LSR LSR`` add to CTFH).
-            if self.filter_sweep_count >= byte0:
+            if self.filter_sweep_count == byte0:
                 self._fladvan(table, pos)
                 self.filt_pos += FILT_ROW_STRIDE
                 self.filter_sweep_count = 0
                 return
-            self.filter_sweep_count += 1
+            self.filter_sweep_count = (self.filter_sweep_count + 1) & 0xFF
             delta = table[pos + 1] if pos + 1 < len(table) else 0
             if delta >= 0x80:
                 delta -= 0x100

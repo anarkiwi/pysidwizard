@@ -282,3 +282,19 @@ def test_a_swapped_in_sweep_starts_from_the_global_cutoff():
     assert p.filter_cutoff_hi == 0x30
     p.play_frame()
     assert (p.filter_cutoff_hi, p.filter_cutoff_lo) == (0x31, 0)
+
+
+def test_sweep_row_advances_only_when_the_counter_equals_its_cycle_count():
+    """FILTPRG's ``cmp CWEPCNT; beq`` is an equality test and ``inc CWEPCNT`` wraps at 256:
+    a counter already past the row's cycle count (a controller swap hands it over) keeps
+    sweeping until it comes round to that count."""
+    p = SWMPlayer(_swap_swm())
+    for _ in range(SETUP_FRAMES + 1):
+        p.play_frame()
+    start = p.filt_pos
+    p.filter_sweep_count = 0x20  # the row's cycle count is $10
+    p.play_frame()
+    assert (p.filt_pos, p.filter_sweep_count) == (start, 0x21)
+    p.filter_sweep_count = 0xFF
+    p.play_frame()
+    assert (p.filt_pos, p.filter_sweep_count) == (start, 0x00)
