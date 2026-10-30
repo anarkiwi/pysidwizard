@@ -311,3 +311,21 @@ def test_jump_to_filter_row_leaves_the_sweep_counter_running():
     v = p.voices[0]
     p._apply_fx_columns(v, None, 0x0B, 1, False)
     assert (p.filt_pos, p.filter_sweep_count) == (p._filt_table_start(v.instrument) + 3, 7)
+
+
+def test_jump_to_an_ff_row_is_taken_as_a_set_row():
+    """FLTJUMP applies any non-sweep target as a set row without the end test, so a jump onto
+    a row starting $FF sets cutoff, resonance $F and every mode bit instead of freezing."""
+    swm = _swap_swm()
+    ins = swm.instruments[0]
+    ins.filter_table = bytes([0x90, 0x20, 0x00, 0xFE, 0x00, 0x00, 0xFF, 0x55, 0x00])
+    p = SWMPlayer(swm)
+    start = p._filt_table_start(ins)
+    ins.filter_table = bytes([0x90, 0x20, 0x00, 0xFE, start + 6, 0x00, 0xFF, 0x55, 0x00])
+    p = SWMPlayer(swm)
+    for _ in range(SETUP_FRAMES + 1):
+        p.play_frame()
+    p.filt_pos = start + 3
+    p.play_frame()
+    assert (p.filter_cutoff_hi, p.filter_resonance, p.filter_mode_vol & 0x70) == (0x55, 0xF0, 0x70)
+    assert p.filt_pos == start + 9

@@ -364,27 +364,30 @@ class InstrumentTables:
         # player.asm, FILTPRG only walks the table and writes
         # cutoff/resonance; FSWITCH is only set at STRTSND's SETFLTP. See
         # _start_note for the assignment.
+        jumped = False
         for _ in range(4):
             pos = self.filt_pos
             if pos >= len(table):
                 return
             byte0 = table[pos]
-            if byte0 == FILT_TABLE_END:
-                return
-            if byte0 == FILT_TABLE_JUMP:
-                target = table[pos + 1] if pos + 1 < len(table) else 0
-                if target >= len(table):
+            if not jumped:
+                if byte0 == FILT_TABLE_END:
                     return
-                self.filt_pos = target
-                # Per player.asm FLTJUMP (~line 1802): if target's
-                # first byte is sweep mode (< $80), ``bpl SETFPOS``
-                # just initialises filt_pos for next frame and exits.
-                # Only set-mode targets fall through to SETFILT.
-                target_byte = table[target] if target < len(table) else 0xFF
-                if target_byte < 0x80:
-                    self.filter_sweep_count = 0
-                    return
-                continue
+                if byte0 == FILT_TABLE_JUMP:
+                    target = table[pos + 1] if pos + 1 < len(table) else 0
+                    if target >= len(table):
+                        return
+                    self.filt_pos = target
+                    # FLTJUMP (player.asm ~1802): a sweep target (< $80) only
+                    # sets FLTPOSI and the counter for next frame; any other
+                    # target, $FE and $FF included, is taken as a set-mode row
+                    # without the end / jump tests.
+                    if table[target] < 0x80:
+                        self.filter_sweep_count = 0
+                        return
+                    jumped = True
+                    continue
+            jumped = False
             if byte0 & 0x80:
                 # Set-mode. Extract filter band switches + resonance and
                 # commit cutoff_hi; cutoff_lo resets to 0.
