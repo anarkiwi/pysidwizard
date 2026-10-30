@@ -1,0 +1,130 @@
+// SID-Wizard playroutine: the tick clock and the pattern row reader of one voice.
+// Every name L.* is a player address resolved from the build's code.
+spec sidwizard;
+
+layout {
+  zp_note, zp_inst, zp_fx, zp_value, ptnpos, nopcnt, curnote, curifx, curifx_long, curfx,
+  fxval, spdcnt, tmppos, tmpstart, tempotbl, tempo: addr;
+  tempoprg: flag;
+}
+
+const RUN_MIN = 0x70;
+const RUN_MAX = 0x78;
+const RUN_BASE = 0x6F;
+const FX_VALUE_MASK = 0xE0;
+
+// The pattern pointer the voice's pattern id selects, in zero page. Each column's read
+// names it separately: an export relocated only in part addresses it differently.
+cell zp_note: u16 @ L.zp_note;
+cell zp_inst: u16 @ L.zp_inst;
+cell zp_fx: u16 @ L.zp_fx;
+cell zp_value: u16 @ L.zp_value;
+
+// The tempo program the voices' clocks step through: one byte per tick count, the
+// last of a program having bit 7 set.
+cell tempotbl: u8[256] @ L.tempotbl ro;
+
+// Without tempo programs the clock compares against one byte.
+cell tempo_byte: u8 @ L.tempo;
+
+machine voice[x in 0..3] {
+  // Per-voice variables sit seven bytes apart.
+  cell ptnpos: u8 @ L.ptnpos + x * 7;
+  cell nopcnt: u8 @ L.nopcnt + x * 7;
+  cell curnote: u8 @ L.curnote + x * 7;
+  cell curifx: u8 @ L.curifx + x * 7;
+  cell curifx_long: u8 @ L.curifx_long + x * 7;
+  cell curfx: u8 @ L.curfx + x * 7;
+  cell fxval: u8 @ L.fxval + x * 7;
+  cell spdcnt: u8 @ L.spdcnt + x * 7;
+  cell tmppos: u8 @ L.tmppos + x * 7;
+  cell tmpstart: u8 @ L.tmpstart + x * 7;
+
+  // Set on the tick that starts a row.
+  signal row: bool = false;
+
+  step {
+    tick();
+    if row {
+      read_row();
+    }
+  }
+
+  // The voice's tick counter against the tempo program: SPDCNT counts up from zero
+  // and starts over when it equals the tempo byte TMPPOS selects, which then moves
+  // on. A signed overflow in the compare (a counter far past a tempo byte with
+  // bit 7 set) sends TMPPOS back to the program's start, TMPSTART. A build without
+  // tempo programs compares against one byte. A tick whose counter was zero starts
+  // a row.
+  proc tick() {
+    let count = spdcnt;
+    if L.tempoprg {
+      let next_pos = tmppos + 1;
+      let tempo = tempotbl[next_pos];
+      let diff = count - tempo;
+      if diff == 0 {
+        spdcnt := 0;
+        tmppos := next_pos;
+      } elif neg((count ^ tempo) & (count ^ diff)) {
+        spdcnt := 0;
+        tmppos := tmpstart;
+      }
+    } else {
+      let diff = count - tempo_byte;
+      if diff == 0 || neg((count ^ tempo_byte) & (count ^ diff)) {
+        spdcnt := 0;
+      }
+    }
+    row := spdcnt == 0;
+    spdcnt += 1;
+  }
+
+  // One row of the NOP-packed pattern stream: a note byte, then an instrument byte
+  // if the note's bit 7 is set, then an effect byte if the instrument's bit 7 is set,
+  // then a value byte if the effect is below $20. A note byte of $70..$77 starts a run
+  // of 2..9 empty rows, whose rest NOPCNT counts down. PTNPOS keeps the offset of the last
+  // byte read.
+  proc read_row() {
+    stream note_col = zp_note @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
+    stream inst_col = zp_inst @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
+    stream fx_col = zp_fx @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
+    stream value_col = zp_value @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
+    let row = 0;
+    let y = 0;
+    if nopcnt != 0 {
+      nopcnt -= 1;
+    } else {
+      row := note_col[0];
+      if row >= RUN_MIN && row < RUN_MAX {
+        nopcnt := row - RUN_BASE;
+        row := 0;
+      }
+    }
+    if !neg(row) {
+      curnote := row;
+    } else {
+      curnote := row & 0x7F;
+      y += 1;
+      let ins = inst_col[y];
+      if !neg(ins) {
+        curifx := ins;
+      } else {
+        curifx_long := ins & 0x7F;
+        y += 1;
+        let fx = fx_col[y];
+        curfx := fx;
+        if fx & FX_VALUE_MASK == 0 {
+          y += 1;
+          fxval := value_col[y];
+        }
+      }
+    }
+    ptnpos += y;
+  }
+}
+
+schedule {
+  for v in 0..3 {
+    voice[v];
+  }
+}

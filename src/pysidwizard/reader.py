@@ -22,7 +22,8 @@ from .constants import (
 )
 from .errors import SWMFormatError
 from .features import features_for_driver
-from .model import Instrument, Pattern, SWMFile, decode_sequence, unpack_pattern
+from .grammar import GRAMMAR, parse_instrument, parse_pattern, parse_sequence
+from .model import Instrument, Pattern, SWMFile
 from .player_images import LATEST_PLAYER_VERSION, image_for
 from .variant import PlayerImage
 
@@ -141,17 +142,19 @@ def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -
         raise SWMFormatError("not enough data for tempo table")
     cursor -= tempo_length
     tempo_table = bytes(data[cursor : cursor + tempo_length])
+    GRAMMAR.parse_exact(tempo_table, "tempos")
 
     # 3. Chord table (raw bytes).
     if cursor - chord_length < body_start:
         raise SWMFormatError("not enough data for chord table")
     cursor -= chord_length
     chord_table = bytes(data[cursor : cursor + chord_length])
+    GRAMMAR.parse_exact(chord_table, "chords")
 
     # 4. Instruments (backward): for each, 8-byte name preceded by a 1-byte
     #    size field preceded by `size` bytes of instrument data. The bytes
-    #    are then handed to :meth:`Instrument.decode` which parses them
-    #    into named fields and variable-length tables.
+    #    are then parsed by the ``instrument`` rule of the song grammar into
+    #    named fields and variable-length tables.
     instruments: list[Instrument] = []
     for _ in range(instrument_amount):
         if cursor - INSTRUMENT_NAME_LEN < body_start:
@@ -166,7 +169,7 @@ def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -
             raise SWMFormatError("not enough data for instrument body")
         cursor -= size
         instr_data = bytes(data[cursor : cursor + size])
-        instruments.append(Instrument.decode(instr_data, name=name))
+        instruments.append(parse_instrument(instr_data, name, exact=True))
     instruments.reverse()
 
     # 5. Patterns (backward): for each, 1-byte length, 1-byte size, then a
@@ -206,9 +209,7 @@ def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -
             if is_packed:
                 j -= byte - PACKED_MIN + 1
             j -= 1
-        ptn_packed = bytes(data[cursor:body_end])
-        ptn_unpacked = unpack_pattern(ptn_packed)
-        patterns.append(Pattern.decode(ptn_unpacked, length=length))
+        patterns.append(parse_pattern(bytes(data[cursor:body_end]), length))
     patterns.reverse()
 
     # 6. Sequences (backward): for each, 1-byte size preceded by `size`
@@ -223,7 +224,7 @@ def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -
             raise SWMFormatError("not enough data for sequence body")
         cursor -= size
         seq_bytes = bytes(data[cursor : cursor + size])
-        sequences.append(decode_sequence(seq_bytes))
+        sequences.append(parse_sequence(seq_bytes))
     sequences.reverse()
 
     if cursor != body_start:

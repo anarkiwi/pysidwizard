@@ -17,10 +17,12 @@ from pysidtracker import is_rsid
 from pysidwizard import (
     End,
     Instrument,
+    Pattern,
     PlayPattern,
     Row,
     SequenceCommand,
     SIDFormatError,
+    SWMFile,
     SWMPlayer,
     Transpose,
     is_sidwizard_sid,
@@ -40,6 +42,7 @@ from pysidwizard.model import encode_sequence, pack_pattern
 from pysidwizard.player import FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
 from pysidwizard.sidfile import sid_chips
 from pysidwizard.sidreader import (
+    _check_played_instruments,
     _decode_instruments,
     _decode_player_instruments,
     _filter_init,
@@ -151,7 +154,7 @@ def _build_reference_image():
             attack=0,
             decay=15,
             first_waveform=0x11,
-            wf_table=bytes([0x21]),
+            wf_table=bytes([0x21, 0x00, 0x00]),
             pw_table=b"",
             filter_table=b"",
         ),
@@ -255,7 +258,7 @@ def _build_two_subtune_image():
         control=0x10,
         attack=2,
         decay=3,
-        wf_table=bytes([0x41]),
+        wf_table=bytes([0x41, 0x00, 0x00]),
         pw_table=b"",
         filter_table=b"",
     )
@@ -378,7 +381,7 @@ def _build_swp_image(subtunes=1, with_header=True, with_chord=True):
             attack=0,
             decay=15,
             first_waveform=0x11,
-            wf_table=bytes([0x21]),
+            wf_table=bytes([0x21, 0x00, 0x00]),
             pw_table=b"",
             filter_table=b"",
         ),
@@ -1082,3 +1085,23 @@ def test_a_wrapper_patched_instrument_reads_from_post_init_memory():
     data = path.read_bytes()
     assert parse_sid_song(data, 1).instruments[16].ram[0x16] == 0x4D
     assert parse_sid_song(data, 2).instruments[16].ram[0x16] == 0x12
+
+
+def _swm_playing_instrument_one(good: bytes, bad: bytes) -> SWMFile:
+    played, unplayed = Instrument(), Instrument()
+    played.ram, unplayed.ram = good, bad
+    return SWMFile(
+        sequences=[[PlayPattern(1), End()]] * 3,
+        patterns=[Pattern(rows=[Row(note=49, instrument=1)], length=1)],
+        instruments=[played, unplayed],
+    )
+
+
+_WELL_FORMED = bytes(16) + b"\xff\xff\xff"
+_MALFORMED = bytes(16) + b"\x41\x00\x00\x41"  # a table row cut short, no terminator
+
+
+def test_an_instrument_a_pattern_plays_must_be_a_well_formed_stream():
+    _check_played_instruments(_swm_playing_instrument_one(_WELL_FORMED, _MALFORMED))
+    with pytest.raises(SIDFormatError, match="instrument 1 is played but malformed"):
+        _check_played_instruments(_swm_playing_instrument_one(_MALFORMED, _WELL_FORMED))

@@ -1,0 +1,76 @@
+// Streams the SID-Wizard player reads, one latin-1 character per byte.
+// Each start rule is one stream kind; _TAIL is whatever is stored after the
+// terminator, which the player never reads through that stream's pointer.
+%import bytes (BYTE, _TAIL)
+
+// Orderlist: pattern numbers and per-channel commands, then $FE (end) or
+// $FF + a loop position (< $80) or a subtune jump byte (>= $80).
+sequence: _seq_cmd* _seq_end _TAIL?
+_seq_cmd: PLAY | TRANSPOSE | MAINVOL | TEMPO | NOP
+_seq_end: SEQ_END | SEQ_LOOP SEQ_TARGET
+PLAY: /[\x00-\x7f]/
+TRANSPOSE: /[\x80-\x9f]/
+MAINVOL: /[\xa0-\xaf]/
+TEMPO: /[\xb0-\xef]/
+NOP: /[\xf0-\xfd]/
+SEQ_END: /\xfe/
+SEQ_LOOP: /\xff/
+SEQ_TARGET: BYTE
+
+// Pattern, NOP-packed: a row is a note byte, with bit 7 set when an
+// instrument byte follows, which has bit 7 set when an effect byte follows;
+// an effect below $20 takes a value byte. A $70..$77 byte after a zero or
+// another $70..$77 byte is a run of 2..9 further zero rows (the lexer's
+// PACK, see pysidwizard.grammar). $FF ends the pattern.
+pattern: (row | PACK)* PTN_END _TAIL?
+row: NOTE -> note_row
+   | ZERO -> empty_row
+   | NOTE_NEXT inst -> inst_row
+inst: INST_NZ -> inst_only
+    | ZERO -> inst_zero
+    | INST_NEXT fx -> inst_fx
+fx: FX_SMALL -> fx_small
+  | FX_BIG val -> fx_big
+  | FX_ZERO val0 -> fx_zero
+val: VAL_NZ -> val_nz
+   | ZERO -> val_zero
+val0: VAL_NZ -> val_nz
+    | ZERO -> val_zero
+    | PACK PACK* -> val_packed
+ZERO: /\x00/
+NOTE: /[\x01-\x7f]/
+NOTE_NEXT: /[\x80-\xfe]/
+INST_NZ: /[\x01-\x7f]/
+INST_NEXT: /[\x80-\xff]/
+FX_ZERO: /\x00/
+FX_BIG: /[\x01-\x1f]/
+FX_SMALL: /[\x20-\xff]/
+VAL_NZ: /[\x01-\xff]/
+PACK.-1: /[\x70-\x77]/
+PTN_END: /\xff/
+
+// Instrument: a 16-byte header, then the waveform, pulse and filter tables.
+// A table row is three bytes (a $FE jump row is $FE, its target, a pad byte)
+// and $FF ends the table.
+instrument: header wf pw filt _TAIL?
+header: BYTE~16
+wf: tab_row* TAB_END -> table
+pw: tab_row* TAB_END -> table
+filt: tab_row* TAB_END -> table
+tab_row: TAB_ROW BYTE BYTE
+TAB_ROW: /[\x00-\xfe]/
+TAB_END: /\xff/
+
+// Chord table: chords back to back, each ending $7E (return to the waveform
+// table) or $7F (loop).
+chords: chord*
+chord: CHORD_NOTE* CHORD_END
+CHORD_NOTE: /[^\x7e\x7f]/
+CHORD_END: /[\x7e\x7f]/
+
+// Tempo table: programs back to back, each a run of bytes below $80 closed by
+// one with bit 7 set.
+tempos: program*
+program: TEMPO_STEP* TEMPO_LAST
+TEMPO_STEP: /[\x00-\x7f]/
+TEMPO_LAST: /[\x80-\xff]/

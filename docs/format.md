@@ -219,6 +219,29 @@ The runtime instrument body is byte-identical in layout to what
 `decode_sequence`, so the reader's work is locating regions and resolving
 pointers, not decoding bytes.
 
+## Song grammar
+
+`src/pysidwizard/sidwizard.lark` is a [`pysidtracker`](https://github.com/anarkiwi/pysidtracker)
+`ByteGrammar` (LALR, one latin-1 character per byte) of the streams the player
+reads. `.swm` reading parses every stream through it and `.sid` reading parses
+each orderlist and pattern, so a malformed stream raises `SWMFormatError`
+rather than being mis-played, and `pysidtracker grammar TUNE`
+prints each stream's parse tree. One start rule per stream kind:
+
+| Rule | Stream | Ends at |
+|---|---|---|
+| `sequence` | Orderlist bytes: `$00..$7F` pattern, `$80..$9F` transpose, `$A0..$AF` main volume, `$B0..$EF` tempo, `$F0..$FD` no-op | `$FE`, or `$FF` + a loop position (`< $80`) or subtune jump (`>= $80`) |
+| `pattern` | Rows: a note byte, then an instrument byte if the note's bit 7 is set, then an effect byte if the instrument's bit 7 is set, then a value byte if the effect is below `$20` | `$FF` |
+| `instrument` | 16-byte header, then the waveform, pulse and filter tables of three-byte rows | the filter table's `$FF` |
+| `chords` | Chords, each closed by `$7E` or `$7F` | the table's end |
+| `tempos` | Programs, each closed by a byte with bit 7 set | the table's end |
+
+Bytes after a stream's terminator are never read through its pointer. In a
+`pattern`, a `$70..$77` byte that follows a zero byte or another `$70..$77` byte
+is a run of 2..9 further empty rows; anywhere else it is an ordinary byte. An
+instrument's header pointers to its pulse and filter tables must equal where
+those tables start.
+
 ## Data model
 
 An SWM module is a tracker module split into typed pieces. You don't need the
@@ -242,8 +265,9 @@ instrument is active:
   detune)`. Drives SID `CTRL` and the per-note pitch offset. Arp byte:
   `$00..$7E` relative pitch up; `$7F` take next pitch from the active chord
   table; `$80` NOP; `$81..$DF` absolute pitch (low 7 bits); `$E0..$FF` relative
-  pitch down; `$FE` (waveform column) jump to the row whose offset is the next
-  byte; `$FF` end of table.
+  pitch down. A `$FE` waveform column is a jump row, also three bytes: `$FE`,
+  the offset of the row to continue at, and a pad byte. A `$FF` waveform column
+  ends the table, as a single byte.
 - **Pulse-width table** (`pw_table`). Three-byte rows: *set* mode (high byte
   `$80..$FD` + low byte → SID PW register) or *sweep* mode (low cycle-count byte,
   signed delta, key-track byte).
@@ -252,10 +276,15 @@ instrument is active:
   band switches (LP/BP/HP) + resonance + cutoff hi; *sweep* mode drifts the
   cutoff with a signed delta over a cycle count.
 
-**Chord table (`chord_table`).** A flat byte array indexed by chord number; the
-`$7F` arp byte looks up the next chord pitch here. Each table terminates on
-`$FF`; jumps use `$FE` + offset. pysidwizard handles serialisation — pass table
-*contents* only.
+**Chord table (`chord_table`).** Chords back to back, each a run of pitch bytes
+closed by `$7E` (return to the waveform table) or `$7F` (loop the chord); chord
+*n* starts after the *n*-1th closing byte, and the `$7F` arp byte takes the next
+pitch of the active chord. An instrument's three tables each end on `$FF`, and
+`pw_table` / `filter_table` use the same three-byte rows and `$FE` jump rows.
+pysidwizard writes the terminators and pointers — pass table *contents* only.
+
+**Tempo table (`tempo_table`).** Programs back to back, each a run of bytes below
+`$80` closed by one with bit 7 set.
 
 ### Sequence command types
 
@@ -263,11 +292,12 @@ instrument is active:
 | ---------------------- | ----------------------------------------------------------- |
 | `PlayPattern(n)`       | Play pattern *n* (1-based; `0` is the reserved empty slot). |
 | `Transpose(semitones)` | Per-channel transpose, -16..+15 semitones.                  |
+| `MainVolume(level)`    | Master volume nibble 0..15 (`$A0..$AF`), applied a frame late. |
 | `TempoOverride(value)` | Switch to row-delay `value` until the next override.        |
 | `End()`                | Terminate the sequence without looping.                     |
 | `Loop(position)`       | Terminate and jump back to `position` within the sequence.  |
 | `SubtuneJump(byte)`    | Terminate and restart this channel at position 0 of subtune `byte & 0x1F`. |
-| `RawSequenceByte(b)`   | Opaque single byte preserved for byte-exact round-trip.     |
+| `RawSequenceByte(b)`   | A `$F0..$FD` no-op, or any byte stored after the terminator, kept for byte-exact round-trip. |
 
 ### Row fields
 
