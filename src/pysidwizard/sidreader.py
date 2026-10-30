@@ -103,8 +103,6 @@ from .constants import (
     AUTHOR_POS,
     INST_FILTER_TABLE_PTR_POS,
     INST_HEADER_SIZE,
-    PACKED_MAX,
-    PACKED_MIN,
     SWM1_FORMAT,
     SWM_MAGIC,
     TABLE_END,
@@ -113,7 +111,7 @@ from .constants import (
 )
 from .errors import SIDFormatError, SWMFormatError
 from .features import detect_variant, features_for_driver
-from .grammar import parse_pattern, parse_sequence
+from .grammar import GRAMMAR, parse_pattern, parse_sequence
 from .model import (
     End,
     Instrument,
@@ -162,12 +160,8 @@ _SWP_TABLE_OFFSETS = {
 # How far below inst_lo to scan for the subtune table (covers the chord- and
 # tempo-pointer tables, whose combined size is bounded by the editor limits).
 _SUBTUNE_SCAN_WINDOW = 320
-# Per-pattern / per-sequence walk guards (defensive bounds).
-_PATTERN_GUARD = 0x400
-_SEQUENCE_GUARD = 0x400
-
-_SEQUENCE_END = 0xFE
-_SEQUENCE_END_WITH_LOOP = 0xFF
+# How far a pattern or sequence is read for its terminator (defensive bound).
+_STREAM_REACH = 0x400
 
 # --- Code-scan (relocation-invariant) table location ---------------------------
 # SID-Wizard's player relocates as one block with its table base addresses baked
@@ -905,36 +899,22 @@ def _ram_window(byte, addr: int) -> bytes:
     return bytes(ram)
 
 
-def _scan_pattern_end(byte, start: int) -> int:
-    """Return the address of a pattern's ``$FF`` terminator.
+def _stream_end(byte, start: int, rule: str, ceil: Optional[int] = None) -> int:
+    """The address one past the ``rule`` stream at ``start``, terminator included.
 
-    Walks the NOP-packed pattern stream row by row so that an ``$FF`` byte
-    appearing as effect data mid-row is not mistaken for the terminator (only
-    an ``$FF`` at a row boundary ends the pattern).
+    The stream is read no further than ``_STREAM_REACH`` bytes, the image, or ``ceil``.
     """
-    addr = start
-    guard = 0
-    while True:
-        b = byte(addr)
-        if b == TABLE_END:
-            return addr
-        addr += 1
-        guard += 1
-        if guard > _PATTERN_GUARD:
-            raise _LayoutError("pattern not terminated")
-        if b == 0x00:
-            # An empty row, possibly followed by packed-NOP run markers.
-            while PACKED_MIN <= byte(addr) <= PACKED_MAX:
-                addr += 1
-            continue
-        if b & 0x80:  # note column carries an instrument column
-            inst_byte = byte(addr)
-            addr += 1
-            if inst_byte & 0x80:  # ... and an fx column
-                fx = byte(addr)
-                addr += 1
-                if fx < 0x20:  # "big" fx carries a value byte
-                    addr += 1
+    stop = start + _STREAM_REACH if ceil is None else min(start + _STREAM_REACH, ceil)
+    window = bytearray()
+    for addr in range(start, stop):
+        try:
+            window.append(byte(addr))
+        except _LayoutError:
+            break
+    try:
+        return start + GRAMMAR.parse_prefix(bytes(window), rule).size
+    except SWMFormatError as exc:
+        raise _LayoutError(f"{rule} at {start:#06x}: {exc}") from exc
 
 
 def _read_pattern(byte, chunk, addr: int, term: int) -> Pattern:
@@ -956,7 +936,7 @@ def _decode_patterns(byte, chunk, ptn_lo, ptn_hi, pat_amount, load, end, ptr_bas
         if not (load <= addr < end):
             raise _LayoutError(f"pattern {k} pointer {addr:#06x} out of range")
         min_pattern = min(min_pattern, addr)
-        term = _scan_pattern_end(byte, addr)
+        term = _stream_end(byte, addr, "pattern") - 1
         pat = _read_pattern(byte, chunk, addr, term)
         pat.ram = _ram_window(byte, addr)
         patterns.append(pat)
@@ -1018,19 +998,7 @@ def _decode_sequences(
         start = _resolve_ptr(raw, ptr_base, load, end, reloc_delta)
         if not (load <= start < end):
             raise _LayoutError(f"sequence {k} pointer {start:#06x} out of range")
-        addr = start
-        guard = 0
-        while True:
-            command = byte(addr)
-            addr += 1
-            guard += 1
-            if guard > _SEQUENCE_GUARD:
-                raise _LayoutError(f"sequence {k} not terminated")
-            if command == _SEQUENCE_END:
-                break
-            if command == _SEQUENCE_END_WITH_LOOP:
-                addr += 1  # consume the loop-position byte
-                break
+        addr = _stream_end(byte, start, "sequence")
         sequences.append(parse_sequence(chunk(start, addr - start)))
     return sequences
 
@@ -1209,48 +1177,15 @@ def _image_accessors(image: SidImage):
     return byte, chunk
 
 
-def _scan_sequence_end(byte, start: int) -> int:
-    """Address one past a sequence's ``$FE`` / ``$FF``+loop-byte terminator."""
-    addr = start
-    guard = 0
-    while True:
-        cmd = byte(addr)
-        addr += 1
-        guard += 1
-        if guard > _SEQUENCE_GUARD:
-            raise _LayoutError("sequence not terminated")
-        if cmd == _SEQUENCE_END:
-            return addr
-        if cmd == _SEQUENCE_END_WITH_LOOP:
-            return addr + 1
-
-
 def _bounded_pattern_end(byte, start: int, ceil: int) -> Optional[int]:
-    """Address of a pattern's ``$FF`` row-terminator below ``ceil``, else None.
+    """Address of a pattern's ``$FF`` terminator below ``ceil``, else None.
 
-    Row-aware (an ``$FF`` inside a row's effect data is not the terminator),
-    mirroring :func:`_scan_pattern_end` but bounded so an unused/absent slot
-    fails softly instead of running away.
+    Bounded so an unused or absent slot fails softly instead of running away.
     """
-    addr = start
-    while addr < ceil:
-        b = byte(addr)
-        if b == TABLE_END:
-            return addr
-        addr += 1
-        if b == 0x00:
-            while PACKED_MIN <= byte(addr) <= PACKED_MAX:
-                addr += 1
-            continue
-        if b & 0x80:
-            inst_byte = byte(addr)
-            addr += 1
-            if inst_byte & 0x80:
-                fx = byte(addr)
-                addr += 1
-                if fx < 0x20:
-                    addr += 1
-    return None
+    try:
+        return _stream_end(byte, start, "pattern", ceil) - 1
+    except _LayoutError:
+        return None
 
 
 def _direct_channel_bases(image: SidImage, _byte, _subtune: int, fmt: SWMFormat):
@@ -1726,7 +1661,7 @@ def _player_layouts(data: bytes, load: int, base: int, fmt: SWMFormat):
             return floor <= addr < data_hi
 
         try:
-            seqs0 = [parse_sequence(chunk(b, _scan_sequence_end(byte, b) - b)) for b in bases0]
+            seqs0 = [parse_sequence(chunk(b, _stream_end(byte, b, "sequence") - b)) for b in bases0]
         except _LayoutError:
             continue
         refs0 = _refs(seqs0)
@@ -1852,7 +1787,7 @@ def _read_tolerant(lay: Layout, rd: _Reader) -> _Tables:
         if b is None:
             sequences.append([End()])
             continue
-        seq = parse_sequence(rd.chunk(b, _scan_sequence_end(rd.byte, b) - b))
+        seq = parse_sequence(rd.chunk(b, _stream_end(rd.byte, b, "sequence") - b))
         sequences.append(seq)
         this = {c.pattern for c in seq if isinstance(c, PlayPattern)}
         ref_all |= this
