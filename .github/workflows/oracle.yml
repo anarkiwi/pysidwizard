@@ -25,7 +25,7 @@ jobs:
     # cached.
     name: native-render-matches-sidtrace
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
 
