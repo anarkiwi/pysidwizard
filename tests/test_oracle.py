@@ -25,8 +25,7 @@ import pytest
 from pysidtracker.oracle import register_grid
 from pysidtracker.testing import (
     TuneFetchError,
-    assert_oracle_match,
-    make_oracle_fixtures,
+    assert_matches,
     oracle_grid,
     resolve_tune,
 )
@@ -40,7 +39,7 @@ import oracle_hvsc  # noqa: E402  (after sys.path tweak)
 # whydiff reports for a mismatch (not a download, so outside the fetch cache).
 _WHY = Path("build/why")
 
-# Frames compared in the ghost-buffer and PREX tests.
+# Frames compared per tune (0.43 fixtures compare a whole song, which outruns the oracle job).
 FRAMES = 250
 
 # HVSC SID-Wizard exports the native player reproduces byte-exactly against the
@@ -140,13 +139,33 @@ def _player(data):
     return SWMPlayer(parse_sid_song(data, 1))
 
 
-# A mismatch fails with pysidtracker's whydiff report, also saved under ``build/why/``.
-tune_id, oracle_match = make_oracle_fixtures(
-    TUNES,
-    player=_player,
-    max_lead=0,
-    report_dir=_WHY,
-)
+def assert_oracle_match(relpath, make_player, *, frames=FRAMES, song=1):
+    """The first ``frames`` play calls of ``song`` equal the sidtrace oracle's.
+
+    A mismatch fails with pysidtracker's whydiff report, also saved under ``build/why/``.
+    """
+    path = resolve_tune(relpath)
+    if path is None:
+        raise TuneFetchError(f"{relpath} unavailable (offline, not cached)")
+    assert_matches(
+        Path(path).read_bytes(),
+        make_player,
+        oracle_grid(path, frames=frames, song=song),
+        song=song,
+        max_lead=0,
+        name=relpath,
+        report_dir=_WHY,
+    )
+
+
+@pytest.fixture(params=list(TUNES))
+def tune_id(request):
+    return request.param
+
+
+@pytest.fixture
+def oracle_match(tune_id):  # noqa: F811
+    return lambda: assert_oracle_match(TUNES[tune_id], _player)
 
 
 @pytest.mark.oracle
@@ -201,12 +220,7 @@ SONGS = {
 @pytest.mark.parametrize("song_id", list(SONGS))
 def test_song_render_matches_oracle(song_id):
     relpath, song = SONGS[song_id]
-    assert_oracle_match(
-        relpath,
-        lambda data: SWMPlayer(parse_sid_song(data, song)),
-        song=song,
-        report_dir=_WHY,
-    )
+    assert_oracle_match(relpath, lambda data: SWMPlayer(parse_sid_song(data, song)), song=song)
 
 
 @pytest.mark.oracle
