@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -34,25 +35,29 @@ from pysidwizard import (
 from pysidwizard.constants import (
     AUTHOR_LEN,
     AUTHOR_POS,
-    INST_HEADER_SIZE,
     SWM_MAGIC,
     TUNE_HEADER_SIZE,
 )
 from pysidwizard.model import encode_sequence, pack_pattern
-from pysidwizard.player import FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
 from pysidwizard.sidfile import sid_chips
 from pysidwizard.sidreader import (
     _check_played_instruments,
-    _decode_instruments,
-    _decode_player_instruments,
-    _filter_init,
     _filter_table_end,
-    _freq_table_tail,
-    _memory_accessors,
 )
 from tests._hvsc_fetch import HVSC_ROOT, resolve
+from tests._toy import assert_6502
 
 LOAD = 0x1000
+# Enough play calls to reach every row of the synthetic patterns.
+_PLAY_FRAMES = 24
+
+
+def _plays_bare(swm: SWMFile, frames: int = _PLAY_FRAMES) -> None:
+    """The decoded module, exported by SID-Maker as a bare module, plays as the 6502 does.
+
+    The synthetic containers hold tune data but no player, so their own image cannot play.
+    """
+    assert_6502(replace(swm, source=b""), frames)
 
 
 def _swm_header(seq, pat, inst, chord_len, tempo_len, author=b"TESTER"):
@@ -471,7 +476,7 @@ def test_parse_swp_recovers_counts_and_content():
 
 
 def test_parse_swp_recovers_pattern_and_instrument_content():
-    sid, exp = _build_swp_image()
+    sid, _ = _build_swp_image()
     swm = parse_sid(sid)
     p0 = swm.patterns[0]
     assert [r.note for r in p0.rows] == [0x31, 0x33, None, 0x35]
@@ -489,9 +494,7 @@ def test_parse_swp_recovers_pattern_and_instrument_content():
 
 def test_parse_swp_result_plays():
     sid, _ = _build_swp_image()
-    player = SWMPlayer(parse_sid(sid))
-    for _ in range(200):
-        player.play_frame()
+    _plays_bare(parse_sid(sid))
 
 
 def test_parse_swp_without_swm1_header():
@@ -504,21 +507,19 @@ def test_parse_swp_without_swm1_header():
     assert swm.chord_table == exp["chord_table"]
     assert swm.chord_table
     assert swm.author.startswith(b"SWPTESTER")
-    SWMPlayer(swm).play_frame()
+    _plays_bare(swm)
 
 
 def test_parse_swp_exposes_all_subtunes():
     sid, exp = _build_swp_image(subtunes=2, with_chord=False)
-    swm = parse_sid(sid)
+    swm = replace(parse_sid(sid), source=b"")
     assert swm.subtune_count == 2
     assert len(swm.sequences) == 6
     assert swm.subtune_tempos == exp["subtune_tempos"]
     for n in range(2):
         st = swm.subtune(n)
         assert len(st.sequences) == 3
-        player = SWMPlayer(st)
-        for _ in range(60):
-            player.play_frame()
+        _plays_bare(st)
 
 
 def test_parse_sid_recovers_counts_and_content():
@@ -584,48 +585,12 @@ def test_parse_sid_recovers_sequences():
 
 def test_parse_sid_result_plays():
     sid, _ = _build_reference_image()
-    swm = parse_sid(sid)
-    player = SWMPlayer(swm)
-    for _ in range(200):
-        player.play_frame()
-
-
-def test_parse_sid_captures_the_bytes_past_freqtbl():
-    """Past-table pitch lookups (player.asm:2523-2535) need the image's own bytes."""
-    sid, _ = _build_reference_image()
-    tail = bytes(range(FREQ_TABLE_TAIL_LEN))
-    swm = parse_sid(sid + NOTE_FREQ_LO + tail)
-    assert swm.player.freq_table_tail == tail
-    assert SWMPlayer(swm).freq_lo[96:] == tail
-
-
-def test_freq_table_tail_is_empty_when_the_image_has_no_frequency_table():
-    """Without FREQTBL in the image the player stays on its shipped-build fallback."""
-    assert _freq_table_tail(b"\x00" * 4096) == b""
-
-
-# COMMONREGS through $D418, then CTFHGHO with and without the FILTKBTRACK prelude.
-_COMMONREGS = bytes.fromhex("a90109a08d17d4a90f09008d18d418")
-_KBDTRACK = bytes.fromhex("a900f00aae76997d5094a8b9119c69")
-
-
-@pytest.mark.parametrize(
-    "code, expect",
-    [
-        (_COMMONREGS + bytes.fromhex("a90b69008d16d4a9078d15d4"), (0xA0, 0x0B, 0x07, 0x01)),
-        (_COMMONREGS + _KBDTRACK + bytes.fromhex("0b8d16d460a9078d15d4"), (0xA0, 0x0B, 0x00, 0x01)),
-        (_COMMONREGS + _KBDTRACK + bytes.fromhex("0ba000f01f"), (0xA0, 0x0B, 0x00, 0x01)),
-        (bytes(64), (0, 0, 0, 0)),
-    ],
-)
-def test_filter_init_reads_the_operands_initer_leaves(code, expect):
-    """RESONIB / CTFHGHO / CTFLGHO / FSWITCH (player.asm:749-797); CTFLGHO only right after ``sta $D416``."""
-    assert _filter_init(bytes(16) + code) == expect
+    _plays_bare(parse_sid(sid))
 
 
 def test_parse_sid_exposes_all_subtunes():
     sid, exp = _build_two_subtune_image()
-    swm = parse_sid(sid)
+    swm = replace(parse_sid(sid), source=b"")
     assert len(swm.sequences) == exp["seq_amount"]
     assert swm.subtune_count == exp["subtune_count"]
     assert swm.subtune_tempos == exp["subtune_tempos"]
@@ -638,9 +603,7 @@ def test_parse_sid_exposes_all_subtunes():
         # Shared global tables are preserved.
         assert st.patterns is swm.patterns
         assert st.instruments is swm.instruments
-        player = SWMPlayer(st)
-        for _ in range(60):
-            player.play_frame()
+        _plays_bare(st)
 
 
 def test_subtune_out_of_range_raises():
@@ -693,7 +656,7 @@ def test_parse_sid_accepts_rsid_with_resolvable_data():
     swm = parse_sid(rsid)
     assert len(swm.patterns) == exp["pat_amount"]
     assert len(swm.instruments) == exp["inst_amount"]
-    SWMPlayer(swm).play_frame()
+    _plays_bare(swm)
 
 
 def test_parse_sid_rejects_unresolvable_swp_tune():
@@ -978,63 +941,6 @@ def test_known_swp_file_parses_and_plays(rel):
             player.play_frame()
 
 
-_BLANK = Instrument(control=0x1A, hr_decay=0xF, sustain=0xF, first_waveform=0x09)
-_REAL = Instrument(control=0x10, attack=2, wf_table=bytes([0x41, 0x00, 0x00]))
-
-
-_SLOTS = LOAD + 0x60
-
-
-def _slot_image(slot0: int, slot1: int):
-    """The blank and the real instrument at LOAD, then one instrument's ``inst_lo`` / ``inst_hi`` at _SLOTS."""
-    blank = _BLANK.encode() + b"\xff"
-    body = blank + _REAL.encode() + b"\xff"
-    mem = bytearray(0x80)
-    mem[: len(body)] = body
-    addrs = {"blank": LOAD, "real": LOAD + len(blank), "stale": 0x7F00}
-    for k, which in enumerate((slot0, slot1)):
-        mem[_SLOTS - LOAD + k] = addrs[which] & 0xFF
-        mem[_SLOTS - LOAD + 2 + k] = addrs[which] >> 8
-    return _memory_accessors(bytes(mem), LOAD, 0), body, LOAD + len(mem)
-
-
-def test_slot_0_decodes_where_it_is_not_instrument_1():
-    """PLAYERZP reads INSPTLO/HI slot 0 for CURINS=0; the exporter's link to slot 1 is not guaranteed."""
-    (byte, chunk), body, end = _slot_image("blank", "real")
-    (real,), slots = _decode_instruments(byte, chunk, _SLOTS, _SLOTS + 2, 1, LOAD, end)
-    dummy = slots[0]
-    assert real.encode() == _REAL.encode()
-    assert dummy.encode() == _BLANK.encode()
-    assert dummy.ram.startswith(body), "the RAM window runs on past the instrument's own tables"
-    assert real.ram.startswith(body[len(_BLANK.encode()) + 1 :])
-    (byte, chunk), _, end = _slot_image("real", "real")
-    assert 0 not in _decode_instruments(byte, chunk, _SLOTS, _SLOTS + 2, 1, LOAD, end)[1]
-
-
-def test_slot_0_beside_a_stale_unused_instrument_1():
-    """A player-read image can leave an unused instrument's pointer stale while slot 0 holds a blank."""
-    (byte, chunk), _, end = _slot_image("blank", "stale")
-
-    def inrange(addr):
-        return LOAD <= addr < end
-
-    args = (_SLOTS, _SLOTS + 2, 1, _SLOTS, inrange, set())
-    (unused,), slots = _decode_player_instruments(byte, chunk, *args)
-    assert unused == Instrument(name=b"INST 01")
-    assert slots[0].encode() == _BLANK.encode()
-    (byte, chunk), _, end = _slot_image("stale", "stale")
-    assert 0 not in _decode_player_instruments(byte, chunk, *args)[1]
-
-
-def test_slots_past_the_count_read_the_bytes_after_the_pointer_tables():
-    """SEL_INS takes any slot below $3F; past the count INSPTLO/HI run on into what follows."""
-    (byte, chunk), body, end = _slot_image("real", "blank")
-    _, slots = _decode_instruments(byte, chunk, _SLOTS, _SLOTS + 2, 0, LOAD, end)
-    assert slots[0].encode() == _REAL.encode()
-    assert slots[1].encode()[:INST_HEADER_SIZE] == _BLANK.encode()[:INST_HEADER_SIZE]
-    assert slots[1].ram.startswith(body)
-
-
 def test_parse_sid_patterns_carry_their_ram():
     """TICK_0 / TICK_1 point PLAYERZP at a pattern; its window runs on into the next one."""
     sid, _ = _build_reference_image()
@@ -1047,7 +953,6 @@ def test_parse_sid_patterns_carry_their_ram():
 def test_parse_sid_instruments_carry_their_ram():
     sid, exp = _build_reference_image()
     swm = parse_sid(sid)
-    assert swm.player.dummy_instrument is None
     for got, want in zip(swm.instruments, exp["insts"], strict=True):
         assert got.ram.startswith(want.encode() + b"\xff")
 
@@ -1078,7 +983,7 @@ def test_parse_sid_reads_whether_smalfxe_stores_wfghost(store, stores):
 
 
 def test_a_wrapper_patched_instrument_reads_from_post_init_memory():
-    """First Storm's wrapper patches instrument bytes per song before INITER, which PLAYERZP reads."""
+    """First Storm's wrapper patches instrument bytes per song before INITER (PLAYERZP reads them)."""
     path = resolve("MUSICIANS/C/C0zmo/First_Storm.sid")
     if path is None:
         pytest.skip("unreachable (offline)")

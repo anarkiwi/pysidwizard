@@ -2,11 +2,12 @@
 
 The editor's depacker substitutes $09 for a zero first-waveform byte on load
 (``packdepack.inc:693-699``), and its ``.sid``/``.prg`` exports carry $09.
-
-The model keeps the raw stored byte so ``build_swm`` round-trips exactly; the player applies the default.
+The model keeps the raw stored byte so ``build_swm`` round-trips exactly.
 """
 
 from __future__ import annotations
+
+import pytest
 
 from pysidwizard import (
     End,
@@ -21,13 +22,20 @@ from pysidwizard import (
     straight_tempo,
 )
 from tests._swm_cache import quickscore_path
+from tests._toy import SETUP_FRAMES, assert_6502, labels
 
-SETUP_FRAMES = (
-    2  # INITER zeroes SPDCNT: row 0's TICK_0/TICK_1 apply on calls 0/1, its note on call 2
-)
+FIRST_WAVEFORM = 0x0F
+
+
+def _first_waveforms(player: SWMPlayer, count: int) -> list:
+    """The first-waveform byte of instruments 1..``count`` in the played image."""
+    lab, mem = labels(player), player.memory
+    ptrs = (mem[lab["p_insl1"] + k] | mem[lab["p_insh1"] + k] << 8 for k in range(1, count + 1))
+    return [mem[ptr + FIRST_WAVEFORM] for ptr in ptrs]
 
 
 def test_effective_first_waveform_substitutes_swm1_default():
+    """Only a stored $00 becomes $09."""
     assert Instrument(first_waveform=0).effective_first_waveform == 0x09
     assert Instrument(first_waveform=0x11).effective_first_waveform == 0x11
     assert Instrument(first_waveform=0x40).effective_first_waveform == 0x40
@@ -35,51 +43,22 @@ def test_effective_first_waveform_substitutes_swm1_default():
 
 
 def test_effective_first_waveform_keeps_raw_field():
+    """The raw byte stays in the model."""
     ins = Instrument(name=b"QS      ", control=0x1A, first_waveform=0)
     assert ins.first_waveform == 0
     assert ins.effective_first_waveform == 0x09
 
 
-def test_zero_first_waveform_renders_editor_default_on_hr_frame():
-    """A stored $00 first-waveform plays as $09: the HR test-bit frame writes
-    CTRL = $09 AND ptn_gate, not $00; the raw byte still round-trips."""
+@pytest.mark.parametrize("stored, played", [(0x00, 0x09), (0x40, 0x40)])
+def test_first_frame_control_is_the_effective_first_waveform(stored, played):
+    """The note's first frame writes CTRL = effective first waveform; the raw byte round-trips."""
     inst = Instrument(
         name=b"QS      ",
-        control=0x1A,  # bit 3 (test-bit HR) set, like every quickscore instrument
-        sustain=0xF,
-        first_waveform=0,
-        wf_table=bytes([0x41, 0x80, 0x00]),
-    )
-    pattern = Pattern(rows=[Row(note=49, instrument=1)] + [Row()] * 4, length=5)
-    swm = SWMFile(
-        sequences=[[PlayPattern(1), End()]] * 3,
-        patterns=[pattern],
-        instruments=[inst],
-        subtune_tempos=[(straight_tempo(3), straight_tempo(3))],
-    )
-    assert parse_swm(build_swm(swm)).instruments[0].first_waveform == 0
-
-    p = SWMPlayer(swm)
-    for _ in range(SETUP_FRAMES):
-        p.play_frame()
-    p.play_frame()
-    v0 = p.voices[0]
-    assert v0.in_hr_this_frame
-    assert v0.sid_ctrl == (
-        0x09 & v0.ptn_gate
-    ), f"HR CTRL must be $09 & gate; got ${v0.sid_ctrl:02X} (gate ${v0.ptn_gate:02X})"
-    assert v0.sid_ctrl & 0x08, "HR frame must hold the test bit"
-
-
-def test_stored_nonzero_first_waveform_is_not_substituted():
-    inst = Instrument(
-        name=b"RAW     ",
         control=0x1A,
         sustain=0xF,
-        first_waveform=0x40,
+        first_waveform=stored,
         wf_table=bytes([0x41, 0x80, 0x00]),
     )
-    assert inst.effective_first_waveform == 0x40
     pattern = Pattern(rows=[Row(note=49, instrument=1)] + [Row()] * 4, length=5)
     swm = SWMFile(
         sequences=[[PlayPattern(1), End()]] * 3,
@@ -87,33 +66,22 @@ def test_stored_nonzero_first_waveform_is_not_substituted():
         instruments=[inst],
         subtune_tempos=[(straight_tempo(3), straight_tempo(3))],
     )
-    p = SWMPlayer(swm)
-    for _ in range(SETUP_FRAMES):
-        p.play_frame()
-    p.play_frame()
-    assert p.voices[0].sid_ctrl == (0x40 & p.voices[0].ptn_gate)
+    assert parse_swm(build_swm(swm)).instruments[0].first_waveform == stored
+    player = assert_6502(swm, SETUP_FRAMES + 2)
+    assert _first_waveforms(player, 1) == [played]
+    assert SWMPlayer(swm).render_grid(SETUP_FRAMES + 1)[SETUP_FRAMES][4] == played
 
 
 def test_quickscore_native_render_uses_editor_first_waveform():
-    """quickscore.swm stores $00 in all nine first-waveform bytes with HR
-    enabled; the player must emit its HR CTRL byte as $09 & gate while
-    ``build_swm`` still round-trips the stored $00."""
+    """quickscore.swm stores $00 in all nine first-waveform bytes with HR enabled;
+    its export carries $09 and the voices' first frames write it."""
     data = quickscore_path().read_bytes()
     swm = parse_swm(data)
     assert len(swm.instruments) == 9
-    for ins in swm.instruments:
-        assert ins.first_waveform == 0
-        assert ins.control & 0x08
+    assert all(ins.first_waveform == 0 and ins.control & 0x08 for ins in swm.instruments)
     assert build_swm(swm) == data
 
-    p = SWMPlayer(swm)
-    hr_frames = 0
-    for _ in range(3000):
-        p.play_frame()
-        for v in p.voices:
-            if v.in_hr_this_frame:
-                hr_frames += 1
-                assert v.sid_ctrl == (
-                    0x09 & v.ptn_gate
-                ), f"HR CTRL must be $09 & gate; got ${v.sid_ctrl:02X} (gate ${v.ptn_gate:02X})"
-    assert hr_frames, "quickscore must trigger HR frames within 3000 frames"
+    player = assert_6502(swm, 50)
+    assert _first_waveforms(player, 9) == [0x09] * 9
+    ctrl = {v for _ in range(300) for r, v in player.play_frame() if r in (4, 11, 18)}
+    assert 0x09 in ctrl and 0x00 not in ctrl

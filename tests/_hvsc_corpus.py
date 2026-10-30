@@ -37,8 +37,8 @@ tunes found:
 * ``50`` are multi-SID (2-SID/3-SID). ``48`` parse to ``3 * sid_amount``
   orderlists per subtune (:data:`MULTI_SID`, a deterministic subset); the two
   ``Quad_Core`` halves run one single-SID player per chip, which no one module
-  represents, and are rejected (:data:`PLAYER_PER_CHIP`). ``SWMPlayer`` renders
-  one chip, so their playback raises.
+  represents, and are rejected (:data:`PLAYER_PER_CHIP`). The playspec states
+  single-SID playback only, so ``SWMPlayer`` raises on them.
 """
 
 from __future__ import annotations

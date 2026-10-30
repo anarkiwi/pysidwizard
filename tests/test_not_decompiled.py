@@ -62,12 +62,9 @@ def test_wrapper_dispatched_module_song_is_exact(rel, song):
     assert _compare(rel, song)["verdict"] == "exact"
 
 
-def test_markerless_player_song_tracks_its_oracle_as_far_as_song_1():
-    first = _compare(TRANSFORMING, 1)
-    second = _compare(TRANSFORMING, 2)
-    assert first["verdict"] == "differs"
-    assert second["verdict"] in ("exact", "differs")
-    assert second["first_diff"] == first["first_diff"]
+@pytest.mark.parametrize("song", [1, 2])
+def test_markerless_player_song_is_exact(song):
+    assert _compare(TRANSFORMING, song)["verdict"] == "exact"
 
 
 def test_foreign_player_song_is_rejected_as_such():

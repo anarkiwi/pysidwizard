@@ -9,7 +9,14 @@ from __future__ import annotations
 
 import pytest
 
-from pysidwizard import SIDFormatError, SidWizardSidParser, SWMPlayer, parse_swp, read_swp
+from pysidwizard import (
+    SIDFormatError,
+    SidWizardSidParser,
+    SWMPlayer,
+    parse_swp,
+    read_swp,
+    sidmaker,
+)
 from pysidwizard.reader import parse_swm
 from tests._swm_cache import swm_path, swp_path
 
@@ -115,7 +122,12 @@ def test_swp_renders_identically_to_native_swm():
     assert packed_frames == native_frames
 
 
-def test_swp_player_runs_cleanly():
-    player = SWMPlayer(parse_swp(swp_path(_TUNE).read_bytes()))
-    for _ in range(200):
-        player.play_frame()
+@pytest.mark.parametrize("version", ["1.7", None])
+def test_parse_swp_records_the_sid_maker_release(version):
+    swm = read_swp(swp_path(_TUNE), player_version=version)
+    assert swm.player_version == (version or sidmaker.LATEST)
+
+
+def test_parse_swp_rejects_an_unshipped_sid_maker_release():
+    with pytest.raises(ValueError, match="no SID-Maker"):
+        parse_swp(swp_path(_TUNE).read_bytes(), player_version="0.1")

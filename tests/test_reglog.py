@@ -6,56 +6,17 @@ import io
 
 import pytest
 from pysidtracker.errors import SidParseError
+from pysidtracker.registers import PAL_CYCLES_PER_FRAME
 from pysidtracker.reglog import SID_REG_COUNT
 
-from pysidwizard import (
-    End,
-    Instrument,
-    Pattern,
-    PlayPattern,
-    Row,
-    SWMFile,
-    Waveform,
-    straight_tempo,
-)
-from pysidwizard.player import PAL_CYCLES_PER_FRAME, SWMPlayer
+from pysidwizard import SWMPlayer
 from pysidwizard.reglog import (
     RegWrite,
     iter_register_writes,
     read_reglog,
     write_reglog,
 )
-
-
-def _toy_swm() -> SWMFile:
-    """A small self-contained module (no network fetch) exercising the
-    per-frame note / instrument / table code paths."""
-    inst = Instrument(
-        name=b"TEST    ",
-        attack=0,
-        decay=0,
-        sustain=0xF,
-        release=0,
-        first_waveform=Waveform.PULSE | 0x01,
-        wf_table=bytes([0x41, 0x80, 0xFF]),
-        pw_table=b"\x88\x00\x00",
-        filter_table=b"",
-    )
-    pattern = Pattern(
-        rows=[
-            Row(note=49, instrument=1),
-            Row(),
-            Row(note=0x7E),
-            Row(note=53, instrument=1),
-        ],
-        length=4,
-    )
-    return SWMFile(
-        sequences=[[PlayPattern(1), End()]] * 3,
-        patterns=[pattern],
-        instruments=[inst],
-        subtune_tempos=[(straight_tempo(2), straight_tempo(2))],
-    )
+from tests._toy import toy_swm as _toy_swm
 
 
 def test_clock_layout():
@@ -96,11 +57,12 @@ def test_clock_options():
 
 def test_player_override_is_used():
     """A caller-supplied player is driven instead of building a fresh one."""
-    player = SWMPlayer(_toy_swm())
-    player.play_frame()  # advance one frame
-    writes = list(iter_register_writes(_toy_swm(), max_frames=1, player=player))
-    # frame 0 here is actually the player's SECOND frame; just confirm it ran.
-    assert writes
+    player, reference = SWMPlayer(_toy_swm()), SWMPlayer(_toy_swm())
+    player.play_frame()
+    reference.play_frame()
+    expected = list(enumerate(reference.regs)) + reference.play_frame()
+    got = [(w.reg, w.val) for w in iter_register_writes(_toy_swm(), max_frames=1, player=player)]
+    assert got == expected
 
 
 def test_bad_spacing():
