@@ -142,15 +142,7 @@ class _Transformer(Transformer):
         return bytes(ord(tok) for tok in _flat(children))
 
     def instrument(self, children) -> Parsed:
-        header, wf, pw, filt = children[:4]
-        wf_end = len(header) + len(wf)
-        pw_ptr, filt_ptr = header[10], header[11]
-        if (pw_ptr, filt_ptr) != (wf_end, wf_end + len(pw)):
-            raise SWMFormatError(
-                f"instrument table pointers {pw_ptr}/{filt_ptr} do not match "
-                f"its tables at {wf_end}/{wf_end + len(pw)}"
-            )
-        body = header + wf + pw + filt
+        body = b"".join(children[:4])
         return Parsed(Instrument.decode(body[:-1], name=b""), len(body))
 
     def chords(self, children) -> Parsed:
@@ -214,9 +206,18 @@ def parse_pattern(packed: bytes, length: int) -> Pattern:
     return Pattern(rows=GRAMMAR.parse_exact(packed + b"\xff", "pattern"), length=length)
 
 
-def parse_instrument(body: bytes, name: bytes) -> Instrument:
-    """The instrument a body (filter-table ``$FF`` implicit) holds."""
-    return replace(GRAMMAR.parse_exact(body + b"\xff", "instrument"), name=bytes(name))
+def parse_instrument(body: bytes, name: bytes, exact: bool = False) -> Instrument:
+    """The instrument a body (filter-table ``$FF`` implicit) holds.
+
+    ``exact`` also requires its header pointers to be where its tables start, as the
+    editor writes them; a ``.sid`` export may patch bytes after the editor's layout.
+    """
+    ins = replace(GRAMMAR.parse_exact(body + b"\xff", "instrument"), name=bytes(name))
+    if exact and ins.encode() != body:
+        raise SWMFormatError(
+            f"instrument table pointers {body[0x0A]}/{body[0x0B]} are not where its tables start"
+        )
+    return ins
 
 
 def streams(swm) -> Iterator[Stream]:

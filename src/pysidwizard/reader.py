@@ -169,7 +169,7 @@ def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -
             raise SWMFormatError("not enough data for instrument body")
         cursor -= size
         instr_data = bytes(data[cursor : cursor + size])
-        instruments.append(parse_instrument(instr_data, name))
+        instruments.append(parse_instrument(instr_data, name, exact=True))
     instruments.reverse()
 
     # 5. Patterns (backward): for each, 1-byte length, 1-byte size, then a

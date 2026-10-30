@@ -124,7 +124,8 @@ def test_instrument_pointers_must_match_the_table_layout():
     body = bytearray(_instrument(wf=b"\x41\x00\x00", pw=b"\x88\x00\x00").encode())
     body[0x0A] += 3
     with pytest.raises(SWMFormatError, match="pointers"):
-        parse_instrument(bytes(body), b"")
+        parse_instrument(bytes(body), b"", exact=True)
+    assert parse_instrument(bytes(body), b"").wf_table == bytes(body[0x10 : body[0x0A] - 1])
 
 
 def test_chord_table_is_chords_each_ending_7e_or_7f():
