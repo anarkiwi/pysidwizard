@@ -1971,3 +1971,65 @@ def test_small_fx_e_merges_the_waveform_low_nibble_before_1_5(stores, wfctrl_sma
     for _ in range(SETUP_FRAMES + 4):
         p.play_frame()
     assert p.regs[4] == ctrl
+
+
+def test_a_spare_slot_with_a_zero_row_walks_it_as_the_wf_table():
+    """A spare slot's table is the image's RAM: zeros at $10 are a real row (waveform 0, arp +0),
+    so the pitch is looked up from FREQTBL every frame, not left to the "no WF table" hold."""
+    swm = _toy_swm()
+    spare = Instrument()
+    spare.ram = bytes(0x100)
+    swm.patterns[0] = Pattern(rows=[Row(note=49, instrument=3)] + [Row()] * 7, length=8)
+    with_image(swm, spare_instruments={3: spare})
+    grid = SWMPlayer(swm).render_grid(SETUP_FRAMES + HR_FRAMES + 6)
+    assert {tuple(row[:2]) for row in grid[SETUP_FRAMES + HR_FRAMES + 1 :]} == {
+        (NOTE_FREQ_LO[49], NOTE_FREQ_HI[49])
+    }
+
+
+def test_a_release_small_fx_leaves_the_attack_decay_a_write_ad_fx_set():
+    """SMALFX6 merges into SR only, so BIGFX05's AD value is not put back to the instrument's."""
+    p = SWMPlayer(_toy_swm())
+    for _ in range(SETUP_FRAMES + HR_FRAMES + 1):
+        p.play_frame()
+    v = p.voices[0]
+    p._apply_fx_columns(v, None, 0x05, 0x27, False)  # pylint: disable=protected-access
+    p._apply_fx_columns(v, None, 0x6C, None, False)  # pylint: disable=protected-access
+    assert v.sid_ad == 0x27 and v.sid_sr & 0x0F == 0x0C
+
+
+def test_an_instrument_column_value_at_or_above_the_sel_ins_limit_keeps_the_current_instrument():
+    """SEL_INS stores CURINS only below ``cmp #maxinstamount`` (a tune's own bound)."""
+    swm = _toy_swm()
+    swm.instruments.append(dataclasses.replace(swm.instruments[0], attack=5))
+    swm.patterns[0] = Pattern(
+        rows=[Row(note=49, instrument=1), Row(note=53, instrument=2)] + [Row()] * 4, length=6
+    )
+    with_image(swm, sel_ins_limit=2)
+    p = _play(swm, frames=SETUP_FRAMES + 3 * 3 + 2)
+    assert p.voices[0].instrument is swm.instruments[0]
+    assert p.voices[0].dpitch == 53
+
+
+def test_a_jump_to_a_pw_row_leaves_the_sweep_counter_running():
+    """BIGFX0A is ``adc (zp),y ; sta PWTPOS ; rts``: PWEEPCNT is not zeroed."""
+    swm = _toy_swm()
+    swm.instruments[0].pw_table = bytes([0x05, 0x10, 0x00, 0x05, 0x10, 0x00])
+    p = SWMPlayer(swm)
+    for _ in range(SETUP_FRAMES + HR_FRAMES + 1):
+        p.play_frame()
+    v = p.voices[0]
+    v.pw_sweep_count = 9
+    p._apply_fx_columns(v, None, 0x0A, 1, False)  # pylint: disable=protected-access
+    pw_base = 0x10 + len(v.instrument.wf_table) + 1
+    assert (v.pw_pos, v.pw_sweep_count) == (pw_base + 3, 9)
+
+
+def test_a_zero_slide_speed_is_a_zero_freqmod_at_any_pitch():
+    """SETFMOD's ``beq wrFmodL`` stores FREQMOD 0 for an A of 0 instead of indexing EXPTABH by DPITCH."""
+    p = SWMPlayer(_toy_swm())
+    assert p.features.calcvibrato
+    assert [p._freqmod(0, dpitch) for dpitch in (0, 49, 60)] == [
+        (0, 0)
+    ] * 3  # pylint: disable=protected-access
+    assert p._freqmod(1, 49) != (0, 0)  # pylint: disable=protected-access

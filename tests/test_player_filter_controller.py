@@ -282,3 +282,69 @@ def test_a_swapped_in_sweep_starts_from_the_global_cutoff():
     assert p.filter_cutoff_hi == 0x30
     p.play_frame()
     assert (p.filter_cutoff_hi, p.filter_cutoff_lo) == (0x31, 0)
+
+
+def test_sweep_row_advances_only_when_the_counter_equals_its_cycle_count():
+    """FILTPRG's ``cmp CWEPCNT; beq`` is an equality test and ``inc CWEPCNT`` wraps at 256:
+    a counter already past the row's cycle count (a controller swap hands it over) keeps
+    sweeping until it comes round to that count."""
+    p = SWMPlayer(_swap_swm())
+    for _ in range(SETUP_FRAMES + 1):
+        p.play_frame()
+    start = p.filt_pos
+    p.filter_sweep_count = 0x20  # the row's cycle count is $10
+    p.play_frame()
+    assert (p.filt_pos, p.filter_sweep_count) == (start, 0x21)
+    p.filter_sweep_count = 0xFF
+    p.play_frame()
+    assert (p.filt_pos, p.filter_sweep_count) == (start, 0x00)
+
+
+def test_jump_to_filter_row_leaves_the_sweep_counter_running():
+    """BIGFX0B only stores FLTPOSI (player.asm ``sta FLTPOSI; rts``); the sweep counter keeps counting."""
+    swm = _swap_swm()
+    swm.instruments[0].filter_table = bytes([0x10, 0x05, 0x00, 0x10, 0x05, 0x00])
+    p = SWMPlayer(swm)
+    for _ in range(SETUP_FRAMES + 1):
+        p.play_frame()
+    p.filter_sweep_count = 7
+    v = p.voices[0]
+    p._apply_fx_columns(v, None, 0x0B, 1, False)
+    assert (p.filt_pos, p.filter_sweep_count) == (p._filt_table_start(v.instrument) + 3, 7)
+
+
+def test_jump_to_an_ff_row_is_taken_as_a_set_row():
+    """FLTJUMP applies any non-sweep target as a set row without the end test, so a jump onto
+    a row starting $FF sets cutoff, resonance $F and every mode bit instead of freezing."""
+    swm = _swap_swm()
+    ins = swm.instruments[0]
+    ins.filter_table = bytes([0x90, 0x20, 0x00, 0xFE, 0x00, 0x00, 0xFF, 0x55, 0x00])
+    p = SWMPlayer(swm)
+    start = p._filt_table_start(ins)
+    ins.filter_table = bytes([0x90, 0x20, 0x00, 0xFE, start + 6, 0x00, 0xFF, 0x55, 0x00])
+    p = SWMPlayer(swm)
+    for _ in range(SETUP_FRAMES + 1):
+        p.play_frame()
+    p.filt_pos = start + 3
+    p.play_frame()
+    assert (p.filter_cutoff_hi, p.filter_resonance, p.filter_mode_vol & 0x70) == (0x55, 0xF0, 0x70)
+    assert p.filt_pos == start + 9
+
+
+def test_a_filter_row_jumping_to_itself_changes_nothing():
+    """FLTJUMP compares the target with FLTPOSI first (``cmp FLTPOSI ; beq``): a self-jump rests."""
+    swm = _swap_swm()
+    ins = swm.instruments[0]
+    p = SWMPlayer(swm)
+    start = p._filt_table_start(ins)
+    ins.filter_table = bytes([0x90, 0x20, 0x00, 0xFE, start + 3, 0x00])
+    p = SWMPlayer(swm)
+    for _ in range(SETUP_FRAMES + 1):
+        p.play_frame()
+    p.filt_pos = start + 3
+    before = (p.filter_cutoff_hi, p.filter_resonance, p.filter_mode_vol)
+    p.play_frame()
+    assert (p.filt_pos, (p.filter_cutoff_hi, p.filter_resonance, p.filter_mode_vol)) == (
+        start + 3,
+        before,
+    )

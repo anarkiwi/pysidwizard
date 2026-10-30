@@ -63,18 +63,5 @@
   "relpath": "MUSICIANS/M/Mac_TUGCS/Methodist.sid",
   "right": "format:sidwizard",
   "song": 24
- },
- {
-  "compare": "lead",
-  "frames": 1573,
-  "id": "f5eea67b304e",
-  "key": "('first', '6502:edge:856394f69bb6aef749122d7d', '')",
-  "kind": "first",
-  "left": "6502",
-  "md5": "bbf2fa77997735780dd3f37e8f377fd5",
-  "reason": "$1111 BEQ $111d -> $1113: reference frame 1564, register $16 fc_hi",
-  "relpath": "MUSICIANS/H/Hermit/Happy_20th_Samar_Birthday.sid",
-  "right": "format:sidwizard",
-  "song": 1
  }
 ]

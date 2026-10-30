@@ -32,11 +32,15 @@ class Effects:
 
     def _resolve_instrument(self, ref: int) -> Optional[Instrument]:
         """Map a 1..0x3E reference to an instrument; past the count -> the image's slot, else the empty one."""
-        if 1 <= ref <= len(self.swm.instruments):
+        if not self._selects_instrument(ref):
+            return None
+        if ref <= len(self.swm.instruments):
             return self.swm.instruments[ref - 1]
-        if 1 <= ref <= 0x3E:
-            return self.image.spare_instruments.get(ref, self._empty)
-        return None
+        return self.image.spare_instruments.get(ref, self._empty)
+
+    def _selects_instrument(self, ref: Optional[int]) -> bool:
+        """Whether an instrument column value is below SEL_INS's ``cmp #maxinstamount`` bound."""
+        return ref is not None and 1 <= ref < min(self.image.quirks.sel_ins_limit, 0x3F)
 
     def _apply_row(self, v: VoiceState, row) -> None:
         """Apply one Row's columns to the voice.
@@ -54,7 +58,7 @@ class Effects:
         # was just selected (player.asm:1388 ``TABLRST and #$3F``), so a
         # selection always resets those tables; only a same-instrument
         # retrigger honours the instrument's reset-off control bits.
-        instrument_selected = instrument is not None and 1 <= instrument <= 0x3E
+        instrument_selected = self._selects_instrument(instrument)
         # Set when the note column consumed the row's BIGFX03 (tone portamento).
         portamento_applied = False
         # Set when the note column reached STRTSND, which runs INSPTFX after its own
@@ -82,7 +86,7 @@ class Effects:
         # reads them into CURIFX, then SEL_INS only writes CURINS when
         # the byte is < maxinstamount). We re-purpose ``instrument`` as
         # ``fx`` for the small-FX range below.
-        if instrument is not None and 1 <= instrument <= 0x3E:
+        if self._selects_instrument(instrument):
             v.instrument_idx = instrument
             ins = self._resolve_instrument(instrument)
             if ins is not None:
@@ -285,12 +289,11 @@ class Effects:
                 if target < len(v.instrument.wf_table):
                     v.wf_pos = INST_WF_TABLE_POS + target
             elif fx == 0x0A and fx_value is not None and v.instrument is not None:
-                # BIGFX0A (player.asm:3530): PWTPOS := value*3 + the instrument's PW-table base, PWEEPCNT := 0.
+                # BIGFX0A (player.asm:3530): PWTPOS := value*3 + the instrument's PW-table base; PWEEPCNT keeps counting.
                 ins = v.instrument
                 base = INST_WF_TABLE_POS + len(ins.wf_table) + 1
                 if fx_value * 3 < len(ins.pw_table):
                     v.pw_pos = base + fx_value * 3
-                    v.pw_sweep_count = 0
             elif fx == 0x0C and fx_value is not None:
                 # BIGFX0C = SMALFXC (player.asm:3549): ARPSPED := value, ARPSCNT := $FF.
                 v.arp_speed_reload = fx_value
@@ -303,7 +306,6 @@ class Effects:
                 target = fx_value * 3
                 if target < len(ins.filter_table):
                     self.filt_pos = self._filt_table_start(ins) + target
-                    self.filter_sweep_count = 0
             elif fx == 0x0F and fx_value is not None:
                 # BIGFX0F (player.asm:3563) writes CTFHGHO, the $D416 cutoff-high ghost.
                 self._set_cutoff_hi(fx_value)
@@ -392,8 +394,10 @@ class Effects:
                 decay = v.decay_override if v.decay_override is not None else ins.decay
                 sustain = v.sustain_override if v.sustain_override is not None else ins.sustain
                 release = v.release_override if v.release_override is not None else ins.release
-                v.sid_ad = ((attack & 0xF) << 4) | (decay & 0xF)
-                v.sid_sr = ((sustain & 0xF) << 4) | (release & 0xF)
+                if high in (0x20, 0x30):
+                    v.sid_ad = ((attack & 0xF) << 4) | (decay & 0xF)
+                else:
+                    v.sid_sr = ((sustain & 0xF) << 4) | (release & 0xF)
                 v.adsr_emit_required = True
         elif high == 0x40:
             # SMALFX4 (player.asm:3298) merges the value nibble into WFGHOST's high nibble.
