@@ -224,6 +224,7 @@ _KBTRACK = "c8b1fe8d0000c88c0000"
         (_KBTRACK, {"kbtrack_fswitch": False}),
         (_KBTRACK + _FSWITCH, {}),
         ("2908f010a9099d", {"first_frame_fixed_waveform": True}),
+        ("bd4b10f005c92e100c9d4c10", {"sel_ins_limit": 0x2E}),
     ],
 )
 def test_each_quirk_reads_from_its_site(code, changed):
