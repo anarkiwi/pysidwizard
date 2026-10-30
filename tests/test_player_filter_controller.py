@@ -298,3 +298,16 @@ def test_sweep_row_advances_only_when_the_counter_equals_its_cycle_count():
     p.filter_sweep_count = 0xFF
     p.play_frame()
     assert (p.filt_pos, p.filter_sweep_count) == (start, 0x00)
+
+
+def test_jump_to_filter_row_leaves_the_sweep_counter_running():
+    """BIGFX0B only stores FLTPOSI (player.asm ``sta FLTPOSI; rts``); the sweep counter keeps counting."""
+    swm = _swap_swm()
+    swm.instruments[0].filter_table = bytes([0x10, 0x05, 0x00, 0x10, 0x05, 0x00])
+    p = SWMPlayer(swm)
+    for _ in range(SETUP_FRAMES + 1):
+        p.play_frame()
+    p.filter_sweep_count = 7
+    v = p.voices[0]
+    p._apply_fx_columns(v, None, 0x0B, 1, False)
+    assert (p.filt_pos, p.filter_sweep_count) == (p._filt_table_start(v.instrument) + 3, 7)

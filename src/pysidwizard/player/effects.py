@@ -303,7 +303,6 @@ class Effects:
                 target = fx_value * 3
                 if target < len(ins.filter_table):
                     self.filt_pos = self._filt_table_start(ins) + target
-                    self.filter_sweep_count = 0
             elif fx == 0x0F and fx_value is not None:
                 # BIGFX0F (player.asm:3563) writes CTFHGHO, the $D416 cutoff-high ghost.
                 self._set_cutoff_hi(fx_value)
