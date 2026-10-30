@@ -62,11 +62,11 @@ def _view(data: bytes) -> bytes:
     return bytes(image_after_init(SidImage.from_sid(data)).window(0, 0x10000))
 
 
-def _replay(found: dict, stretch: str, memory: bytes, entry: int, stop: int) -> list:
+def _replay(spec, found: dict, stretch: str, memory: bytes, entry: int, stop: int) -> list:
     """The addresses outside the stack page where the spec routine and the jennings run of
     the code from ``entry`` to ``stop`` leave ``memory`` differently."""
     spec_mem = run(
-        elaborate(playspec.SPEC, found, routine=f"voice[0].{stretch}"),
+        elaborate(spec, found, routine=f"voice[0].{stretch}"),
         bytearray(memory),
         registers={"x": 0},
     )
@@ -84,9 +84,10 @@ def _replay(found: dict, stretch: str, memory: bytes, entry: int, stop: int) -> 
 
 def _prove(data: bytes, stretch: str):
     view = _view(data)
+    spec, found = playspec.bind(view)
     return validate(
-        playspec.SPEC,
-        playspec.binding(view),
+        spec,
+        found,
         f"voice[0].{stretch}",
         view,
         STRETCHES[stretch][0](view),
@@ -98,8 +99,8 @@ def _prove(data: bytes, stretch: str):
 
 @pytest.mark.parametrize("name", EXPORTS)
 def test_the_voices_cells_sit_seven_bytes_apart_from_the_found_addresses(name):
-    found = playspec.binding(_view(_export(name)))
-    program = elaborate(playspec.SPEC, found)
+    spec, found = playspec.bind(_view(_export(name)))
+    program = elaborate(spec, found)
     for cell_name in ("fxval", "spdcnt"):
         placed = sorted(
             a for cell in program.cells if cell.name == cell_name for a in cell.extent()
@@ -112,13 +113,13 @@ def test_the_voices_cells_sit_seven_bytes_apart_from_the_found_addresses(name):
 def test_stretch_equals_the_6502_on_random_state(name, stretch):
     """Every random state leaves memory as the 6502 code leaves it."""
     view = _view(_export(name))
-    found = playspec.binding(view)
+    spec, found = playspec.bind(view)
     entry, stop = STRETCHES[stretch][0](view), STRETCHES[stretch][1](view)
     rng = random.Random(name)
     for _ in range(RANDOM_CASES):
         memory = bytearray(view)
         STRETCHES[stretch][2](memory, found, rng)
-        assert not _replay(found, stretch, bytes(memory), entry, stop)
+        assert not _replay(spec, found, stretch, bytes(memory), entry, stop)
 
 
 @pytest.mark.parametrize("stretch", STRETCHES)
@@ -136,3 +137,29 @@ def test_stretch_is_proven_against_the_6502(name, stretch):
 @pytest.mark.parametrize("stretch", STRETCHES)
 def test_stretch_is_proven_for_every_oracle_tune(tune_path, stretch):  # noqa: F811
     assert _prove(tune_path.read_bytes(), stretch).proven
+
+
+@pytest.mark.parametrize("name", EXPORTS)
+def test_bind_picks_the_tempo_program_spec_for_a_build_with_tempo_programs(name):
+    spec, found = playspec.bind(_view(_export(name)))
+    assert spec is playspec.SPEC and "tempo" not in found
+
+
+def test_simple_variant_states_only_the_single_tempo_byte_clock():
+    simple = playspec.SIMPLE_SPEC
+    assert simple.base == "sidwizard" and simple.name == "sidwizard_simple"
+    cells = {cell.name for cell in elaborate(simple, _simple_layout()).cells}
+    assert "tempo_byte" in cells and not cells & {"tmppos", "tmpstart", "tempotbl"}
+
+
+def _simple_layout() -> dict:
+    names = "zp_note zp_inst zp_fx zp_value ptnpos nopcnt curnote curifx curifx_long curfx fxval"
+    layout = {name: 0x100 + 8 * i for i, name in enumerate(names.split())}
+    layout.update({"spdcnt": 0x200, "tempo": 0x300})
+    return layout
+
+
+@pytest.mark.oracle
+def test_bind_picks_the_variant_the_clock_shape_selects(tune_path):  # noqa: F811
+    spec, found = playspec.bind(_view(tune_path.read_bytes()))
+    assert (spec is playspec.SIMPLE_SPEC) == ("tempo" in found)

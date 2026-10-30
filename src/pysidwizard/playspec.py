@@ -1,7 +1,8 @@
 """The SID-Wizard playroutine as a ``pysidtracker.playspec`` spec.
 
-``specs/sidwizard.play`` states the pattern row reader; :func:`binding` resolves its
-``layout`` from the player's own code, which is the same in every build.
+``specs/sidwizard.play`` states the tick clock and the pattern row reader of a build with
+tempo programs; ``specs/sidwizard_simple.play`` is the variant for a build without them.
+:func:`bind` picks the variant and resolves its ``layout`` from the player's own code.
 """
 
 from importlib import resources
@@ -9,7 +10,15 @@ from importlib import resources
 from pysidtracker import CodePattern, SidImage, find_code_all
 from pysidtracker.playspec import parse as parse_spec
 
-SPEC = parse_spec(resources.files(__package__).joinpath("specs/sidwizard.play").read_text())
+
+def _spec(name, resolve=None):
+    text = resources.files(__package__).joinpath(f"specs/{name}.play").read_text()
+    return parse_spec(text, resolve)
+
+
+SPEC = _spec("sidwizard")
+SIMPLE_SPEC = _spec("sidwizard_simple", {"sidwizard": SPEC})
+
 
 # The voice's tick clock: ``ldy TMPPOS,x ; lda SPDCNT,x ; iny ; sec ; sbc TEMPOTBL,y ; beq ; bvc ;
 # ldy TMPSTART,x ; lda #0 ; sta SPDCNT,x ; tya ; sta TMPPOS,x ; lda SPDCNT,x ; inc SPDCNT,x ;
@@ -79,11 +88,9 @@ def clock_stop(view) -> int:
     return match.addr + (CLOCK if programs else CLOCK_SIMPLE).length - 4
 
 
-def binding(view) -> dict:
-    """The playspec layout of the SID-Wizard player in the 64 KiB ``view``."""
+def bind(view):
+    """The spec variant for the SID-Wizard player in the 64 KiB ``view`` and its layout."""
     found = dict(_row_reader(view).captures)
     match, programs = _clock(view)
-    found.update({"tmppos": 0, "tmpstart": 0, "tempotbl": 0, "tempo": 0})
     found.update(match.captures)
-    found["tempoprg"] = programs
-    return found
+    return (SPEC if programs else SIMPLE_SPEC), found

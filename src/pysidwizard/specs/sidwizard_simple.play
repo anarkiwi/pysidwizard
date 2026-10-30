@@ -1,0 +1,20 @@
+// SID-Wizard build without tempo programs: the clock compares against one tempo byte.
+spec sidwizard_simple extends sidwizard;
+
+layout { tempo: addr; }
+
+drop tempotbl;
+
+cell tempo_byte: u8 @ L.tempo;
+
+extend machine voice {
+  drop tmppos, tmpstart;
+  patch tick {
+    replace compare {
+      let diff = count - tempo_byte;
+      if diff == 0 || neg((count ^ tempo_byte) & (count ^ diff)) {
+        spdcnt := 0;
+      }
+    }
+  }
+}

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pysidwizard"
-version = "0.4.1"
+version = "0.5.0"
 description = "Pure-Python reader, writer, and player for SID-Wizard SWM modules"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,7 +33,7 @@ dependencies = [
     # registry (``SitePattern`` sites with provenance) and the ``locate()`` layout strategies.
     # 0.43 adds ``pysidtracker.playspec`` and whole-song oracle fixtures (no ``frames=``); 0.46
     # adds ``validate(stop=)``, which proves a spec routine against a stretch of a longer one.
-    "pysidtracker>=0.46.0",
+    "pysidtracker>=0.48.1",
 ]
 
 [project.optional-dependencies]
