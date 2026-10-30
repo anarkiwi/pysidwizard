@@ -18,6 +18,11 @@ CLOCK = CodePattern(
     "BC {tmppos:w} BD {spdcnt:w} C8 38 F9 {tempotbl:w} F0 07 50 0C BC {tmpstart:w} A9 00 "
     "9D {spdcnt:w} 98 9D {tmppos:w} BD {spdcnt:w} FE {spdcnt:w} C9 00 F0 03"
 )
+# The same clock in a build without tempo programs: one tempo byte, no TMPPOS.
+CLOCK_SIMPLE = CodePattern(
+    "BD {spdcnt:w} 38 ED {tempo:w} F0 04 50 05 A9 00 9D {spdcnt:w} BD {spdcnt:w} FE {spdcnt:w} "
+    "C9 00 F0 03"
+)
 # ``ldy PTNPOS,x ; lda NOPCNT,x ; bne ; lda (zp),y ; cmp #$70 ; bcc ; cmp #$78 ; bcs ;
 # sbc #$6d ; sta NOPCNT,x ; dec NOPCNT,x ; lda #0 ; cmp #0 ; bmi`, then the note, instrument,
 # effect and value columns, then ``tya ; sta PTNPOS,x``.
@@ -41,12 +46,16 @@ def _row_reader(view):
 
 
 def _clock(view):
-    """The tick clock of the player instance whose row reader is found: the nearest one."""
+    """The tick clock of the player instance whose row reader is found: the nearest one.
+
+    A build without tempo programs has the simpler clock; ``tempoprg`` says which.
+    """
     reader = _row_reader(view).addr
-    clocks = find_code_all(image(view), CLOCK)
-    if not clocks:
+    found = [(m, True) for m in find_code_all(image(view), CLOCK)]
+    found += [(m, False) for m in find_code_all(image(view), CLOCK_SIMPLE)]
+    if not found:
         raise ValueError("no SID-Wizard tick clock in the image")
-    return min(clocks, key=lambda match: abs(match.addr - reader))
+    return min(found, key=lambda hit: abs(hit[0].addr - reader))
 
 
 def row_reader(view) -> int:
@@ -60,18 +69,22 @@ def reader_end(view) -> int:
 
 
 def clock(view) -> int:
-    """The address of the tick clock: its ``LDY TMPPOS,X``."""
-    return _clock(view).addr
+    """The address of the tick clock: its first instruction."""
+    return _clock(view)[0].addr
 
 
 def clock_stop(view) -> int:
     """The clock's ``CMP #0``: where both its exits have written all they write."""
-    return _clock(view).addr + CLOCK.length - 4
+    match, programs = _clock(view)
+    return match.addr + (CLOCK if programs else CLOCK_SIMPLE).length - 4
 
 
 def binding(view) -> dict:
     """The playspec layout of the SID-Wizard player in the 64 KiB ``view``."""
     found = dict(_row_reader(view).captures)
     found["zp_ptn"] = found.pop("zp")
-    found.update(_clock(view).captures)
+    match, programs = _clock(view)
+    found.update({"tmppos": 0, "tmpstart": 0, "tempotbl": 0, "tempo": 0})
+    found.update(match.captures)
+    found["tempoprg"] = programs
     return found
