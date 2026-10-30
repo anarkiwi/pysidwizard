@@ -231,14 +231,13 @@ def _assert_proven(result, found: dict, label: str, routine: str, pc: int) -> No
 
 # The routine proofs in groups, by their labels' first word.
 GROUPS = {
-    "tables": ("CNTPLY1", "VIBSLIDE", "FILTPRG", "SETPWID", "WFARPTB"),
     "routines": (
+        "CNTPLY1",
         "SETVIB0",
         "SETVIB1",
         "SETVIBR",
         "SETFMOD",
         "FORCVIB",
-        "STRTSND",
         "SELNTFX",
         "SMALPFX",
         "BIGPTFX",
@@ -251,6 +250,8 @@ GROUPS = {
     "small": ("small",),
     "big": ("big",),
 }
+# The table and sound-start routines, whose proofs take minutes: oracle-marked.
+LONG_GROUPS = {"tables": ("VIBSLIDE", "FILTPRG", "SETPWID", "WFARPTB", "STRTSND")}
 # The exports whose routines are proven in the default suite: every build of the set.
 PROOF_EXPORTS = EXPORTS + ("kicksamule", "cloudlessr", "demo-example")
 
@@ -260,7 +261,7 @@ def _prove_group(view: bytes, group: str) -> int:
     found = playspec.binding(view)
     proven = 0
     for label, routine, pc, stop, cases in routines(found, view):
-        if label.split()[0] not in GROUPS[group]:
+        if label.split()[0] not in {**GROUPS, **LONG_GROUPS}[group]:
             continue
         for assume in cases:
             result = _prove(view, found, routine, pc, stop=stop, assume=assume)
@@ -347,7 +348,15 @@ def test_entries_are_the_players_play_and_multispeed_calls():
 
 
 @pytest.mark.oracle
-@pytest.mark.parametrize("group", GROUPS)
+@pytest.mark.parametrize("group", LONG_GROUPS)
+@pytest.mark.parametrize("name", PROOF_EXPORTS)
+def test_table_routines_are_proven_against_the_6502(name, group):
+    """The table and sound-start routines from their labels, on every build of the set."""
+    assert _prove_group(_view(_export(name)), group)
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize("group", {**GROUPS, **LONG_GROUPS})
 def test_every_routine_is_proven_for_every_oracle_tune(tune_path, group):  # noqa: F811
     """The routine proofs on every stated oracle tune's player."""
     assert _prove_group(_view(tune_path.read_bytes()), group)
