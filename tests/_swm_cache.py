@@ -272,7 +272,14 @@ P00_PAIR_NAMES: Tuple[str, ...] = tuple(P00_PAIR_MEMBERS.keys())
 SW18_7Z_URL = "https://csdb.dk/getinternalfile.php/168973/SID-Wizard-1.8.7z"
 SW18_7Z_SHA256 = "0eb81cae7df0507e9753b7cb5f7d2edd121f83c91e4d5133317e9dbc0878355e"
 
+# The SID-Wizard 1.96 release (csdb 262356): its echo SID-Maker made echo-test.sid.
+SW196_TARBALL_URL = (
+    "https://csdb.dk/getinternalfile.php/280806/SID-Wizard-1.96-sources-examples.tar.gz"
+)
+SW196_TARBALL_SHA256 = "da831c985907a7116110f6696965fed05d6ddb2459b51b8b1befcfdf1ace1eab"
+
 SW194 = (TARBALL_URL, TARBALL_SHA256)
+SW196 = (SW196_TARBALL_URL, SW196_TARBALL_SHA256)
 SW18 = (SW18_7Z_URL, SW18_7Z_SHA256)
 SW197 = (SW197_TARBALL_URL, SW197_TARBALL_SHA256)
 SW17 = (SW17_ZIP_URL, SW17_ZIP_SHA256)

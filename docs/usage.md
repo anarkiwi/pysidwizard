@@ -135,7 +135,7 @@ content, not bytes.
 ## Export an SWM to a SID
 
 `pysidwizard.sidmaker` runs SID-Wizard's own exporter (SID-Maker 1.7, 1.8, 1.94 or
-1.97, shipped as package data) on the 6502 and returns the `.sid` it saves: PAL,
+1.97, and the 1.96/1.97 echo builds, shipped as package data) on the 6502 and returns the `.sid` it saves: PAL,
 default relocation, the module's own driver type and subtunes.
 
 ```python
@@ -145,11 +145,14 @@ data = open("tune.swm", "rb").read()
 sid = sidmaker.export(data)                   # SID-Maker 1.97, 8580 in the header
 image = sidmaker.tune(data, "1.8")            # a pysidtracker SidImage of the export
 session = sidmaker.SidMaker("1.8")            # successive exports share its memory
+echo = sidmaker.export(data, "1.96", "6581", echo=True)  # SID-Maker-echo's RSID
 ```
 
 `scripts/build_sidmaker.py` rebuilds the binaries from each release's sources and
 proves each is the release's own SID-Maker. The 1.94/1.97 example `.sid` exports are
-the 1.8 release's files; SID-Maker 1.8 reproduces them byte for byte.
+the 1.8 release's files; SID-Maker 1.8 reproduces them byte for byte. The 1.96 echo
+build reproduces echo-test.sid except its "released" text, the host clock the Linux
+SID-Maker writes into its fake KERNAL.
 
 ## Play an SWM
 
