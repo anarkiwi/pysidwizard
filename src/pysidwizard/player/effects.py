@@ -391,8 +391,10 @@ class Effects:
                 decay = v.decay_override if v.decay_override is not None else ins.decay
                 sustain = v.sustain_override if v.sustain_override is not None else ins.sustain
                 release = v.release_override if v.release_override is not None else ins.release
-                v.sid_ad = ((attack & 0xF) << 4) | (decay & 0xF)
-                v.sid_sr = ((sustain & 0xF) << 4) | (release & 0xF)
+                if high in (0x20, 0x30):
+                    v.sid_ad = ((attack & 0xF) << 4) | (decay & 0xF)
+                else:
+                    v.sid_sr = ((sustain & 0xF) << 4) | (release & 0xF)
                 v.adsr_emit_required = True
         elif high == 0x40:
             # SMALFX4 (player.asm:3298) merges the value nibble into WFGHOST's high nibble.

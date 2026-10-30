@@ -1985,3 +1985,14 @@ def test_a_spare_slot_with_a_zero_row_walks_it_as_the_wf_table():
     assert {tuple(row[:2]) for row in grid[SETUP_FRAMES + HR_FRAMES + 1 :]} == {
         (NOTE_FREQ_LO[49], NOTE_FREQ_HI[49])
     }
+
+
+def test_a_release_small_fx_leaves_the_attack_decay_a_write_ad_fx_set():
+    """SMALFX6 merges into SR only, so BIGFX05's AD value is not put back to the instrument's."""
+    p = SWMPlayer(_toy_swm())
+    for _ in range(SETUP_FRAMES + HR_FRAMES + 1):
+        p.play_frame()
+    v = p.voices[0]
+    p._apply_fx_columns(v, None, 0x05, 0x27, False)  # pylint: disable=protected-access
+    p._apply_fx_columns(v, None, 0x6C, None, False)  # pylint: disable=protected-access
+    assert v.sid_ad == 0x27 and v.sid_sr & 0x0F == 0x0C
