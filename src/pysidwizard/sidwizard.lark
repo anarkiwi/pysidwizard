@@ -1,13 +1,14 @@
 // Streams the SID-Wizard player reads, one latin-1 character per byte.
 // Each start rule is one stream kind; _TAIL is whatever is stored after the
 // terminator, which the player never reads through that stream's pointer.
+// A terminal names what the player does with the byte it matches.
 %import bytes (BYTE, _TAIL)
 
 // Orderlist: pattern numbers and per-channel commands, then $FE (end) or
 // $FF + a loop position (< $80) or a subtune jump byte (>= $80).
 sequence: _seq_cmd* _seq_end _TAIL?
 _seq_cmd: PLAY | TRANSPOSE | MAINVOL | TEMPO | NOP
-_seq_end: SEQ_END | SEQ_LOOP SEQ_TARGET
+_seq_end: SEQ_END | SEQ_LOOP (LOOP_POSITION | SUBTUNE_JUMP)
 PLAY: /[\x00-\x7f]/
 TRANSPOSE: /[\x80-\x9f]/
 MAINVOL: /[\xa0-\xaf]/
@@ -15,62 +16,128 @@ TEMPO: /[\xb0-\xef]/
 NOP: /[\xf0-\xfd]/
 SEQ_END: /\xfe/
 SEQ_LOOP: /\xff/
-SEQ_TARGET: BYTE
+LOOP_POSITION: /[\x00-\x7f]/
+SUBTUNE_JUMP: /[\x80-\xff]/
 
 // Pattern, NOP-packed: a row is a note byte, with bit 7 set when an
-// instrument byte follows, which has bit 7 set when an effect byte follows;
-// an effect below $20 takes a value byte. A $70..$77 byte after a zero or
-// another $70..$77 byte is a run of 2..9 further zero rows (the lexer's
-// PACK, see pysidwizard.grammar). $FF ends the pattern.
+// instrument byte follows (the postlexer's _INST tag), which has bit 7 set
+// when an effect byte follows (_FX); an effect below $20 takes a value byte.
+// A $70..$77 byte after a zero or another $70..$77 byte is a run of 2..9
+// further zero rows (the postlexer's PACK, see pysidwizard.grammar). $FF ends
+// the pattern.
 pattern: (row | PACK)* PTN_END _TAIL?
-row: NOTE -> note_row
-   | ZERO -> empty_row
-   | NOTE_NEXT inst -> inst_row
-inst: INST_NZ -> inst_only
-    | ZERO -> inst_zero
-    | INST_NEXT fx -> inst_fx
-fx: FX_SMALL -> fx_small
-  | FX_BIG val -> fx_big
-  | FX_ZERO val0 -> fx_zero
-val: VAL_NZ -> val_nz
-   | ZERO -> val_zero
-val0: VAL_NZ -> val_nz
-    | ZERO -> val_zero
-    | PACK PACK* -> val_packed
-ZERO: /\x00/
-NOTE: /[\x01-\x7f]/
-NOTE_NEXT: /[\x80-\xfe]/
-INST_NZ: /[\x01-\x7f]/
-INST_NEXT: /[\x80-\xff]/
-FX_ZERO: /\x00/
-FX_BIG: /[\x01-\x1f]/
-FX_SMALL: /[\x20-\xff]/
-VAL_NZ: /[\x01-\xff]/
+row: _note (_INST _inst (_FX _fx)?)?
+_note: EMPTY | NOTE | VIBRATO_AMP | PORTAMENTO | SYNC_ON | SYNC_OFF
+     | RING_ON | RING_OFF | GATE_ON | GATE_OFF | NOTE_FX
+_inst: NO_INST | INSTRUMENT | LEGATO | INST_FX
+_fx: SMALL_FX | BIG_FX VALUE | NO_FX (VALUE | PACK)
+%declare _INST _FX
+EMPTY: /[\x00\x80]/
+NOTE: /[\x01-\x5f\x81-\xdf]/
+VIBRATO_AMP: /[\x60-\x77\xe0-\xf7]/
+PORTAMENTO: /[\x78\xf8]/
+SYNC_ON: /[\x79\xf9]/
+SYNC_OFF: /[\x7a\xfa]/
+RING_ON: /[\x7b\xfb]/
+RING_OFF: /[\x7c\xfc]/
+GATE_ON: /[\x7d\xfd]/
+GATE_OFF: /[\x7e\xfe]/
+NOTE_FX: /\x7f/
+NO_INST: /[\x00\x80]/
+INSTRUMENT: /[\x01-\x3e\x81-\xbe]/
+LEGATO: /[\x3f\xbf]/
+INST_FX: /[\x40-\x7f\xc0-\xff]/
+NO_FX: /\x00/
+BIG_FX: /[\x01-\x1f]/
+SMALL_FX: /[\x20-\xff]/
+VALUE: BYTE
 PACK.-1: /[\x70-\x77]/
 PTN_END: /\xff/
 
-// Instrument: a 16-byte header, then the waveform, pulse and filter tables.
-// A table row is three bytes (a $FE jump row is $FE, its target, a pad byte)
-// and $FF ends the table.
+// Instrument: the 16-byte header, then the waveform, pulse and filter tables
+// of three-byte rows, each ended by $FF. Each table read alone from its start
+// is its *_table rule. The header's pointers locate the PW
+// and filter tables; the gate-off positions are table offsets or 0 for none.
 instrument: header wf pw filt _TAIL?
-header: BYTE~16
-wf: tab_row* TAB_END -> table
-pw: tab_row* TAB_END -> table
-filt: tab_row* TAB_END -> table
-tab_row: TAB_ROW BYTE BYTE
-TAB_ROW: /[\x00-\xfe]/
+header: CONTROL HR_AD HR_SR AD SR VIBRATO VIBRATO_DELAY ARP_SPEED DEFAULT_CHORD _pointers
+_pointers: OCTAVE_SHIFT PW_TABLE_PTR FILTER_TABLE_PTR GATEOFF_WF GATEOFF_PW GATEOFF_FILT FIRST_WAVEFORM
+CONTROL: BYTE
+HR_AD: BYTE
+HR_SR: BYTE
+AD: BYTE
+SR: BYTE
+VIBRATO: BYTE
+VIBRATO_DELAY: BYTE
+ARP_SPEED: BYTE
+DEFAULT_CHORD: BYTE
+OCTAVE_SHIFT: BYTE
+PW_TABLE_PTR: BYTE
+FILTER_TABLE_PTR: BYTE
+GATEOFF_WF: BYTE
+GATEOFF_PW: BYTE
+GATEOFF_FILT: BYTE
+FIRST_WAVEFORM: BYTE
+
+// WF/arpeggio table: a waveform or a repeat count, the pitch (relative,
+// $7F the chord, $80 kept, absolute), the detune ($FF kept).
+wf: _wf_rows TAB_END
+wf_table: _wf_rows TAB_END _TAIL?
+_wf_rows: (wave_row | repeat_row | wf_jump)*
+wave_row: WAVEFORM _pitch _detune
+repeat_row: REPEAT _pitch _detune
+_pitch: PITCH_UP | CHORD | KEEP_PITCH | ABS_PITCH | PITCH_DOWN
+_detune: DETUNE | KEEP_DETUNE
+REPEAT: /[\x00-\x0f]/
+WAVEFORM: /[\x10-\xfd]/
+PITCH_UP: /[\x00-\x7e]/
+CHORD: /\x7f/
+KEEP_PITCH: /\x80/
+ABS_PITCH: /[\x81-\xdf]/
+PITCH_DOWN: /[\xe0-\xff]/
+DETUNE: /[\x00-\xfe]/
+KEEP_DETUNE: /\xff/
+
+// Pulse and filter tables: a sweep for that many frames by a signed step, or
+// a set (pulse width; band, resonance and cutoff), then the keyboard track.
+pw: _pw_rows TAB_END
+filt: _filter_rows TAB_END
+pw_table: _pw_rows TAB_END _TAIL?
+filter_table: _filter_rows TAB_END _TAIL?
+_pw_rows: (pulse_sweep | pulse_set | pw_jump)*
+_filter_rows: (filter_sweep | filter_set | filter_jump)*
+pulse_sweep: SWEEP STEP KEYTRACK
+pulse_set: PULSE PULSE_LOW KEYTRACK
+filter_sweep: SWEEP STEP KEYTRACK
+filter_set: FILTER CUTOFF KEYTRACK
+SWEEP: /[\x00-\x7f]/
+PULSE: /[\x80-\xfd]/
+FILTER: /[\x80-\xfd]/
+STEP: BYTE
+PULSE_LOW: BYTE
+CUTOFF: BYTE
+KEYTRACK: BYTE
+
+// Any table's jump row: $FE, the target offset from the instrument's base, a
+// pad byte. One rule per table keeps each table's lookahead its own.
+wf_jump: TAB_JUMP TARGET PAD -> table_jump
+pw_jump: TAB_JUMP TARGET PAD -> table_jump
+filter_jump: TAB_JUMP TARGET PAD -> table_jump
+TAB_JUMP: /\xfe/
+TARGET: BYTE
+PAD: BYTE
 TAB_END: /\xff/
 
-// Chord table: chords back to back, each ending $7E (return to the waveform
-// table) or $7F (loop).
+// Chord table: chords back to back, each signed semitone intervals ending $7E
+// (return to the waveform table) or $7F (loop).
 chords: chord*
-chord: CHORD_NOTE* CHORD_END
-CHORD_NOTE: /[^\x7e\x7f]/
-CHORD_END: /[\x7e\x7f]/
+chord: INTERVAL* (CHORD_RETURN | CHORD_LOOP)
+INTERVAL: /[^\x7e\x7f]/
+CHORD_RETURN: /\x7e/
+CHORD_LOOP: /\x7f/
 
-// Tempo table: programs back to back, each a run of bytes below $80 closed by
-// one with bit 7 set.
-tempos: program*
-program: TEMPO_STEP* TEMPO_LAST
+// Tempo table: programs back to back, each a run of tick counts below $80
+// closed by one with bit 7 set.
+tempos: tempo_program*
+tempo_program: TEMPO_STEP* TEMPO_LAST
 TEMPO_STEP: /[\x00-\x7f]/
 TEMPO_LAST: /[\x80-\xff]/
