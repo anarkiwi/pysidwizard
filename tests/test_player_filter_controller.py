@@ -329,3 +329,22 @@ def test_jump_to_an_ff_row_is_taken_as_a_set_row():
     p.play_frame()
     assert (p.filter_cutoff_hi, p.filter_resonance, p.filter_mode_vol & 0x70) == (0x55, 0xF0, 0x70)
     assert p.filt_pos == start + 9
+
+
+def test_a_filter_row_jumping_to_itself_changes_nothing():
+    """FLTJUMP compares the target with FLTPOSI first (``cmp FLTPOSI ; beq``): a self-jump rests."""
+    swm = _swap_swm()
+    ins = swm.instruments[0]
+    p = SWMPlayer(swm)
+    start = p._filt_table_start(ins)
+    ins.filter_table = bytes([0x90, 0x20, 0x00, 0xFE, start + 3, 0x00])
+    p = SWMPlayer(swm)
+    for _ in range(SETUP_FRAMES + 1):
+        p.play_frame()
+    p.filt_pos = start + 3
+    before = (p.filter_cutoff_hi, p.filter_resonance, p.filter_mode_vol)
+    p.play_frame()
+    assert (p.filt_pos, (p.filter_cutoff_hi, p.filter_resonance, p.filter_mode_vol)) == (
+        start + 3,
+        before,
+    )

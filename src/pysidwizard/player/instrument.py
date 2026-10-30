@@ -379,7 +379,7 @@ class InstrumentTables:
                     return
                 if byte0 == FILT_TABLE_JUMP:
                     target = table[pos + 1] if pos + 1 < len(table) else 0
-                    if target >= len(table):
+                    if target >= len(table) or target == pos:
                         return
                     self.filt_pos = target
                     # FLTJUMP (player.asm ~1802): a sweep target (< $80) only
