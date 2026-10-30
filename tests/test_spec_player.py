@@ -23,17 +23,7 @@ from tests._toy import assert_6502, note_word, toy_swm
 FRAMES = 60
 DRIVERS = range(6)
 BUILDS = [
-    (
-        pytest.param(
-            version,
-            driver,
-            marks=pytest.mark.xfail(
-                strict=True, raises=ValueError, reason="binder: build not bound"
-            ),
-        )
-        if (version, driver) == ("1.7", 1) or (version != "1.7" and driver == 2)
-        else (version, driver)
-    )
+    (version, driver)
     for version in sidmaker.VERSIONS
     for driver in DRIVERS
     if (version, driver) != ("1.7", 5)

@@ -337,8 +337,8 @@ def test_filt_ctrl_fx_off_makes_big_fx_1f_a_bare_rts():
 
 
 def _light(swm: SWMFile) -> SWMFile:
-    """``swm`` exported as SID-Maker 1.7's Light build."""
-    swm.driver_type, swm.player_version = 2, "1.7"
+    """``swm`` exported as the Light build."""
+    swm.driver_type = 2
     return swm
 
 
