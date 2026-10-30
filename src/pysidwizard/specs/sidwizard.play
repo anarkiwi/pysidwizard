@@ -4,8 +4,7 @@ spec sidwizard;
 
 layout {
   zp_note, zp_inst, zp_fx, zp_value, ptnpos, nopcnt, curnote, curifx, curifx_long, curfx,
-  fxval, spdcnt, tmppos, tmpstart, tempotbl, tempo: addr;
-  tempoprg: flag;
+  fxval, spdcnt, tmppos, tmpstart, tempotbl: addr;
 }
 
 const RUN_MIN = 0x70;
@@ -23,9 +22,6 @@ cell zp_value: u16 @ L.zp_value;
 // The tempo program the voices' clocks step through: one byte per tick count, the
 // last of a program having bit 7 set.
 cell tempotbl: u8[256] @ L.tempotbl ro;
-
-// Without tempo programs the clock compares against one byte.
-cell tempo_byte: u8 @ L.tempo;
 
 machine voice[x in 0..3] {
   // Per-voice variables sit seven bytes apart.
@@ -53,12 +49,11 @@ machine voice[x in 0..3] {
   // The voice's tick counter against the tempo program: SPDCNT counts up from zero
   // and starts over when it equals the tempo byte TMPPOS selects, which then moves
   // on. A signed overflow in the compare (a counter far past a tempo byte with
-  // bit 7 set) sends TMPPOS back to the program's start, TMPSTART. A build without
-  // tempo programs compares against one byte. A tick whose counter was zero starts
+  // bit 7 set) sends TMPPOS back to the program's start, TMPSTART. A tick whose counter was zero starts
   // a row.
   proc tick() {
     let count = spdcnt;
-    if L.tempoprg {
+    compare: {
       let next_pos = tmppos + 1;
       let tempo = tempotbl[next_pos];
       let diff = count - tempo;
@@ -68,11 +63,6 @@ machine voice[x in 0..3] {
       } elif neg((count ^ tempo) & (count ^ diff)) {
         spdcnt := 0;
         tmppos := tmpstart;
-      }
-    } else {
-      let diff = count - tempo_byte;
-      if diff == 0 || neg((count ^ tempo_byte) & (count ^ diff)) {
-        spdcnt := 0;
       }
     }
     row := spdcnt == 0;
