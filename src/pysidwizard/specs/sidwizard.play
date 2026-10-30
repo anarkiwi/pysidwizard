@@ -26,7 +26,7 @@ layout {
   transposesupp, octaveshift, chordsupport, calcvibrato, vibratotypes, detunesupport,
   portavibra, arpspeedsupp, portame_notefx, gateoffptr, filtresetsw, filtkbtrack,
   pwresetsw, pwkeybtrack, wfarp_nop_supp, finefiltsweep, hardrestypes, frame1switch,
-  tempoprgsupp, fastspeedbind, delaysupport, subtunejump, subtunesupport,
+  tempoprgsupp, fastspeedbind, delaysupport, subtunejump,
   multispeedsupp, allghostregs, retainzeropage, filteralways, pulsealways,
   vibslidealways, filt_ctrl_fx, filtshift_supp, seq_fx_support, vibfreqfx_supp,
   filter_smallfx, detune_smallfx, wfctrl_smallfx,
@@ -161,6 +161,12 @@ cell sid_fcut_hi: u8 @ L.sid + 0x16 out;
 // A hand-edited PLAYER entry toggles its own immediate and returns on alternate calls.
 cell gate: u8 @ L.gate operand;
 
+// An SFX build's sound-effect state: its length, its timer, and the music's instrument
+// it keeps while it plays.
+cell sfxleng: u8 @ L.sfxleng;
+cell sfxtimer: u8 @ L.sfxtimer;
+cell curinstemp: u8 @ L.curinstemp;
+
 // The play call's entry: the gate of a hand-edited player, then the zero-page pointer
 // the call restores on return.
 machine play {
@@ -240,6 +246,9 @@ machine voice[x in 0..L.chn] {
   signal ticks: u8 = 0;
 
   step {
+    if L.sfx && x == 2 && !L.mulply {
+      sfx();
+    }
     if L.mulply {
       let cin = cpu.c;
       for p in L.order {
@@ -251,6 +260,24 @@ machine voice[x in 0..L.chn] {
     } else {
       dotrack();
     }
+  }
+
+  // An SFX build's sound effect on the third voice: SFXinit sets SFXTIMER to SFXLENG,
+  // whose first frame starts the note, and the timer counts down to 0, whose frame
+  // gives back the music's instrument and silences the voice for its next note.
+  proc sfx() {
+    let t = sfxtimer;
+    if t == 0 {
+      curins := curinstemp;
+      mem[L.sid + 0x13] := 0;
+      mem[L.sid + 0x14] := 0;
+      mem[L.sid + 0x12] := 0;
+    } elif neg(t) {
+      return;
+    } elif t == sfxleng {
+      chknote(cpu.y);
+    }
+    sfxtimer -= 1;
   }
 
   // DOTRACK: the tick clock picks the voice's work for this tick.
@@ -303,8 +330,8 @@ machine voice[x in 0..L.chn] {
   // control byte bit 1 asks), or at a tempo below 2 the orderlist step.
   proc tick_0() {
     let p = curptn;
-    let c_ptnl1 = point_lo(ptnl1[p]);
-    let a_ptnl1 = point_hi(ptnh1[p], c_ptnl1);
+    let carry_lo = point_lo(ptnl1[p]);
+    let ptr = point_hi(ptnh1[p], carry_lo);
     curifx := 0;
     curfx2 := 0;
     if L.seq_fx_support {
@@ -318,6 +345,19 @@ machine voice[x in 0..L.chn] {
       }
     }
     read_row();
+    if L.sfx && x == 2 && !neg(sfxtimer) {
+      curfx2 := 0;
+      curnot := 0;
+      let y = curifx;
+      if y != 0 {
+        if y < LEGATO {
+          curinstemp := y;
+        }
+        curifx := 0;
+        hrender(y >= LEGATO);
+        return;
+      }
+    }
     if L.fastspeedbind {
       if neg((tmpt2[tmppos] & 0x7F) - 2) {
         ptn_seq();
@@ -373,8 +413,8 @@ machine voice[x in 0..L.chn] {
   // TICK_1: the pattern's pointer again, then the pattern and orderlist step.
   proc tick_1() {
     let p = curptn;
-    let c_ptnl2 = point_lo(ptnl2[p]);
-    let a_ptnl2 = point_hi(ptnh2[p], c_ptnl2);
+    let carry_lo = point_lo(ptnl2[p]);
+    let ptr = point_hi(ptnh2[p], carry_lo);
     ptn_seq();
   }
 
@@ -510,8 +550,8 @@ machine voice[x in 0..L.chn] {
       } else {
         y := curins;
       }
-      let c_insl2 = point_lo(insl2[y]);
-      let a_insl2 = point_hi(insh2[y], c_insl2);
+      let carry_lo = point_lo(insl2[y]);
+      let ptr = point_hi(insh2[y], carry_lo);
       if ind(L.zp, 0) & timer == 0 {
         hrender(c);
         return;
@@ -598,6 +638,11 @@ machine voice[x in 0..L.chn] {
       curins := a;
       y := 0x3F;
     }
+    chknote(y);
+  }
+
+  // CHKNOTE: Y is TABLRST's mask (the PW and filter reset-off bits it keeps).
+  proc chknote(y: u8) {
     if L.pwresetsw || L.filtresetsw {
       tablrst := y;
     }
@@ -606,8 +651,8 @@ machine voice[x in 0..L.chn] {
       legatoo();
       return;
     }
-    let c_insl4 = point_lo(insl4[ins]);
-    let a_insl4 = point_hi(insh4[ins], c_insl4);
+    let carry_lo = point_lo(insl4[ins]);
+    let ptr = point_hi(insh4[ins], carry_lo);
     let note = curnot;
     if note == 0 {
       insptfx();
@@ -744,13 +789,16 @@ machine voice[x in 0..L.chn] {
 
   // CNTPLAY: with an instrument selected, its pointer, then CNTPLY2.
   proc cntplay() {
-    let y = curins;
-    if y == 0 {
+    if curins == 0 {
       return;
     }
-    let c_insl5 = point_lo(insl5[y]);
-    let a_insl5 = point_hi(insh5[y], c_insl5);
+    cntply1(curins);
     cntply2();
+  }
+
+  proc cntply1(y: u8) {
+    let c = point_lo(insl5[y]);
+    let ptr = point_hi(insh5[y], c);
   }
 
   // CNTPLY2: vibrato and slides, then the filter, PW and waveform tables.
@@ -1033,6 +1081,11 @@ machine voice[x in 0..L.chn] {
     }
     sidg_pwlo := pwlogho;
     return c;
+  }
+
+  // SETPWID up to WFARPTB.
+  proc pw_table() {
+    let c = setpwid();
   }
 
   proc sepwpos(y: u8) {
@@ -1331,7 +1384,8 @@ machine voice[x in 0..L.chn] {
       return;
     }
     bigptfx(fx);
-    bigfx(fx, curval);
+    let v = curval;
+    bigfx(fx, v, v == 0);
   }
 
   // BIGPTFX: the big effect's address from BIGFXTABLE into INDEXJP's JMP.
@@ -1465,8 +1519,9 @@ machine voice[x in 0..L.chn] {
 
   // A big effect with its value: slides, portamento, register values, vibrato,
   // table positions, chord, arp speed, detune, pulse width, cutoff, tempos, vibrato
-  // type, filter shift, delays, and filter switch/resonance.
-  proc bigfx(n: u8, a: u8) {
+  // type, filter shift, delays, and filter switch/resonance; ``z`` is the zero flag the
+  // value's load leaves, which the tempo program effects test.
+  proc bigfx(n: u8, a: u8, z: bool) {
     if n == 1 {
       slidevib := SLIDE_UP;
       setfmod(a, a == 0);
@@ -1517,7 +1572,7 @@ machine voice[x in 0..L.chn] {
         maintmp(a >> 4);
       }
     } elif n == 0x12 {
-      if L.tempoprgsupp && a != 0 {
+      if L.tempoprgsupp && !z {
         maintm2(tmpp1[a]);
       }
     } elif n == 0x13 {
@@ -1530,7 +1585,7 @@ machine voice[x in 0..L.chn] {
         tmpt9[y] := (a & 0x0F) | 0x80;
       }
     } elif n == 0x15 {
-      if L.tempoprgsupp && a != 0 {
+      if L.tempoprgsupp && !z {
         trktmp3(tmpp2[a]);
       }
     } elif n == 0x16 {
@@ -1613,10 +1668,6 @@ machine voice[x in 0..L.chn] {
     let out = wfarptb(cpu.a, cpu.c);
   }
 
-  proc pw_table() {
-    let c = setpwid();
-  }
-
   proc at_mulcntp() {
     let out = mulcntp(cpu.c);
   }
@@ -1666,7 +1717,11 @@ machine voice[x in 0..L.chn] {
   }
 
   proc at_big_effect() {
-    bigfx(curfx2, cpu.a);
+    bigfx(curfx2, cpu.a, cpu.z);
+  }
+
+  proc at_cntply1() {
+    cntply1(cpu.y);
   }
 }
 

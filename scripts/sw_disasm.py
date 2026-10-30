@@ -16,6 +16,7 @@ def _addr(text: str) -> int:
 
 
 def main(argv=None) -> None:
+    """Parse ``argv`` and run."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tune", type=Path)
     parser.add_argument("start", type=_addr, nargs="?")

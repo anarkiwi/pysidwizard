@@ -16,8 +16,8 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import sw_bind_census  # noqa: E402
-import sw_spec_diff  # noqa: E402
+import sw_bind_census  # noqa: E402  # pylint: disable=wrong-import-position
+import sw_spec_diff  # noqa: E402  # pylint: disable=wrong-import-position
 
 for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
     os.environ.setdefault(_var, "2")
@@ -51,6 +51,7 @@ def run(name: str, path: Path, frames) -> str:
 
 
 def main(argv=None) -> None:
+    """Parse ``argv`` and run."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tunes", nargs="*", type=Path)
     parser.add_argument("--frames", type=int)

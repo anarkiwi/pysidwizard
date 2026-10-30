@@ -151,14 +151,12 @@ class _Scan:
         unknown = sorted({n for n in _ALT_NAME.findall(text) if self.flags[n] is None})
         for values in itertools.product((True, False), repeat=len(unknown)):
             choice = dict(zip(unknown, values, strict=True))
-
-            def pick(m, choice=choice):
-                on = choice.get(m.group(1), self.flags[m.group(1)])
-                return m.group(2) if on else m.group(3) or ""
-
+            flags = {**self.flags, **choice}
             body = text
             while _ALT.search(body):
-                body = _ALT.sub(pick, body)
+                body = _ALT.sub(
+                    lambda m, f=flags: m.group(2) if f[m.group(1)] else m.group(3) or "", body
+                )
             yield choice, body
 
     def match(self, routine: str, addr: int, text: str) -> Optional[int]:
@@ -221,7 +219,7 @@ def _commonregs(scan: _Scan, addr: int) -> None:
     ghost = 20 if scan.flags["allghostregs"] else 0
     if scan.match("an ECHO build", addr + ghost + 9, "09 ?? 18") is not None:
         raise ValueError("SID-Wizard echo builds (ECHO_SUPPORT) are not stated by the spec")
-    scan.at(
+    at = scan.at(
         "COMMONREGS",
         addr,
         "<allghostregs: A2 0E 38 BD {sidg_sr:w} 9D {sid_sr:w} BD ?? ?? 9D ?? ?? BD {sidg:w} "
@@ -231,8 +229,10 @@ def _commonregs(scan: _Scan, addr: int) -> None:
         "7D {dpitch:w} A8 B9 {exptabh:w} 69 {at_ctfhgho} | A9 {at_ctfhgho} > "
         "<filtshift_supp: 69 {at_flshift} |> 8D {sid_fcut_hi:w} "
         "<finefiltsweep: A9 {at_ctflgho} 8D {sid_fcut_lo:w} |> "
-        "<retainzeropage: 68 85 ?? 68 85 {zp} |> 60",
+        "",
     )
+    scan.put("RETPLAY", "retplay", at)
+    scan.at("RETPLAY", at, "<retainzeropage: 68 85 ?? 68 85 {zp} |> 60")
 
 
 def _mulply(scan: _Scan, entry: int) -> None:
@@ -322,6 +322,7 @@ def _hardrst(scan: _Scan, at: int) -> None:
 
 def _tick_2(scan: _Scan, at: int) -> None:
     """TICK_2 to SETADSR (1736-2056)."""
+    scan.put("TICK_2", "chknote", at + (16 if scan.flags["tablereset"] else 12))
     scan.at(
         "TICK_2",
         at,
@@ -630,6 +631,22 @@ def _effects(scan: _Scan) -> None:
         scan.at("TRAKTMP", scan.found["traktmp"], "09 80 BC {trktmpos:w} 99 {p_tmpt8:w}")
 
 
+def _sfx(found: dict) -> None:
+    """An SFX build's channel-3 parts: SFX_HR silences voice 3 on the chip itself."""
+    sid = found["sid_resfc"] - 0x17
+    voice3 = {
+        "curins_v2": "curins",
+        "curnot_v2": "curnot",
+        "curfx2_v2": "curfx2",
+        "curifx_v2": "curifx",
+    }
+    regs = {"sfx_ad": sid + 0x13, "sfx_sr": sid + 0x14, "sfx_wave": sid + 0x12}
+    if any(found[k] != found[v] + 14 for k, v in voice3.items()) or any(
+        found[k] != v for k, v in regs.items()
+    ):
+        raise ValueError("SID-Wizard SFX code does not address the third voice")
+
+
 def _vars(found: dict, flags: dict) -> None:
     """Every per-voice variable laid out from VARIABLES, and CONST_VAR's bunch."""
     present = {
@@ -729,6 +746,25 @@ def _hrender_exit(found: dict, flags: dict) -> None:
         flags[flag] = flag in exits
 
 
+def _scan(scan: _Scan, player: int, commonregs: int, mulply: Optional[int]) -> dict:
+    """Every routine from PLAYER (and MULPLY) on, and the play gate in front of PLAYER."""
+    scan.put("PLAYER", "player", player)
+    scan.at("PLAYER", player, _PLAYER)
+    if scan.flags["sfx"]:
+        scan.at("SFX_HR", scan.found["sfx_hr"], "8D {sfx_ad:w} 8D {sfx_sr:w} 8D {sfx_wave:w} 60")
+    scan.put("PLAYER", "commonregs", commonregs)
+    _commonregs(scan, commonregs)
+    if mulply is not None:
+        _mulply(scan, mulply)
+    gate = _gate(scan.view, player) or {"gate": 0, "gate_mask": 0, "gate_minus": False}
+    scan.found.update({k: gate[k] for k in ("gate", "gate_mask", "gate_minus")})
+    _dotrack(scan)
+    _cntplay(scan)
+    _subroutines(scan)
+    _effects(scan)
+    return scan.found
+
+
 def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) -> dict:
     """The playspec layout of the player whose PLAYER or MULPLY is ``entry`` (default: the
     first PLAYER) in the 64 KiB ``view``, for ``variant`` ``(features, quirks)`` (default:
@@ -744,23 +780,12 @@ def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) 
     play_entry, player, commonregs, mulply = found_entries[0]
     features, quirks = variant or detect(view, player)
     flags = _flags(features, quirks)
-    scan = _Scan(view, flags)
-    scan.put("PLAYER", "player", player)
-    scan.at("PLAYER", player, _PLAYER)
-    scan.put("PLAYER", "commonregs", commonregs)
-    _commonregs(scan, commonregs)
-    if mulply is not None:
-        _mulply(scan, mulply)
-    gate = _gate(view, player) or {"gate": 0, "gate_mask": 0, "gate_minus": False}
-    scan.found.update({k: gate[k] for k in ("gate", "gate_mask", "gate_minus")})
+    found = _scan(_Scan(view, flags), player, commonregs, mulply)
     flags["play_gate"] = play_entry != player and entry in (None, play_entry)
-    _dotrack(scan)
-    _cntplay(scan)
-    _subroutines(scan)
-    _effects(scan)
-    found = scan.found
     _hrender_exit(found, flags)
     _vars(found, flags)
+    if flags["sfx"]:
+        _sfx(found)
     found["sid"] = found["sid_resfc"] - 0x17
     if not flags["allghostregs"]:
         found["sidg"] = found["sid"]

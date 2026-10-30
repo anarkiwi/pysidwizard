@@ -1,5 +1,7 @@
 """The SID-Wizard playspec against the tune's own 6502: routine proofs and whole songs."""
 
+# pylint: disable=redefined-outer-name
+
 import json
 import random
 import sys
@@ -21,7 +23,7 @@ from tests.test_oracle import TUNES
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-import sw_spec_diff  # noqa: E402  (after sys.path tweak)
+import sw_spec_diff  # noqa: E402  # pylint: disable=wrong-import-position,wrong-import-order
 
 EXPORTS = ("bronkosaurus", "euphoria", "flashitback", "glacialblues")
 _SID_EXPORTS = "native/examples/sid-exports/"
@@ -103,60 +105,94 @@ def _word(view: bytes, at: int) -> int:
     return view[at] | view[at + 1] << 8
 
 
-def routines(found: dict, view: bytes):
-    """``(label, routine, pc, stop, assumptions)`` of each routine of the spec that is a
-    routine of the player: from its label, inputs in registers or, for a dispatched
-    effect, the effect its column names; a stretch stops where a dispatch takes over."""
-    out = [
-        ("CNTPLAY", "cntplay", found["cntplay"], None, ()),
-        ("CNTPLY2", "cntply2", found["cntply2"], None, ()),
-        ("FILTPRG", "filtprg_chain", found["filtprg"], None, ()),
-        ("SETPWID", "setpwid_chain", found["setpwid"], None, ()),
-        ("WFARPTB", "at_wfarptb", found["wfarptb"], None, ()),
-        ("HARDRST", "at_hardrst", found["hardrst"], None, ()),
-        ("SETVIB0", "setvib0", found["setvib0"], None, ()),
-        ("SETVIB1", "setvib1", found["setvib1"], None, ()),
-        ("SETVIBR", "at_setvibr", found["setvibr"], None, ()),
-        ("SETFMOD", "at_setfmod", found["setfmod"], None, ()),
-        ("FORCVIB", "forcvib", found["forcvib"], None, ()),
-        ("STRTSND", "startsound", found["to_strtsnd"], found["setadsr_fx"], ()),
-        ("SELNTFX", "at_selntfx", found["selntfx"], found["indexj1_end"] - 2, ()),
-        ("SMALPFX", "at_smalsel", found["smalpfx"], found["indexj2_end"] - 2, ()),
-        ("BIGPTFX", "at_bigptfx", found["bigptfx"], found["indexjp"] - 1, ()),
+def _table_row(found: dict, position: str):
+    """The table byte at voice 0's ``position`` through the zero-page pointer, as z3 reads it."""
+
+    def byte(mem0):
+        ptr = z3.Concat(z3.Select(mem0, found["zp"] + 1), z3.Select(mem0, found["zp"]))
+        return z3.Select(mem0, ptr + z3.ZeroExt(8, z3.Select(mem0, found[position])))
+
+    return byte
+
+
+def _row_kinds(found: dict, position: str):
+    """The four kinds of table row by its first byte, $00..$7F, $80..$FD, $FE, $FF: cases
+    that together cover every table."""
+    byte = _table_row(found, position)
+    return [
+        (lambda m, _r: z3.ULT(byte(m), 0x80),),
+        (lambda m, _r: z3.And(z3.UGE(byte(m), 0x80), z3.ULT(byte(m), 0xFE)),),
+        (lambda m, _r: byte(m) == 0xFE,),
+        (lambda m, _r: byte(m) == 0xFF,),
     ]
-    if found["mulcntp"]:
-        out.append(("MULCNTP", "at_mulcntp", found["mulcntp"], None, ()))
+
+
+def routines(found: dict, view: bytes):
+    """``(label, routine, pc, stop, cases)`` of each routine of the spec that is a routine
+    of the player, from its label, inputs in registers or, for a dispatched effect, the
+    effect its column names; a stretch stops where the next routine or a dispatch starts."""
+    one = [()]
+    out = [
+        ("CNTPLY1", "voice[0].at_cntply1", found["cntplay"] + 6, found["cntply2"], one),
+        ("VIBSLIDE", "voice[0].vibslide", found["cntply2"], found["filtprg"], one),
+        ("FILTPRG", "voice[0].filtprg", found["filtprg"], found["setpwid"], one),
+        (
+            "SETPWID",
+            "voice[0].pw_table",
+            found["setpwid"],
+            found["wfarptb"],
+            _row_kinds(found, "pwtpos"),
+        ),
+        ("SETVIB0", "voice[0].setvib0", found["setvib0"], None, one),
+        ("SETVIB1", "voice[0].setvib1", found["setvib1"], None, one),
+        ("SETVIBR", "voice[0].at_setvibr", found["setvibr"], None, one),
+        ("SETFMOD", "voice[0].at_setfmod", found["setfmod"], None, one),
+        ("FORCVIB", "voice[0].forcvib", found["forcvib"], None, one),
+        ("STRTSND", "voice[0].startsound", found["to_strtsnd"], found["setadsr_fx"], one),
+        ("SELNTFX", "voice[0].at_selntfx", found["selntfx"], found["indexj1_end"] - 2, one),
+        ("SMALPFX", "voice[0].at_smalsel", found["smalpfx"], found["indexj2_end"] - 2, one),
+        ("BIGPTFX", "voice[0].at_bigptfx", found["bigptfx"], found["indexjp"] - 1, one),
+        ("COMMONREGS", "commonregs.step", found["commonregs"], found["retplay"], one),
+    ]
+    if not found["chordsupport"]:
+        out.append(("WFARPTB", "voice[0].at_wfarptb", found["wfarptb"], None, one))
     for label, routine, flag in (
         ("SEQ_FX", "at_seq_fx", "seq_fx_support"),
         ("SETSEQA", "at_setseqa", "subtunejump"),
         ("TRAKTMP", "at_traktmp", "tempoprgsupp"),
     ):
         if found[flag]:
-            out.append((label, routine, found[label.lower()], None, ()))
+            out.append((label, f"voice[0].{routine}", found[label.lower()], None, one))
     for k in range(8):
         pc = found["indexj1_end"] + view[found["notefxtbl"] + 0x78 + k]
-        assume = (_holds(found, "curnot", 0x78 + k),)
         if pc != found["insptfx"]:
-            out.append((f"note ${0x78 + k:02x}", "at_note_effect", pc, found["insptfx"], assume))
+            cases = [(_holds(found, "curnot", 0x78 + k),)]
+            out.append(
+                (f"note ${0x78 + k:02x}", "voice[0].at_note_effect", pc, found["insptfx"], cases)
+            )
     for n in range(2, 0x10):
         pc = found["indexj2_end"] + view[found["smallfxtbl"] + n]
-        assume = (_holds(found, "curfx2", n, 7, 4),)
-        out.append((f"small ${n:x}x", "at_small_effect", pc, None, assume))
+        cases = [(_holds(found, "curfx2", n, 7, 4),)]
+        out.append((f"small ${n:x}x", "voice[0].at_small_effect", pc, None, cases))
     for n in range(1, 0x20):
         pc = _word(view, found["bigfxtable"] + 2 * n)
-        out.append((f"big ${n:02x}", "at_big_effect", pc, None, (_holds(found, "curfx2", n),)))
+        cases = [(_holds(found, "curfx2", n),)]
+        out.append((f"big ${n:02x}", "voice[0].at_big_effect", pc, None, cases))
     return out
 
 
-def _prove(view: bytes, found: dict, routine: str, pc: int, stop=None, assume=()):
+def _prove(
+    view: bytes, found: dict, routine: str, pc: int, *, stop=None, assume=()
+):  # pylint: disable=too-many-arguments
+    """``tv.validate`` of spec ``routine`` against the code at ``pc``, X = 0."""
     return validate(
         playspec.SPEC,
         found,
-        f"voice[0].{routine}",
+        routine,
         view,
         pc,
         registers={"X": 0},
-        preserve=("X",),
+        preserve=("X",) if routine.startswith("voice") else (),
         stop=stop,
         assume=assume,
     )
@@ -188,20 +224,54 @@ def _assert_proven(result, found: dict, label: str, routine: str, pc: int) -> No
         return
     cex = result.counterexample
     regs = {k: v for k, v in cex["registers"].items() if k != "SP"}
-    diff = replay(playspec.SPEC, found, f"voice[0].{routine}", cex["memory"], pc, regs)
+    diff = replay(playspec.SPEC, found, routine, cex["memory"], pc, regs)
     shown = {k: v for k, v in cex.items() if k not in ("memory", "cells")}
     raise AssertionError(f"{label} at ${pc:04x}: {shown}; replayed differences {diff[:8]}")
 
 
-def _prove_all(view: bytes) -> None:
+# The routine proofs in groups, by their labels' first word.
+GROUPS = {
+    "tables": ("CNTPLY1", "VIBSLIDE", "FILTPRG", "SETPWID", "WFARPTB"),
+    "routines": (
+        "SETVIB0",
+        "SETVIB1",
+        "SETVIBR",
+        "SETFMOD",
+        "FORCVIB",
+        "STRTSND",
+        "SELNTFX",
+        "SMALPFX",
+        "BIGPTFX",
+        "COMMONREGS",
+        "SEQ_FX",
+        "SETSEQA",
+        "TRAKTMP",
+    ),
+    "note": ("note",),
+    "small": ("small",),
+    "big": ("big",),
+}
+# The exports whose routines are proven in the default suite: every build of the set.
+PROOF_EXPORTS = EXPORTS + ("kicksamule", "cloudlessr", "demo-example")
+
+
+def _prove_group(view: bytes, group: str) -> int:
+    """Prove each routine of ``group``; the number proven."""
     found = playspec.binding(view)
-    for label, routine, pc, stop, assume in routines(found, view):
-        result = _prove(view, found, routine, pc, stop, assume)
-        _assert_proven(result, found, label, routine, pc)
+    proven = 0
+    for label, routine, pc, stop, cases in routines(found, view):
+        if label.split()[0] not in GROUPS[group]:
+            continue
+        for assume in cases:
+            result = _prove(view, found, routine, pc, stop=stop, assume=assume)
+            _assert_proven(result, found, label, routine, pc)
+        proven += 1
+    return proven
 
 
 @pytest.mark.parametrize("name", EXPORTS)
 def test_the_voices_cells_sit_seven_bytes_apart_from_the_found_addresses(name):
+    """Each voice's private cells are the found address plus seven bytes per voice."""
     found = playspec.binding(_view(_export(name)))
     program = elaborate(playspec.SPEC, found)
     for cell_name in ("curval", "spdcnt", "transp"):
@@ -232,15 +302,17 @@ def test_stretch_is_proven_against_the_6502(name, stretch):
     view = _view(_export(name))
     found = playspec.binding(view)
     pc = STRETCHES[stretch][0](found)
-    result = _prove(view, found, stretch, pc, STRETCHES[stretch][1](found))
-    _assert_proven(result, found, stretch, stretch, pc)
+    routine = f"voice[0].{stretch}"
+    result = _prove(view, found, routine, pc, stop=STRETCHES[stretch][1](found))
+    _assert_proven(result, found, stretch, routine, pc)
 
 
-@pytest.mark.parametrize("name", EXPORTS)
-def test_every_routine_is_proven_against_the_6502(name):
+@pytest.mark.parametrize("group", GROUPS)
+@pytest.mark.parametrize("name", PROOF_EXPORTS)
+def test_every_routine_is_proven_against_the_6502(name, group):
     """Each routine the spec states equals the player's code from its label for all
     initial memory: the same bytes written outside the stack page, X kept."""
-    _prove_all(_view(_export(name)))
+    assert _prove_group(_view(_export(name)), group)
 
 
 @pytest.mark.parametrize("name", ALL_EXPORTS)
@@ -255,10 +327,11 @@ def test_spec_memory_equals_the_6502_over_the_whole_song(name):
     assert sw_spec_diff.first_difference(data, song_frames(data, 1), progress=False) is None
 
 
-def test_the_cli_checks_the_spec_with_a_bound_layout(tmp_path, capsys):
-    """``pysidtracker playspec check`` accepts the spec bound to a tune's layout."""
+@pytest.mark.parametrize("name", [n for n in ALL_EXPORTS if n not in REFUSED_EXPORTS])
+def test_the_cli_checks_the_spec_with_a_bound_layout(name, tmp_path, capsys):
+    """``pysidtracker playspec check`` accepts the spec bound to each export's layout."""
     binding = tmp_path / "binding.json"
-    binding.write_text(json.dumps(playspec.binding(_view(_export("bronkosaurus")))))
+    binding.write_text(json.dumps(playspec.binding(_view(_export(name)))))
     spec = Path(playspec.__file__).parent / "specs" / "sidwizard.play"
     assert not cli(["playspec", "check", str(spec), "--binding", str(binding)])
     out = capsys.readouterr().out
@@ -274,19 +347,37 @@ def test_entries_are_the_players_play_and_multispeed_calls():
 
 
 @pytest.mark.oracle
-def test_every_routine_is_proven_for_every_oracle_tune(tune_path):  # noqa: F811
-    _prove_all(_view(tune_path.read_bytes()))
+@pytest.mark.parametrize("group", GROUPS)
+def test_every_routine_is_proven_for_every_oracle_tune(tune_path, group):  # noqa: F811
+    """The routine proofs on every stated oracle tune's player."""
+    assert _prove_group(_view(tune_path.read_bytes()), group)
 
 
 @pytest.mark.oracle
 def test_spec_memory_equals_the_6502_for_every_oracle_tune(tune_path):  # noqa: F811
+    """Every call of every stated oracle tune's whole song leaves both players equal."""
     data = tune_path.read_bytes()
     assert sw_spec_diff.first_difference(data, song_frames(data, None), progress=False) is None
 
 
 @pytest.mark.oracle
+@pytest.mark.parametrize("name", ("lykia_boss", "star_storm"))
+def test_sound_effects_of_an_sfx_build_equal_the_6502(name):
+    """A game's SFXinit calls (SFXsub, the jump table's fifth entry) start sound effects
+    on the third voice: every call of the song still leaves both players equal."""
+    data = Path(resolve_tune(TUNES[name])).read_bytes()
+    sfxsub = SidImage.from_sid(data).load + 12
+    calls = {
+        f: (sfxsub, (0x18 + f % 0x40, 0x20 + f % 0x30, 1 + f % 5)) for f in range(40, 3000, 97)
+    }
+    frames = song_frames(data, None)
+    assert sw_spec_diff.first_difference(data, frames, progress=False, calls=calls) is None
+
+
+@pytest.mark.oracle
 @pytest.mark.parametrize("name", REFUSED_TUNES)
 def test_players_the_spec_does_not_state_are_refused(name):
+    """The binder names why it does not bind each player the spec does not state."""
     view = _view(Path(resolve_tune(TUNES[name])).read_bytes())
     with pytest.raises(ValueError, match=REFUSED_TUNES[name]):
         playspec.binding(view)

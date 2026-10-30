@@ -15,12 +15,16 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pysidwizard import parse_sid_song, playspec  # noqa: E402
+from pysidwizard import (  # pylint: disable=wrong-import-position
+    parse_sid_song,
+    playspec,
+)  # noqa: E402  # pylint: disable=wrong-import-position
 
 
 def default_tunes():
     """The 1.97 example exports and the oracle tunes, by name."""
-    from pysidtracker.testing import resolve_tune  # pylint: disable=import-outside-toplevel
+    # pylint: disable=import-outside-toplevel
+    from pysidtracker.testing import resolve_tune
 
     from tests._swm_cache import SW197_EXPORT_SHA256, sw197_export_path
     from tests.test_oracle import TUNES
@@ -43,6 +47,7 @@ def bind(path: Path) -> dict:
 
 
 def main(argv=None) -> None:
+    """Parse ``argv`` and run."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tunes", nargs="*", type=Path)
     args = parser.parse_args(argv)

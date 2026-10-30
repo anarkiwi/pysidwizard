@@ -14,12 +14,14 @@ from pysidtracker.oracle import EmuPlayer
 from pysidtracker.playspec import SpecPlayer
 from pysidtracker.testing import song_frames
 from tqdm import tqdm
+from vagrant_moses.cpu import run_to_rts
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from pysidwizard import playspec  # noqa: E402
+from pysidwizard import playspec  # noqa: E402  # pylint: disable=wrong-import-position
 
 STACK = range(0x100, 0x200)
+MAX_CYCLES = 200_000
 
 
 def players(data: bytes, song: int = 1):
@@ -38,10 +40,21 @@ def players(data: bytes, song: int = 1):
     return spec, EmuPlayer(*args)
 
 
-def first_difference(data: bytes, frames: int, song: int = 1, progress: bool = True):
-    """``(frame, addresses)`` of the first call the two players leave differently, or None."""
+def call(player, addr: int, regs) -> None:
+    """Run the 6502 subroutine at ``addr`` with ``(A, X, Y)`` on ``player``'s machine."""
+    mpu = player._mpu  # pylint: disable=protected-access
+    mpu.x, mpu.y = regs[1], regs[2]
+    run_to_rts(mpu, player._obs, addr, regs[0], MAX_CYCLES)  # pylint: disable=protected-access
+
+
+def first_difference(data: bytes, frames: int, song: int = 1, progress: bool = True, calls=None):
+    """``(frame, addresses, players)`` of the first call the two players leave differently,
+    or None; ``calls`` maps a frame to ``(addr, (A, X, Y))``, a subroutine both run first."""
     spec, cpu = players(data, song)
     for frame in tqdm(range(frames), desc="calls", unit="call", disable=not progress):
+        if calls and frame in calls:
+            for player in (spec, cpu):
+                call(player, *calls[frame])
         spec.play_frame()
         cpu.play_frame()
         mine, real = spec.memory, bytes(cpu._mem)  # pylint: disable=protected-access
@@ -54,7 +67,23 @@ def first_difference(data: bytes, frames: int, song: int = 1, progress: bool = T
     return None
 
 
+def report(spec, cpu, frame: int, diff) -> None:
+    """Print the differing call's addresses, by the binding's names, and the registers."""
+    names = {}
+    for name, addr in playspec.labels(spec.view(), spec.entry).items():
+        for k in range(0, 3 * playspec.VOICE_STRIDE, playspec.VOICE_STRIDE):
+            names.setdefault(addr + k, f"{name}+{k}" if k else name)
+    mine, real = spec.memory, bytes(cpu._mem)  # pylint: disable=protected-access
+    print(f"call {frame} differs")
+    for addr in diff[:24]:
+        print(
+            f"  ${addr:04x} {names.get(addr, ''):<16} spec ${mine[addr]:02x} 6502 ${real[addr]:02x}"
+        )
+    print(f"  regs spec {spec.regs}\n  regs 6502 {cpu.regs}")
+
+
 def main(argv=None) -> None:
+    """Parse ``argv`` and run."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tune", type=Path)
     parser.add_argument("--frames", type=int)
@@ -67,17 +96,7 @@ def main(argv=None) -> None:
         print(f"{args.tune.name}: {frames} calls equal")
         return
     frame, diff, (spec, cpu) = found
-    names = {}
-    for name, addr in playspec.labels(spec.view(), spec.entry).items():
-        for k in range(0, 3 * playspec.VOICE_STRIDE, playspec.VOICE_STRIDE):
-            names.setdefault(addr + k, f"{name}+{k}" if k else name)
-    mine, real = spec.memory, bytes(cpu._mem)  # pylint: disable=protected-access
-    print(f"{args.tune.name}: call {frame} differs")
-    for addr in diff[:24]:
-        print(
-            f"  ${addr:04x} {names.get(addr, ''):<16} spec ${mine[addr]:02x} 6502 ${real[addr]:02x}"
-        )
-    print(f"  regs spec {spec.regs}\n  regs 6502 {cpu.regs}")
+    report(spec, cpu, frame, diff)
 
 
 if __name__ == "__main__":
