@@ -42,7 +42,7 @@ class HardRestart:
             return None
         ins = v.instrument
         ref = row.instrument
-        if ref is not None and 1 <= ref <= 0x3E:
+        if self._selects_instrument(ref):
             ins = self._resolve_instrument(ref) or ins
         return ins
 

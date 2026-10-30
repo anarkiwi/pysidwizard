@@ -32,11 +32,15 @@ class Effects:
 
     def _resolve_instrument(self, ref: int) -> Optional[Instrument]:
         """Map a 1..0x3E reference to an instrument; past the count -> the image's slot, else the empty one."""
-        if 1 <= ref <= len(self.swm.instruments):
+        if not self._selects_instrument(ref):
+            return None
+        if ref <= len(self.swm.instruments):
             return self.swm.instruments[ref - 1]
-        if 1 <= ref <= 0x3E:
-            return self.image.spare_instruments.get(ref, self._empty)
-        return None
+        return self.image.spare_instruments.get(ref, self._empty)
+
+    def _selects_instrument(self, ref: Optional[int]) -> bool:
+        """Whether an instrument column value is below SEL_INS's ``cmp #maxinstamount`` bound."""
+        return ref is not None and 1 <= ref < min(self.image.quirks.sel_ins_limit, 0x3F)
 
     def _apply_row(self, v: VoiceState, row) -> None:
         """Apply one Row's columns to the voice.
@@ -54,7 +58,7 @@ class Effects:
         # was just selected (player.asm:1388 ``TABLRST and #$3F``), so a
         # selection always resets those tables; only a same-instrument
         # retrigger honours the instrument's reset-off control bits.
-        instrument_selected = instrument is not None and 1 <= instrument <= 0x3E
+        instrument_selected = self._selects_instrument(instrument)
         # Set when the note column consumed the row's BIGFX03 (tone portamento).
         portamento_applied = False
         # Set when the note column reached STRTSND, which runs INSPTFX after its own
@@ -82,7 +86,7 @@ class Effects:
         # reads them into CURIFX, then SEL_INS only writes CURINS when
         # the byte is < maxinstamount). We re-purpose ``instrument`` as
         # ``fx`` for the small-FX range below.
-        if instrument is not None and 1 <= instrument <= 0x3E:
+        if self._selects_instrument(instrument):
             v.instrument_idx = instrument
             ins = self._resolve_instrument(instrument)
             if ins is not None:

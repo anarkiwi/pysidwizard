@@ -1996,3 +1996,16 @@ def test_a_release_small_fx_leaves_the_attack_decay_a_write_ad_fx_set():
     p._apply_fx_columns(v, None, 0x05, 0x27, False)  # pylint: disable=protected-access
     p._apply_fx_columns(v, None, 0x6C, None, False)  # pylint: disable=protected-access
     assert v.sid_ad == 0x27 and v.sid_sr & 0x0F == 0x0C
+
+
+def test_an_instrument_column_value_at_or_above_the_sel_ins_limit_keeps_the_current_instrument():
+    """SEL_INS stores CURINS only below ``cmp #maxinstamount`` (a tune's own bound)."""
+    swm = _toy_swm()
+    swm.instruments.append(dataclasses.replace(swm.instruments[0], attack=5))
+    swm.patterns[0] = Pattern(
+        rows=[Row(note=49, instrument=1), Row(note=53, instrument=2)] + [Row()] * 4, length=6
+    )
+    with_image(swm, sel_ins_limit=2)
+    p = _play(swm, frames=SETUP_FRAMES + 3 * 3 + 2)
+    assert p.voices[0].instrument is swm.instruments[0]
+    assert p.voices[0].dpitch == 53
