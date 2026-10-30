@@ -1971,3 +1971,17 @@ def test_small_fx_e_merges_the_waveform_low_nibble_before_1_5(stores, wfctrl_sma
     for _ in range(SETUP_FRAMES + 4):
         p.play_frame()
     assert p.regs[4] == ctrl
+
+
+def test_a_spare_slot_with_a_zero_row_walks_it_as_the_wf_table():
+    """A spare slot's table is the image's RAM: zeros at $10 are a real row (waveform 0, arp +0),
+    so the pitch is looked up from FREQTBL every frame, not left to the "no WF table" hold."""
+    swm = _toy_swm()
+    spare = Instrument()
+    spare.ram = bytes(0x100)
+    swm.patterns[0] = Pattern(rows=[Row(note=49, instrument=3)] + [Row()] * 7, length=8)
+    with_image(swm, spare_instruments={3: spare})
+    grid = SWMPlayer(swm).render_grid(SETUP_FRAMES + HR_FRAMES + 6)
+    assert {tuple(row[:2]) for row in grid[SETUP_FRAMES + HR_FRAMES + 1 :]} == {
+        (NOTE_FREQ_LO[49], NOTE_FREQ_HI[49])
+    }

@@ -48,7 +48,11 @@ class InstrumentTables:
         if ins is None:
             return
         table = self._image(ins)
-        if not ins.wf_table and v.wf_pos >= INST_WF_TABLE_POS:
+        if (
+            not ins.wf_table
+            and v.wf_pos >= INST_WF_TABLE_POS
+            and table[v.wf_pos : v.wf_pos + 1] == bytes([WF_TABLE_END])
+        ):
             # No WF table: WFARPTB reads the table terminator ($FF) right
             # away — ``cmp #$FE`` leaves carry SET, so WRPITCH adds +1 to
             # FREQ_LO — then ENDWFTB without writing a pitch. Mirror the
