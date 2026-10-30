@@ -232,15 +232,40 @@ prints each stream's parse tree. One start rule per stream kind:
 |---|---|---|
 | `sequence` | Orderlist bytes: `$00..$7F` pattern, `$80..$9F` transpose, `$A0..$AF` main volume, `$B0..$EF` tempo, `$F0..$FD` no-op | `$FE`, or `$FF` + a loop position (`< $80`) or subtune jump (`>= $80`) |
 | `pattern` | Rows: a note byte, then an instrument byte if the note's bit 7 is set, then an effect byte if the instrument's bit 7 is set, then a value byte if the effect is below `$20` | `$FF` |
-| `instrument` | 16-byte header, then the waveform, pulse and filter tables of three-byte rows | the filter table's `$FF` |
+| `instrument` | 16-byte header (one terminal per field), then the waveform, pulse and filter tables of three-byte rows | the filter table's `$FF` |
+| `wf_table`, `pw_table`, `filter_table` | One table read from its start | its `$FF` |
 | `chords` | Chords, each closed by `$7E` or `$7F` | the table's end |
 | `tempos` | Programs, each closed by a byte with bit 7 set | the table's end |
 
 Bytes after a stream's terminator are never read through its pointer. In a
 `pattern`, a `$70..$77` byte that follows a zero byte or another `$70..$77` byte
-is a run of 2..9 further empty rows; anywhere else it is an ordinary byte. An
-instrument's header pointers to its pulse and filter tables must equal where
+is a run of 2..9 further empty rows; anywhere else it is an ordinary byte. The
+postlexer (a `pysidtracker` `BitmapPostLex`) tags a note or instrument byte with
+bit 7 set, so the next column is a grammar alternative rather than a byte range.
+An instrument's header pointers to its pulse and filter tables must equal where
 those tables start.
+
+Every terminal names what the player does with its byte, and the transformer
+builds typed values (`pysidwizard.typed`) as `player.asm` decodes them:
+
+| Column / row | Bytes | Type |
+|---|---|---|
+| Note | `$01..$5F`, `$60..$77`, `$78..$7E`, `$7F` | `Note`, `VibratoAmplitude` (`.amplitude`), `Portamento` / `SyncOn` / `SyncOff` / `RingOn` / `RingOff` / `GateOn` / `GateOff`, `NoteEffect` (NOTEFXTBL's zero offset) |
+| Instrument | `$01..$3E`, `$3F`, `$40..$7F` | `SelectInstrument`, `Legato`, `SmallEffect` |
+| Effect | `$01..$1F` (+ value), `$20..$FF` | `BigEffect` (value in `Row.fx_value`), `SmallEffect` (`.effect` high nibble, `.value` low nibble) |
+| WF table | `$00..$0F`, `$10..$FD` | `RepeatRow`, `WaveRow`; pitch `RelativePitch` (`$00..$7E`, `$E0..$FF`, `.semitones`), `ChordPitch` (`$7F`), `KeepPitch` (`$80`), `AbsolutePitch` (`$81..$DF`, `.note`); detune `None` for `$FF` |
+| PW table | `$00..$7F`, `$80..$FD` | `PulseSweep(frames, step, keytrack)`, `PulseSet(high, low, keytrack)` |
+| Filter table | `$00..$7F`, `$80..$FD` | `FilterSweep(frames, step, keytrack)`, `FilterSet(band, resonance, cutoff, keytrack)` |
+| Any table | `$FE` | `TableJump(target, pad)`, `target` an offset from the instrument's base |
+| Chord / tempo table | | `Chord(intervals, loop)`, `TempoProgram(tempos)` |
+
+A column value is an `int` subclass equal to its byte, so typed rows compare and
+encode as plain ones; table rows, chords and tempo programs `encode()` back to
+their bytes. `Instrument.wf_rows` / `pw_rows` / `filter_rows` parse each table as
+the player reads it from its start, and `SWMFile.chords` / `tempo_programs` the
+song's tables. Ranges follow the full player build: a build without a feature
+reads some bytes differently (e.g. `$80` as an absolute pitch without
+`WFARP_NOP_SUPP`, instruments only below its `maxinstamount`).
 
 ## Data model
 
