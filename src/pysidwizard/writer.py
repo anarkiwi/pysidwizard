@@ -14,6 +14,7 @@ from .constants import (
     SWM_FORMATS,
 )
 from .errors import SWMFormatError
+from .grammar import GRAMMAR, RULES, streams
 from .model import (
     End,
     Loop,
@@ -218,6 +219,7 @@ def build_swm(swm: SWMFile, strict: bool = False, container: str = "prg") -> byt
             ]
         )
 
+    GRAMMAR.check(streams(swm), SWMFormatError, skip_equality=RULES)
     return bytes(out)
 
 

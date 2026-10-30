@@ -325,6 +325,29 @@ def _player_code(data: bytes) -> tuple:
     return code, load
 
 
+def _check_played_instruments(swm: SWMFile) -> None:
+    """Every instrument a played pattern selects is a well-formed ``instrument`` stream.
+
+    The instruments no pattern plays can be anything (an export may leave player code or
+    patched bytes there), so only these are held to the grammar.
+    """
+    played = {
+        row.instrument
+        for command in (c for seq in swm.sequences for c in seq)
+        if isinstance(command, PlayPattern) and 0 < command.pattern <= len(swm.patterns)
+        for row in swm.patterns[command.pattern - 1].rows
+        if row.instrument is not None and 0 < row.instrument <= len(swm.instruments)
+    }
+    for number in sorted(played):
+        ram = swm.instruments[number - 1].ram
+        if not ram:
+            continue
+        try:
+            GRAMMAR.parse_prefix(ram, "instrument")
+        except SWMFormatError as exc:
+            raise SIDFormatError(f"instrument {number} is played but malformed: {exc}") from exc
+
+
 def parse_sid(data: bytes) -> SWMFile:
     """Parse a SID-Wizard ``.sid`` image into a :class:`SWMFile`.
 
@@ -350,6 +373,7 @@ def parse_sid(data: bytes) -> SWMFile:
         filter_init=_filter_init(data),
         play_gate=_play_gate(image.mem, image.header.init_address or image.load),
     )
+    _check_played_instruments(swm)
     return swm
 
 
@@ -622,6 +646,7 @@ def parse_sid_song(data: bytes, song: int) -> SWMFile:
     if found is not None:
         init["play_gate"] = _play_gate(after, found[1])
     swm.player = replace(swm.player, **init)
+    _check_played_instruments(swm)
     return swm.subtune(subtune)
 
 

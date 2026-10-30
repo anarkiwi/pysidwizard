@@ -13,6 +13,7 @@ from pysidwizard import (
     SubtuneJump,
     TempoOverride,
     Transpose,
+    build_swm,
     parse_swm,
 )
 from pysidwizard.errors import SWMFormatError
@@ -156,3 +157,10 @@ def test_format_lists_the_parse_tree_of_each_stream():
     lines = list(FORMAT.listing(swm))
     assert lines[0] == "sequence 0:"
     assert any(line.strip() == "pattern" for line in lines)
+
+
+def test_building_a_module_with_an_unterminated_chord_is_an_error():
+    swm = parse_swm(next(iter(all_swm_paths().values())).read_bytes())
+    swm.chord_table = b"\x00\x04\x07"
+    with pytest.raises(SWMFormatError, match="chord table"):
+        build_swm(swm)

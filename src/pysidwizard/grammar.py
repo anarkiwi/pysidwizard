@@ -143,7 +143,7 @@ class _Transformer(Transformer):
 
     def instrument(self, children) -> Parsed:
         body = b"".join(children[:4])
-        return Parsed(Instrument.decode(body[:-1], name=b""), len(body))
+        return Parsed(Instrument.decode(body[:-1], name=b"", strict=False), len(body))
 
     def chords(self, children) -> Parsed:
         data = bytes(b for chord in children for b in chord)
