@@ -42,7 +42,7 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Cache tunes and oracle traces
-        uses: anarkiwi/pysidtracker/.github/actions/cache@v0.37.0
+        uses: anarkiwi/pysidtracker/.github/actions/cache@v0.43.0
         with:
           key: ${{ hashFiles('tests/test_oracle.py', 'tests/pathdiff_xfails.json') }}
           sidtrace: "true"

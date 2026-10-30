@@ -40,7 +40,7 @@ import oracle_hvsc  # noqa: E402  (after sys.path tweak)
 # whydiff reports for a mismatch (not a download, so outside the fetch cache).
 _WHY = Path("build/why")
 
-# Frames compared per tune.
+# Frames compared in the ghost-buffer and PREX tests.
 FRAMES = 250
 
 # HVSC SID-Wizard exports the native player reproduces byte-exactly against the
@@ -144,7 +144,6 @@ def _player(data):
 tune_id, oracle_match = make_oracle_fixtures(
     TUNES,
     player=_player,
-    frames=FRAMES,
     max_lead=0,
     report_dir=_WHY,
 )
@@ -167,7 +166,6 @@ def test_gate_off_without_instrument_selects_legatoo_route():
     assert_oracle_match(
         "MUSICIANS/B/Batsman/Propaganda.sid",
         _player,
-        frames=FRAMES + 50,
         report_dir=_WHY,
     )
 
@@ -206,7 +204,6 @@ def test_song_render_matches_oracle(song_id):
     assert_oracle_match(
         relpath,
         lambda data: SWMPlayer(parse_sid_song(data, song)),
-        frames=FRAMES,
         song=song,
         report_dir=_WHY,
     )
