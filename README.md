@@ -1,12 +1,13 @@
 # pysidwizard
 
-Pure-Python reader, writer, and bit-exact player for
+Pure-Python reader, writer, and player for
 [SID-Wizard](https://csdb.dk/release/?id=258573) (Hermit / Mihaly Horvath) C64
-tracker modules. Implements the SWM file format and player IRQ from first
-principles, with no native dependencies. The player is validated byte-for-byte
-against the [`anarkiwi/sidtrace`](https://github.com/anarkiwi/sidtrace)
-sidplayfp oracle over real HVSC SID-Wizard exports (`pytest -m oracle`, needs
-Docker).
+tracker modules. Implements the SWM file format from first principles. The player
+is the SID-Wizard playroutine stated as a
+[`pysidtracker.playspec`](https://github.com/anarkiwi/pysidtracker) spec, run on the
+tune's own 6502 image (a bare module's SID-Maker export), and is checked against
+that 6502 and the [`anarkiwi/sidtrace`](https://github.com/anarkiwi/sidtrace)
+sidplayfp oracle over real HVSC SID-Wizard exports (`pytest -m oracle`, needs Docker).
 
 Also consumes `.sid` files (PSID/RSID containers), SID-Maker `.exe.prg` and Echo `.sid`
 exports (unwrapped to the `.sid` they embed) and bare `.prg` images through

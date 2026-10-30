@@ -60,24 +60,18 @@ for _ in range(500):
 
 This path is read-only and lossy (see [format.md](format.md#sid-wizard-sid-export-read-only-lossy)).
 
-A `.sid` also carries its player image, so `parse_sid` captures
-`SWMFile.player.freq_table_tail`: the bytes the assembler placed after the player's
-96-note `FREQTBL`. SID-Wizard's arp pitch lookup *masks* its note index
-(`and #$7F`, `player.asm:2525`) rather than clamping it, so a relative arp step
-or transpose summing past 95 reads those bytes and one summing past 127 wraps
-back into the table. A module built in memory (an `SWMFile` with no image) keeps
-that fallback. A module read from a bare `.swm`/`.swp` via `parse_swm` / `read_swm`
-(or `parse_swp` / `read_swp`) now defaults to the latest release's player image
-for its driver, so it renders as that editor's `.sid` export: pass
-`player_version=None` to keep the bare fallback, or name a release (e.g. `"1.7"`).
+`SWMPlayer` plays a model read from a `.sid` on that container's own player image
+(`SWMFile.source`). A bare module (`parse_swm` / `read_swm`, `parse_swp` / `read_swp`,
+or one built in memory) plays the `.sid` SID-Maker exports for it: `player_version`
+names the SID-Maker release (`"1.7"`, `"1.8"`, `"1.94"` or `"1.97"`, the default),
+stored as `SWMFile.player_version`.
 
 A `.sid` header song is only the accumulator the tune's init receives. Wrappers
 remap it to another subtune, patch the tune data, or call one of several
 embedded players (each with its own module). `parse_sid_song(data, song)` runs
 the init in the 6502 emulator up to the SID-Wizard player it enters and returns
-the single-subtune module that song actually plays, along with
-`SWMFile.player.sid_init` (the SID registers the init wrote) and the image's own
-`FREQTBL`/`FREQTBH` (`player.freq_lo` / `player.freq_hi`, NTSC exports included):
+the single-subtune module that song actually plays, which `SWMPlayer` plays from
+that song:
 
 ```python
 from pysidwizard import SWMPlayer, parse_sid_song
@@ -153,6 +147,11 @@ the 1.8 release's files; SID-Maker 1.8 reproduces them byte for byte.
 
 ## Play an SWM
 
+`SWMPlayer` is a `pysidtracker.playspec.SpecPlayer`: the tune's init runs on the 6502
+and each play call runs [`specs/sidwizard.play`](playspec.md) on the tune's memory.
+`pysidtracker.formats` registers the same spec (`FORMAT.spec`), so
+`FORMAT.spec_player(swm, notes=clock)` plays it with the standard note words.
+
 ```python
 from pysidwizard import SWMPlayer, read_swm
 
@@ -164,25 +163,6 @@ player = SWMPlayer(swm)
 for _ in range(100):
     for reg, value in player.play_frame():
         print(f"${reg:04X} = ${value & 0xFF:02X}")
-```
-
-### Unmodelled effects
-
-An effect the player does not implement is never silently swallowed: it warns
-once per `(column, code)` with `SWMUnsupportedEffectWarning` and is tallied in
-`player.unsupported_effects`. Promote it to a hard failure with
-`warnings.simplefilter("error", SWMUnsupportedEffectWarning)`.
-
-```python
-import warnings
-from pysidwizard import SWMPlayer, SWMUnsupportedEffectWarning, read_sid
-
-player = SWMPlayer(read_sid("tune.sid"))
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", SWMUnsupportedEffectWarning)
-    for _ in range(3000):
-        player.play_frame()
-print(player.unsupported_effects)  # {("big-fx", 6): 12, ("small-fx", 194): 3}
 ```
 
 ### Render to WAV
