@@ -289,12 +289,11 @@ class Effects:
                 if target < len(v.instrument.wf_table):
                     v.wf_pos = INST_WF_TABLE_POS + target
             elif fx == 0x0A and fx_value is not None and v.instrument is not None:
-                # BIGFX0A (player.asm:3530): PWTPOS := value*3 + the instrument's PW-table base, PWEEPCNT := 0.
+                # BIGFX0A (player.asm:3530): PWTPOS := value*3 + the instrument's PW-table base; PWEEPCNT keeps counting.
                 ins = v.instrument
                 base = INST_WF_TABLE_POS + len(ins.wf_table) + 1
                 if fx_value * 3 < len(ins.pw_table):
                     v.pw_pos = base + fx_value * 3
-                    v.pw_sweep_count = 0
             elif fx == 0x0C and fx_value is not None:
                 # BIGFX0C = SMALFXC (player.asm:3549): ARPSPED := value, ARPSCNT := $FF.
                 v.arp_speed_reload = fx_value

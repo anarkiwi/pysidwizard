@@ -2009,3 +2009,17 @@ def test_an_instrument_column_value_at_or_above_the_sel_ins_limit_keeps_the_curr
     p = _play(swm, frames=SETUP_FRAMES + 3 * 3 + 2)
     assert p.voices[0].instrument is swm.instruments[0]
     assert p.voices[0].dpitch == 53
+
+
+def test_a_jump_to_a_pw_row_leaves_the_sweep_counter_running():
+    """BIGFX0A is ``adc (zp),y ; sta PWTPOS ; rts``: PWEEPCNT is not zeroed."""
+    swm = _toy_swm()
+    swm.instruments[0].pw_table = bytes([0x05, 0x10, 0x00, 0x05, 0x10, 0x00])
+    p = SWMPlayer(swm)
+    for _ in range(SETUP_FRAMES + HR_FRAMES + 1):
+        p.play_frame()
+    v = p.voices[0]
+    v.pw_sweep_count = 9
+    p._apply_fx_columns(v, None, 0x0A, 1, False)  # pylint: disable=protected-access
+    pw_base = 0x10 + len(v.instrument.wf_table) + 1
+    assert (v.pw_pos, v.pw_sweep_count) == (pw_base + 3, 9)
