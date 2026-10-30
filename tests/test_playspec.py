@@ -3,10 +3,11 @@
 import random
 
 import pytest
+from jennings.devices.mpu6502 import MPU
 from pysidtracker import SidImage
 from pysidtracker.disasm import image_after_init
-from pysidtracker.playspec import elaborate
-from pysidtracker.playspec.tv import replay, validate
+from pysidtracker.playspec import elaborate, run
+from pysidtracker.playspec.tv import validate
 from pysidtracker.testing import make_tune_fixtures
 
 from pysidwizard import playspec
@@ -14,7 +15,8 @@ from tests._swm_cache import sw197_export_path
 from tests.test_oracle import TUNES
 
 EXPORTS = ("bronkosaurus", "euphoria", "flashitback", "glacialblues")
-RETURN = 0x60  # RTS: each stretch runs on into code the spec does not state yet
+STACK = range(0x100, 0x200)
+BUDGET = 20000
 RANDOM_CASES = 300
 
 tune_id, tune_path = make_tune_fixtures(TUNES)
@@ -42,15 +44,11 @@ def _ticks(mem: bytearray, found: dict, rng: random.Random) -> None:
     mem[found["tmpstart"]] = rng.randrange(256)
 
 
-# Each stretch of the player the spec states: its routine, its first address, the addresses
-# its code leaves by (an RTS goes in each), and a random state for it.
+# Each stretch of the player the spec states, which runs on into code the spec does not
+# state yet: its first address, the address where it ends, and a random state for it.
 STRETCHES = {
-    "read_row": (
-        playspec.row_reader,
-        lambda view: (playspec.reader_end(view),),
-        _rows,
-    ),
-    "tick": (playspec.clock, playspec.clock_exits, _ticks),
+    "read_row": (playspec.row_reader, playspec.reader_end, _rows),
+    "tick": (playspec.clock, playspec.clock_stop, _ticks),
 }
 
 
@@ -58,16 +56,33 @@ def _export(name: str) -> bytes:
     return sw197_export_path(f"native/examples/sid-exports/{name}.sid").read_bytes()
 
 
-def _view(data: bytes, stretch: str) -> bytearray:
-    """The 64 KiB memory after the tune's init, with an RTS where ``stretch`` ends."""
-    view = bytearray(image_after_init(SidImage.from_sid(data)).window(0, 0x10000))
-    for address in STRETCHES[stretch][1](bytes(view)):
-        view[address] = RETURN
-    return view
+def _view(data: bytes) -> bytes:
+    """The 64 KiB memory after the tune's init."""
+    return bytes(image_after_init(SidImage.from_sid(data)).window(0, 0x10000))
+
+
+def _replay(found: dict, stretch: str, memory: bytes, entry: int, stop: int) -> list:
+    """The addresses outside the stack page where the spec routine and the jennings run of
+    the code from ``entry`` to ``stop`` leave ``memory`` differently."""
+    spec_mem = run(
+        elaborate(playspec.SPEC, found, routine=f"voice[0].{stretch}"),
+        bytearray(memory),
+        registers={"x": 0},
+    )
+    cpu_mem = bytearray(memory)
+    cpu = MPU(memory=cpu_mem)
+    cpu.x, cpu.sp, cpu.pc = 0, 0xFF, entry
+    for _ in range(BUDGET):
+        if cpu.pc == stop:
+            break
+        cpu.step()
+    else:
+        raise AssertionError(f"the code does not reach ${stop:04x}")
+    return [a for a in range(0x10000) if spec_mem[a] != cpu_mem[a] and a not in STACK]
 
 
 def _prove(data: bytes, stretch: str):
-    view = bytes(_view(data, stretch))
+    view = _view(data)
     return validate(
         playspec.SPEC,
         playspec.binding(view),
@@ -76,13 +91,13 @@ def _prove(data: bytes, stretch: str):
         STRETCHES[stretch][0](view),
         registers={"X": 0},
         preserve=("X",),
+        stop=STRETCHES[stretch][1](view),
     )
 
 
 @pytest.mark.parametrize("name", EXPORTS)
 def test_the_voices_cells_sit_seven_bytes_apart_from_the_found_addresses(name):
-    view = bytes(_view(_export(name), "read_row"))
-    found = playspec.binding(view)
+    found = playspec.binding(_view(_export(name)))
     program = elaborate(playspec.SPEC, found)
     for cell_name in ("fxval", "spdcnt"):
         placed = sorted(
@@ -95,23 +110,21 @@ def test_the_voices_cells_sit_seven_bytes_apart_from_the_found_addresses(name):
 @pytest.mark.parametrize("name", EXPORTS)
 def test_stretch_equals_the_6502_on_random_state(name, stretch):
     """Every random state leaves memory as the 6502 code leaves it."""
-    view = _view(_export(name), stretch)
-    found = playspec.binding(bytes(view))
-    entry = STRETCHES[stretch][0](bytes(view))
+    view = _view(_export(name))
+    found = playspec.binding(view)
+    entry, stop = STRETCHES[stretch][0](view), STRETCHES[stretch][1](view)
     rng = random.Random(name)
     for _ in range(RANDOM_CASES):
         memory = bytearray(view)
         STRETCHES[stretch][2](memory, found, rng)
-        assert not replay(
-            playspec.SPEC, found, f"voice[0].{stretch}", bytes(memory), entry, {"X": 0}
-        )
+        assert not _replay(found, stretch, bytes(memory), entry, stop)
 
 
 @pytest.mark.parametrize("stretch", STRETCHES)
 @pytest.mark.parametrize("name", EXPORTS)
 def test_stretch_is_proven_against_the_6502(name, stretch):
-    """The spec routine equals the 6502 code for all initial memory: the same bytes written
-    outside the stack page. Which exit the clock takes is not compared, only its writes."""
+    """The spec routine equals the 6502 code up to ``stop`` for all initial memory: the same
+    bytes written outside the stack page. The row signal the clock sets is not memory."""
     result = _prove(_export(name), stretch)
     assert result.proven, result.counterexample and {
         k: v for k, v in result.counterexample.items() if k != "memory"

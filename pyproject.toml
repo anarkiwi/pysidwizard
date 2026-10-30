@@ -31,8 +31,9 @@ dependencies = [
     # keys Python edges by qualname + statement digest, so line shifts and
     # module splits no longer stale the manifest, and it has the facet
     # registry (``SitePattern`` sites with provenance) and the ``locate()`` layout strategies.
-    # 0.43 adds ``pysidtracker.playspec`` and whole-song oracle fixtures (no ``frames=``).
-    "pysidtracker>=0.43.0",
+    # 0.43 adds ``pysidtracker.playspec`` and whole-song oracle fixtures (no ``frames=``); 0.46
+    # adds ``validate(stop=)``, which proves a spec routine against a stretch of a longer one.
+    "pysidtracker>=0.46.0",
 ]
 
 [project.optional-dependencies]

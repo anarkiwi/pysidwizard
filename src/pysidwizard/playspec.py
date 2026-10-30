@@ -64,10 +64,9 @@ def clock(view) -> int:
     return _clock(view).addr
 
 
-def clock_exits(view) -> tuple:
-    """The clock's two exits: the ``JMP`` of a tick that starts no row, then the row reader's start."""
-    end = _clock(view).addr + CLOCK.length
-    return end, end + 3
+def clock_stop(view) -> int:
+    """The clock's ``CMP #0``: where both its exits have written all they write."""
+    return _clock(view).addr + CLOCK.length - 4
 
 
 def binding(view) -> dict:
