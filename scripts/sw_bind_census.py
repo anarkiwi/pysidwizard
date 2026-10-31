@@ -1,8 +1,9 @@
 """Bind the SID-Wizard playspec to tunes and report each failure.
 
-    python scripts/sw_bind_census.py [TUNE.sid ...]
+    python scripts/sw_bind_census.py [--relocations] [TUNE.sid ...]
 
-Without arguments: the 1.97 example exports and the oracle tunes.
+Without arguments: the 1.97 example exports and the oracle tunes. ``--relocations``
+lists every reference that disagrees with the player's address instead of the first.
 """
 
 import argparse
@@ -46,19 +47,37 @@ def bind(path: Path) -> dict:
     return playspec.binding(view, None, (player.features, player.quirks))
 
 
+def record_relocations() -> list:
+    """Make ``_Scan.put`` keep the first address of a name and log each disagreement."""
+    conflicts: list = []
+
+    def put(self, routine, name, value):
+        first = self.found.setdefault(name, value)
+        if first != value:
+            conflicts.append((routine, name, value, first))
+
+    playspec._Scan.put = put  # pylint: disable=protected-access
+    return conflicts
+
+
 def main(argv=None) -> None:
     """Parse ``argv`` and run."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tunes", nargs="*", type=Path)
+    parser.add_argument("--relocations", action="store_true")
     args = parser.parse_args(argv)
     tunes = {p.stem: p for p in args.tunes} or default_tunes()
+    conflicts = record_relocations() if args.relocations else []
     failed = 0
     for name, path in tqdm(tunes.items(), desc="bind", unit="tune"):
+        del conflicts[:]
         try:
             bind(path)
         except Exception as exc:  # pylint: disable=broad-except
             failed += 1
             tqdm.write(f"{name}: {exc}")
+        for routine, cell, value, first in conflicts:
+            tqdm.write(f"{name}: {routine} {cell} ${value:04x} player ${first:04x}")
     print(f"{len(tunes) - failed}/{len(tunes)} bound")
 
 

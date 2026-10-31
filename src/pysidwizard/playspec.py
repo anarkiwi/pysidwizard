@@ -18,7 +18,33 @@ from pysidtracker.playspec import parse as parse_spec
 
 from .features import DRIVER_NORMAL, FLAG_FACETS, detect_variant, features_for_driver
 
-SPEC = parse_spec(resources.files(__package__).joinpath("specs/sidwizard.play").read_text())
+_SPEC_TEXT = resources.files(__package__).joinpath("specs/sidwizard.play").read_text()
+SPEC = parse_spec(_SPEC_TEXT)
+# The spec's per_proc cells, each placed at the layout field of its own name.
+_PER_PROC = frozenset(re.findall(r"cell (\w+):[^@;]+@\s*L\.\1\b[^;]*per_proc", _SPEC_TEXT))
+# Per_proc cells placed at a layout field derived from another one, with the offset.
+_DERIVED = {"zp": (("zp_lo", 0), ("zp_hi", 1))}
+# The spec procs that state each routine's accesses, for a routine's own variable address.
+_ROUTINE_PROCS: Dict[str, Tuple[str, ...]] = {
+    "TICK_0": ("tick_0",),
+    "TICK_1": ("tick_1",),
+    "TICK_2": ("tick_2", "chknote", "clegato", "legatoo"),
+    "the row reader": ("read_row",),
+    "PTN_SEQ": ("ptn_seq", "seq_step"),
+    "SEQ_FX": ("seq_fx", "at_seq_fx"),
+    "HARDRST": ("hardrst", "hrender", "at_hardrst"),
+    "STRTSND": ("strtsnd", "startsound", "startchord", "sound_tables", "setfltp"),
+    "VIBSLIDE": ("vibslide", "portame", "portend", "targetn", "dovibra", "subfreq", "addfreq"),
+    "FILTPRG": ("filtprg", "fladvan", "setfpos"),
+    "SETPWID": ("setpwid", "sepwpos", "pw_table"),
+    "WFARPTB": ("wfarptb", "wftable", "relptch", "absptch", "at_wfarptb"),
+    "WRPITCH": ("wfarptb", "wftable", "relptch", "absptch", "at_wfarptb"),
+    "SETFMOD": ("setfmod", "at_setfmod"),
+    "SETINBL": ("setnibl", "setinbh", "setnibh", "multi3c"),
+    "NOTE_FX": ("note_fx", "note_fx_at", "ngateof", "at_note_effect"),
+    "big effect $0e": ("bigfx", "at_big_effect"),
+    "PLAYER": ("sfx",),
+}
 
 VOICE_STRIDE = 7
 CHANNELS = 3
@@ -160,6 +186,7 @@ class _Scan:
         self.image = image(view)
         self.flags = flags
         self.found: Dict[str, int] = {}
+        self.sites: Dict[str, Dict[str, int]] = {}
 
     def word(self, addr: int) -> int:
         """The little-endian word at ``addr``."""
@@ -219,12 +246,43 @@ class _Scan:
         self.put(routine, name, value)
 
     def put(self, routine: str, name: str, value: int) -> None:
-        """Record ``name``; a different earlier value is an inconsistent build."""
+        """Record ``name``; a different earlier value is an inconsistent build, unless
+        ``name`` is a per_proc cell, which each routine may address on its own."""
+        if name in _PER_PROC:
+            key = routine if routine in _ROUTINE_PROCS else ""
+            first = self.sites.setdefault(name, {}).setdefault(key, value)
+            if first == value:
+                self.found.setdefault(name, value)
+                return
+            self.found[name] = first
         if self.found.setdefault(name, value) != value:
             raise ValueError(
                 f"SID-Wizard {routine} addresses {name} at ${value:04x}, the player at "
                 f"${self.found[name]:04x}: a partly relocated player is not stated"
             )
+
+    def per_proc(self) -> Dict[str, int]:
+        """Each per_proc cell's shared address (the one its routines without spec procs
+        use, else its commonest) and ``name@proc`` for each other routine's spec procs."""
+        out: Dict[str, int] = {}
+        for name, sites in self.sites.items():
+            values = list(sites.values())
+            shared = sites.get("", max(values, key=values.count))
+            self.found[name] = shared
+            for routine, value in sites.items():
+                if value == shared:
+                    continue
+                for proc in _ROUTINE_PROCS[routine]:
+                    if out.setdefault(f"{name}@{proc}", value) != value:
+                        raise ValueError(
+                            f"SID-Wizard {proc} addresses {name} at ${value:04x} and "
+                            f"${out[f'{name}@{proc}']:04x}"
+                        )
+        for name, derived in _DERIVED.items():
+            for key in [k for k in out if k.split("@")[0] == name]:
+                for field, offset in derived:
+                    out[f"{field}@{key.split('@')[1]}"] = out[key] + offset
+        return out
 
 
 def _commonregs(scan: _Scan, addr: int) -> None:
@@ -833,7 +891,11 @@ def _scan(scan: _Scan, player: int, commonregs: int, mulply: Optional[int]) -> d
     _cntplay(scan)
     _subroutines(scan)
     _effects(scan)
-    return scan.found
+    overrides = scan.per_proc()
+    for name, derived in _DERIVED.items():
+        for field, offset in derived:
+            scan.found[field] = scan.found[name] + offset
+    return {**scan.found, **overrides}
 
 
 def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) -> dict:
@@ -862,6 +924,7 @@ def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) 
         found["sidg"] = found["sid"]
     for name in _OPTIONAL:
         found.setdefault(name, 0)
+    found.setdefault("exptabh_m1", (found["exptabh"] - 1) & 0xFFFF)
     for name in ("tablereset", *_SHAPES):
         del flags[name]
     found.update(
