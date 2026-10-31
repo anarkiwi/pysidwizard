@@ -138,9 +138,20 @@ _RELEASE = (
     "bigfx_delay_16",
     "bigfx1f_toggle",
     "hrgtoff_or8",
+    "noins_rts",
 )
 # Code shapes that state the same play call, read from the code and not bound.
-_SHAPES = ("legato_jmp", "ghostloop_bpl", "subtjmp_var", "row_reader_jmp", "fsb_bmi")
+# Feature flags read from the code the binder matches rather than from their probes.
+_FROM_CODE = (
+    "allghostregs",
+    "retainzeropage",
+    "filtkbtrack",
+    "finefiltsweep",
+    "hardrestypes",
+    "transposesupp",
+    "octaveshift",
+)
+_SHAPES = ("legato_jmp", "ghostloop_bpl", "subtjmp_var", "row_reader_jmp", "fsb_bmi", "ptnseq_jmp")
 _ALT = re.compile(r"<(\w+):([^<|>]*)(?:\|([^<>]*))?>")
 _ALT_NAME = re.compile(r"<(\w+):")
 _ZP_SAVE = "<retainzeropage: A5 {zp} 48 A5 ?? 48 |> "
@@ -382,8 +393,9 @@ def _dotrack(scan: _Scan) -> None:
         at,
         "BC {ptnpos:w} <transposesupp: BD {transp2:w} 9D {transp:w} |> BD {packcnt:w} D0 ?? "
         "C8 B1 {zp} C9 FF D0 ?? BC {seqpos:w} C8 20 {seqsub:w} 10 ?? C9 FE D0 06 DE {spdcnt:w} "
-        "4C {cntplay:w} C9 FF <seq_fx_support: F0 0D 20 {seq_fx:w} C8 20 {seqsub:w} C9 FF F0 ?? "
-        "D0 ?? | D0 ?? > C8 20 {seqsub:w} 10 ?? <subtunejump: 20 {setseqa:w} "
+        "4C {cntplay:w} C9 FF <seq_fx_support: F0 <ptnseq_jmp: 0E | 0D > 20 {seq_fx:w} C8 "
+        "20 {seqsub:w} C9 FF F0 ?? <ptnseq_jmp: 4C ?? ?? | D0 ?? > | D0 ?? > C8 20 {seqsub:w} "
+        "10 ?? <subtunejump: 20 {setseqa:w} "
         "| <subtune_restarts: 8D {subtjmp_ref:w} |> > A9 00 A8 4C ?? ?? "
         "9D {curptn:w} 98 9D {seqpos:w} A0 00 98 9D {ptnpos:w} "
         "<fastspeedbind: BC {tmppos:w} B9 {p_tmpt3:w} 29 7F C9 03 30 {to_tick_2} |> "
@@ -431,12 +443,12 @@ def _hardrst(scan: _Scan, at: int) -> None:
 
 def _tick_2(scan: _Scan, at: int) -> None:
     """TICK_2 to SETADSR (1736-2056)."""
-    scan.put("TICK_2", "chknote", at + (16 if scan.flags["tablereset"] else 12))
     scan.at(
         "TICK_2",
         at,
         "<tablereset: A0 FF |> BD {curifx:w} F0 ?? C9 {sel_ins_limit} 10 ?? 9D {curins:w} "
-        "<tablereset: A0 3F 8C {tablrst_ref:w} |> BC {curins:w} D0 03 4C {legatoo:w} "
+        "<tablereset: A0 3F 8C {tablrst_ref:w} |> BC {curins:w} "
+        "<noins_rts: D0 01 60 | D0 03 4C {legatoo:w} > "
         + _pointer("ins", "4")
         + " BD {curnot:w} D0 06 20 {insptfx:w} 4C {cntply2:w} C9 60 30 06 20 {note_fx:w} "
         "4C {cntply2:w} 18 <octaveshift: A0 09 71 {zp} |> <transposesupp: 18 7D {transp:w} |> "
@@ -444,6 +456,11 @@ def _tick_2(scan: _Scan, at: int) -> None:
         "A9 3F DD {curifx:w} D0 {to_strtsnd} A9 7F 9D {freqmodh:w} A9 83 9D {slidevib:w} "
         "<legato_jmp: 4C {legatoo:w} | 20 {insptfx:w} 4C {wrwfgho:w} >",
     )
+    scan.put("TICK_2", "chknote", at + (16 if scan.flags["tablereset"] else 12))
+    if not scan.flags["tablereset"]:
+        scan.flags.update(pwresetsw=False, filtresetsw=False)
+    elif not (scan.flags["pwresetsw"] or scan.flags["filtresetsw"]):
+        raise ValueError("SID-Wizard TICK_2 sets TABLRST in a build with neither table reset")
     q = scan.flags
     if not q["frame1switch"]:
         frame1 = "A9 09 9D {wfghost:w}"
@@ -783,9 +800,9 @@ def _flags(features, quirks) -> Dict[str, Optional[bool]]:
     flags.update({k: v for k, v in asdict(quirks).items() if isinstance(v, bool)})
     flags.update({name: None for name in _RELEASE})
     flags["subtunejump"] = None
-    flags["allghostregs"] = None
+    flags.update({name: None for name in _FROM_CODE})
     flags.update({name: None for name in _SHAPES})
-    flags["tablereset"] = bool(flags["pwresetsw"] or flags["filtresetsw"])
+    flags["tablereset"] = None
     return flags
 
 

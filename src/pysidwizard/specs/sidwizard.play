@@ -35,7 +35,7 @@ layout {
   adsr_ad_first, seq_tempo_capped, table_fx_resets, subtune_restarts, sound_tables_first,
   sound_resets_flshift, vibamfx_amp_only, bigfx_v10, echo_support, hrender_inline,
   restart_trdelay, bigfx0d_falls, bigfx_delay_16, bigfx1f_toggle,
-  hrgtoff_or8: flag;
+  hrgtoff_or8, noins_rts: flag;
   order, chain: list;
 }
 
@@ -727,7 +727,9 @@ machine voice[x in 0..L.chn] {
     }
     let ins = curins;
     if ins == 0 {
-      legatoo();
+      if !L.noins_rts {
+        legatoo();
+      }
       return;
     }
     let carry_lo = point_lo(insl4[ins]);
