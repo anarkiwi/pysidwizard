@@ -131,9 +131,13 @@ _RELEASE = (
     "vibamfx_amp_only",
     "bigfx_v10",
     "echo_support",
+    "hrender_inline",
+    "restart_trdelay",
+    "bigfx0d_falls",
+    "bigfx_delay_16",
 )
 # Code shapes that state the same play call, read from the code and not bound.
-_SHAPES = ("legato_jmp",)
+_SHAPES = ("legato_jmp", "ghostloop_bpl")
 _ALT = re.compile(r"<(\w+):([^<|>]*)(?:\|([^<>]*))?>")
 _ALT_NAME = re.compile(r"<(\w+):")
 _ZP_SAVE = "<retainzeropage: A5 {zp} 48 A5 ?? 48 |> "
@@ -156,7 +160,7 @@ _MULPLY = _ZP_SAVE + (
 
 
 def image(view) -> SidImage:
-    """The 64 KiB ``view`` as a :class:`~pysidtracker.SidImage`."""
+    """The memory ``view`` as a :class:`~pysidtracker.SidImage`."""
     return SidImage.from_prg(b"\0\0" + bytes(view))
 
 
@@ -297,9 +301,10 @@ def _commonregs(scan: _Scan, addr: int) -> None:
     at = scan.at(
         "COMMONREGS",
         addr,
-        "<allghostregs: A2 0E 38 BD {sidg_sr:w} 9D {sid_sr:w} BD ?? ?? 9D ?? ?? BD {sidg:w} "
-        "9D ?? ?? BD ?? ?? 9D ?? ?? BD ?? ?? 9D ?? ?? BD ?? ?? 9D ?? ?? BD ?? ?? 9D ?? ?? "
-        "8A E9 07 AA B0 ?? |> A9 {at_fswitch} 09 {at_resonib} 8D {sid_resfc:w} A9 {at_mainvol} "
+        "<allghostregs: A2 0E <ghostloop_bpl: | 38 > BD {sidg_sr:w} 9D {sid_sr:w} BD ?? ?? "
+        "9D ?? ?? BD {sidg:w} 9D ?? ?? BD ?? ?? 9D ?? ?? BD ?? ?? 9D ?? ?? BD ?? ?? 9D ?? ?? "
+        "BD ?? ?? 9D ?? ?? 8A <ghostloop_bpl: 38 |> E9 07 AA <ghostloop_bpl: 10 | B0 > ?? |> "
+        "A9 {at_fswitch} 09 {at_resonib} 8D {sid_resfc:w} A9 {at_mainvol} "
         "09 {at_fltband} <echo_support: | 8D {sid_fmvol:w} > 18 <filtkbtrack: A9 "
         "{at_ckbdtrk} F0 0A AE {fltctrl_ref:w} "
         "7D {dpitch:w} A8 B9 {exptabh:w} 69 {at_ctfhgho} | A9 {at_ctfhgho} > "
@@ -388,11 +393,20 @@ def _hardrst(scan: _Scan, at: int) -> None:
         "BC {curnot:w} F0 04 C0 60 90 03 4C {cntplay:w} BC {curfx2:w} C0 03 F0 ?? "
         "<portame_notefx: BC {slidevib:w} C8 F0 ?? |> BC {curifx:w} "
         "<hardrestypes: F0 06 C0 3F F0 ?? 30 03 BC {curins:w} 48 " + _pointer("ins", "2") + " 68 "
-        "A0 00 31 {zp} F0 ?? A9 FE 9D {ptngate:w} 3D {wfghost:w} 9D {wfghost:w} " + hr_adsr + ""
-        "29 04 F0 ?? A9 18 9D {wfghost:w} 9D {sidg_wave:w} 60 "
+        "A0 00 31 {zp} <hrender_inline: D0 {to_hrgtoff} | F0 ?? A9 FE 9D {ptngate:w} "
+        "3D {wfghost:w} 9D {wfghost:w} " + hr_adsr + ""
+        "29 04 F0 ?? A9 18 9D {wfghost:w} 9D {sidg_wave:w} 60 > "
         "| C0 3F F0 ?? A9 FE 9D {ptngate:w} 3D {wfghost:w} 9D {wfghost:w} "
         "A9 0F 9D {sidg_ad:w} A9 00 9D {sidg_sr:w} >",
     )
+    if scan.flags["hrender_inline"]:
+        scan.at(
+            "HRGTOFF",
+            scan.found["to_hrgtoff"],
+            "B1 {zp} 29 04 F0 05 A9 18 9D {wfghost:w} C8 B1 {zp} 9D {sidg_ad:w} C8 B1 {zp} "
+            "9D {sidg_sr:w} A9 FE 9D {ptngate:w} 3D {wfghost:w} 9D {wfghost:w} "
+            "9D {sidg_wave:w} 60",
+        )
     if scan.found.setdefault("hrender", at) != at:
         raise ValueError("SID-Wizard HRENDER is not where HARDRST ends")
     scan.at("HRENDER", at, "BC {curins:w} " + _pointer("ins", "3") + " 4C {hr_exit:w}")
@@ -550,7 +564,8 @@ def _subroutines(scan: _Scan) -> None:
             "SETSEQA",
             scan.found["setseqa"],
             "8E {xstore_ref:w} 0A 0A 0A 8D {subtpos_ref:w} BD {trktmpos:w} 0A E9 02 AA 4A 18 "
-            "69 {at_subtpos} A8 B9 {p_subt1:w} 9D ?? ?? C8 B9 {p_subt2:w} 9D ?? ?? "
+            "69 {at_subtpos} A8 B9 {p_subt1:w} <swp: 18 6D {swp_offset:w} |> 9D ?? ?? C8 "
+            "B9 {p_subt2:w} <swp: 6D {swp_offset_hi:w} |> 9D ?? ?? "
             "A2 {at_xstore} 60",
         )
     if scan.flags["subtune_restarts"]:
@@ -566,7 +581,8 @@ def _subroutines(scan: _Scan) -> None:
             scan.found["restart"],
             "A2 0E A9 00 9D {transp2:w} 9D {seqtempo:w} 9D {ptnpos:w} 9D {tmppos:w} "
             "9D {tmpbase:w} 9D {seqpos:w} 8D {subtjmp_ref:w} A0 00 20 {seqsub:w} 10 0E C9 FE "
-            "B0 0D 20 {seq_fx:w} C8 98 9D {seqpos:w} D0 ED 9D {curptn:w} 8A 38 E9 07 AA 10 CA 60",
+            "B0 0D 20 {seq_fx:w} C8 98 9D {seqpos:w} D0 ED 9D {curptn:w} "
+            "<restart_trdelay: A9 FF 9D {trdelay:w} |> 8A 38 E9 07 AA 10 ?? 60",
         )
         scan.put("RESTART", "restart_next", end - 8)
         found = scan.found
@@ -681,7 +697,7 @@ _BIG_FX = {
     "<table_fx_resets: A9 00 9D {pweepcnt:w} |> 60",
     0x0B: "20 {multi3c:w} A0 0B 71 {zp} 8D {fltposi_ref:w} "
     "<table_fx_resets: A9 00 8D {cwepcnt_ref:w} |> 60",
-    0x0D: "9D {detuner:w} 60",
+    0x0D: "9D {detuner:w} <bigfx0d_falls: | 60 >",
     0x0E: "29 0F 9D {pwhigho:w} 60",
     0x0F: "<bigfx_v10: 8D {flshift_ref:w} | 8D {ctfhgho_ref:w} > 60",
     0x10: "09 80 8D {p_tmpt6:w} A9 00 <tempoprgsupp: 8D {tmppos:w} 8D ?? ?? 8D ?? ?? "
@@ -723,6 +739,11 @@ def _effects(scan: _Scan) -> None:
         "<wfctrl_smallfx: BD {wfghost:w} 20 {setnibl:w} <wfctrl_fx_stores: <wfctrl_jmp: "
         "4C {writewf:w} | 9D {wfghost:w} 60 > | 60 > | 60 >",
     )
+    _bigfx(scan, end2 + scan.view[small + 7], end2 + scan.view[small + 0x0C])
+
+
+def _bigfx(scan: _Scan, smalfx7: int, smalfxc: int) -> None:
+    """BIGFXTABLE's routines: the effects, and the labels its entries name."""
     big = scan.found["bigfxtable"]
     target = {n: scan.word(big + 2 * n) for n in range(1, 0x20)}
     scan.at("big effect $04", target[4], _BIG_FX[4])
@@ -731,13 +752,20 @@ def _effects(scan: _Scan) -> None:
         if n != 4 or not v10:
             scan.put("BIGFXTABLE", name, target[n] + (2 if n == 2 else 0))
     scan.put("BIGFXTABLE", "setdetu", target[0x0D])
-    scan.put("BIGFXTABLE", "forcvib", target[9 if v10 else 0x16] - 4)
+    if scan.flags["bigfx_delay_16"] is None:
+        scan.flags["bigfx_delay_16"] = target[0x16] == target[0x1D] != target[0x1E]
+    delay16 = scan.flags["bigfx_delay_16"]
+    scan.put("BIGFXTABLE", "forcvib", target[9 if v10 or delay16 else 0x16] - 4)
     scan.at("FORCVIB", scan.found["forcvib"], "A0 00 B1 {zp} 29 30 9D {slidevib:w} 60")
-    if target[7] != end2 + scan.view[small + 7] or target[0x0C] != end2 + scan.view[small + 0x0C]:
+    if target[7] != smalfx7 or target[0x0C] != smalfxc:
         raise ValueError("SID-Wizard BIGFXTABLE: $07/$0C are not SMALFX7/SMALFXC")
     if any(target[n] != target[0x1C] for n in range(0x17, 0x1C)):
         raise ValueError("SID-Wizard BIGFXTABLE: $17..$1B are not BIGFX1C")
     for n, text in _BIG_FX.items():
+        if delay16 and n in (0x16, 0x1C):
+            if target[n] != target[0x1D]:
+                raise ValueError(f"SID-Wizard BIGFXTABLE: ${n:02x} is not BIGFX1D")
+            continue
         scan.at(f"big effect ${n:02x}", target[n], text)
     if scan.flags["tempoprgsupp"]:
         scan.at("TRAKTMP", scan.found["traktmp"], "09 80 BC {trktmpos:w} 99 {p_tmpt8:w}")
@@ -900,7 +928,7 @@ def _scan(scan: _Scan, player: int, commonregs: int, mulply: Optional[int]) -> d
 
 def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) -> dict:
     """The playspec layout of the player whose PLAYER or MULPLY is ``entry`` (default: the
-    first PLAYER) in the 64 KiB ``view``, for ``variant`` ``(features, quirks)`` (default:
+    first PLAYER) in the memory ``view``, for ``variant`` ``(features, quirks)`` (default:
     :func:`detect`'s). Raises :class:`ValueError` for a build the spec does not state.
     """
     view = bytes(view)

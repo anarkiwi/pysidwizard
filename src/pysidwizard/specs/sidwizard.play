@@ -33,7 +33,8 @@ layout {
   first_frame_freq_by_track, first_frame_fixed_waveform, filter_stop_rewinds,
   kbtrack_fswitch, wfctrl_fx_stores, mulply, play_gate, gate_minus, swp, sfx, hr_ad_first,
   adsr_ad_first, seq_tempo_capped, table_fx_resets, subtune_restarts, sound_tables_first,
-  sound_resets_flshift, vibamfx_amp_only, bigfx_v10, echo_support: flag;
+  sound_resets_flshift, vibamfx_amp_only, bigfx_v10, echo_support, hrender_inline,
+  restart_trdelay, bigfx0d_falls, bigfx_delay_16: flag;
   order, chain: list;
 }
 
@@ -525,8 +526,18 @@ machine voice[x in 0..L.chn] {
     let doubled = t << 1;
     let track = doubled - 3 + u8(neg(t));
     let y = (track >> 1) + subtpos;
-    mem[L.p_seqt1 - 1 + u16(track)] := subt1[y];
-    mem[L.p_seqt1 + u16(track)] := subt2[y + 1];
+    let lo = subt1[y];
+    let c = false;
+    if L.swp {
+      c := carry(lo, swp_lo);
+      lo := lo + swp_lo;
+    }
+    mem[L.p_seqt1 - 1 + u16(track)] := lo;
+    let hi = subt2[y + 1];
+    if L.swp {
+      hi := hi + swp_hi + u8(c);
+    }
+    mem[L.p_seqt1 + u16(track)] := hi;
   }
 
   // SID-Wizard 1.0's INIT for the voice: the delayed values cleared, then the orderlist
@@ -557,6 +568,9 @@ machine voice[x in 0..L.chn] {
           walking := false;
         }
       }
+    }
+    if L.restart_trdelay {
+      trdelay := 0xFF;
     }
   }
 
@@ -605,6 +619,17 @@ machine voice[x in 0..L.chn] {
         return;
       }
       c := y >= LEGATO;
+    }
+    if L.hrender_inline {
+      if mem[zp] & 4 != 0 {
+        wfghost := 0x18;
+      }
+      sidg_ad := mem[zp + 1];
+      sidg_sr := mem[zp + 2];
+      ptngate := 0xFE;
+      wfghost &= 0xFE;
+      sidg_wave := wfghost;
+      return;
     }
     ptngate := 0xFE;
     wfghost &= 0xFE;
@@ -1644,6 +1669,9 @@ machine voice[x in 0..L.chn] {
       smalfxc(a);
     } elif n == 0x0D {
       detuner := a;
+      if L.bigfx0d_falls {
+        pwhigho := a & 0x0F;
+      }
     } elif n == 0x0E {
       pwhigho := a & 0x0F;
     } elif n == 0x0F {
@@ -1675,6 +1703,10 @@ machine voice[x in 0..L.chn] {
     } elif n == 0x15 {
       if L.tempoprgsupp && !z {
         trktmp3(tmpp2[a]);
+      }
+    } elif L.bigfx_delay_16 && n >= 0x16 && n <= 0x1D {
+      if L.delaysupport {
+        delayer(a);
       }
     } elif n == 0x16 {
       if !L.bigfx_v10 {
