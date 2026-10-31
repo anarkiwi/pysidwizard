@@ -35,8 +35,9 @@ dependencies = [
     # adds ``validate(stop=)``, which proves a spec routine against a stretch of a longer one;
     # 0.48.1 has ``SpecPlayer``'s fallback to the lowest static entry; 0.49 lowers each proc
     # once (a small generated player, fast under a tracer) and has ``volatile`` cells; 0.50
-    # runs ``run_editor`` entries as ``(start, stop)`` pairs (``pysidwizard.sidmaker``'s echo save); 0.50.1 banks SID access by ``$01``.
-    "pysidtracker>=0.53.0",
+    # runs ``run_editor`` entries as ``(start, stop)`` pairs (``pysidwizard.sidmaker``'s echo save); 0.50.1 banks SID access by ``$01``; 0.53.1
+    # refuses a hosted tune whose interrupts reach no modelled entry.
+    "pysidtracker>=0.53.1",
 ]
 
 [project.optional-dependencies]

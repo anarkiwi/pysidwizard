@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from pysidtracker import SidParseError
 from pysidtracker.survey import as_sid, file_oracle
 
 from pysidwizard import SWMPlayer, is_sidwizard_sid, parse_sid, parse_swm
@@ -81,13 +82,16 @@ def test_echo_exe_prg_reads_as_its_sid_export():
     assert parse_sid(_data(ECHO_EXE)) == parse_sid(_data(ECHO_SID))
 
 
-def test_echo_sid_reads_as_native_swm_and_renders_as_its_own_player():
+def test_echo_sid_reads_as_native_swm_and_is_refused_by_the_spec_player():
+    """The echo export's init sets no interrupt of its own, so its interrupts reach no
+    modelled entry and SpecPlayer refuses it."""
     data = _data(ECHO_SID)
     sid = parse_sid(data)
     swm = parse_swm(_data(ECHO_SWM))
     assert sid.load_address == 0x1400
     assert (sid.sequences, sid.patterns) == (swm.sequences, swm.patterns)
-    assert np.array_equal(_grid(sid, ECHO_FRAMES), file_oracle(data, 1, ECHO_FRAMES)[1])
+    with pytest.raises(SidParseError, match="reach no modelled entry"):
+        _grid(sid, ECHO_FRAMES)
 
 
 def test_wrapped_bare_prg_renders_as_its_own_player():

@@ -2,6 +2,7 @@
 that each raises its issue's refusal."""
 
 import pytest
+from pysidtracker import SidParseError
 
 from pysidwizard import SIDFormatError, SWMPlayer
 from tests._refused_songs import REFUSED
@@ -39,15 +40,23 @@ def assert_refused(path: str, swm) -> bool:
     return True
 
 
-# Tunes whose interrupt reaches no modelled entry: SpecPlayer plays their own 6502 without
-# the spec (pysidtracker#187; the build is #124's).
+# Tunes whose interrupt reaches no modelled entry, which SpecPlayer refuses
+# (pysidtracker#187; the build is #124's).
 SPEC_NEVER_RUNS = {"MUSICIANS/D/Deetsay/Asmlook.sid"}
 
 
-def assert_spec_ran(path: str, player) -> None:
-    """The spec played ``player``'s calls (a modelled entry ran), except for the tunes of
-    :data:`SPEC_NEVER_RUNS`, whose calls it does not reach."""
-    assert (player.entry is None) == (path in SPEC_NEVER_RUNS)
+def assert_spec_plays(path: str, swm, calls: int) -> None:
+    """``calls`` play calls of ``swm`` run the spec (a modelled entry ran), except for the
+    tunes of :data:`SPEC_NEVER_RUNS`, which raise SpecPlayer's refusal."""
+    player = SWMPlayer(swm)
+    if path in SPEC_NEVER_RUNS:
+        with pytest.raises(SidParseError, match="reach no modelled entry"):
+            for _ in range(calls):
+                player.play_frame()
+        return
+    for _ in range(calls):
+        player.play_frame()
+    assert player.entry is not None
 
 
-__all__ = ["REASONS", "REFUSED", "SPEC_NEVER_RUNS", "assert_refused", "assert_spec_ran"]
+__all__ = ["REASONS", "REFUSED", "SPEC_NEVER_RUNS", "assert_refused", "assert_spec_plays"]

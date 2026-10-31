@@ -49,7 +49,7 @@ from pysidwizard.sidreader import (
 )
 from tests._hvsc_corpus import PLAYER_RECOVERED, SAMPLE
 from tests._hvsc_fetch import HVSC_ROOT, resolve
-from tests._refused import assert_refused, assert_spec_ran
+from tests._refused import assert_refused, assert_spec_plays
 from tests._toy import assert_6502
 
 LOAD = 0x1000
@@ -809,17 +809,10 @@ def test_real_corpus_row_parses_and_plays(row):
         return  # SWMPlayer renders one chip (test_multi_sid_parses_every_chip)
     if assert_refused(row[0], swm):
         return
-    # Drive the player for a bounded sample.
-    player = SWMPlayer(swm)
-    for _ in range(300):
-        player.play_frame()
-    assert_spec_ran(row[0], player)
+    assert_spec_plays(row[0], swm, 300)
     if swm.subtune_count > 1:
-        # Every subtune must be independently playable.
         for n in range(swm.subtune_count):
-            sub_player = SWMPlayer(swm.subtune(n))
-            for _ in range(120):
-                sub_player.play_frame()
+            assert_spec_plays(row[0], swm.subtune(n), 120)
 
 
 def _corpus_census(rel: str):

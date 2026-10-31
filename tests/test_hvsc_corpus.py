@@ -44,7 +44,7 @@ from tests._hvsc_corpus import (
     SAMPLE,
 )
 from tests._hvsc_fetch import resolve
-from tests._refused import assert_refused, assert_spec_ran
+from tests._refused import assert_refused, assert_spec_plays
 
 
 def _path(rel: str):
@@ -91,10 +91,7 @@ def test_sample_parses_detects_direct_and_plays(rel):
 
     if assert_refused(rel, swm):
         return
-    player = SWMPlayer(swm)
-    for _ in range(300):
-        player.play_frame()
-    assert_spec_ran(rel, player)
+    assert_spec_plays(rel, swm, 300)
 
     if swm.subtune_count > 1:
         for n in range(swm.subtune_count):
@@ -179,7 +176,4 @@ def test_player_recovered_parses_and_plays(rel):
     if assert_refused(rel, swm):
         return
     for n in range(swm.subtune_count):
-        player = SWMPlayer(swm.subtune(n))
-        for _ in range(200):
-            player.play_frame()
-        assert_spec_ran(rel, player)
+        assert_spec_plays(rel, swm.subtune(n), 200)
