@@ -55,7 +55,7 @@ def _export(name: str) -> bytes:
 
 
 def _view(data: bytes) -> bytes:
-    """The 64 KiB memory after the tune's init."""
+    """The whole memory after the tune's init."""
     return bytes(image_after_init(SidImage.from_sid(data)).window(0, 0x10000))
 
 
@@ -324,7 +324,7 @@ def test_every_routine_is_proven_against_the_6502(name, group):
 @pytest.mark.parametrize("name", ALL_EXPORTS)
 def test_spec_memory_equals_the_6502_over_the_whole_song(name):
     """SpecPlayer over the spec and the tune's own play routine leave the SID registers
-    and the 64 KiB outside the stack page equal after every call of the song."""
+    and the whole memory outside the stack page equal after every call of the song."""
     data = _export(name)
     if name in REFUSED_EXPORTS:
         with pytest.raises(ValueError, match=REFUSED_EXPORTS[name]):
@@ -368,7 +368,6 @@ def test_every_routine_of_a_v10_player_is_proven_against_the_6502(group):
 
 
 @pytest.mark.oracle
-@pytest.mark.skip(reason="tv.validate applies assume only after path exploration: pysidtracker#177")
 def test_a_v10_voice_restart_is_proven_against_the_6502():
     """1.0's subtune restart of the last voice (X = 14), up to the next voice's, for an
     orderlist that starts with at most one sequence effect."""
