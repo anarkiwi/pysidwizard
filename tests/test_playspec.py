@@ -32,25 +32,18 @@ STACK = range(0x100, 0x200)
 BUDGET = 20000
 RANDOM_CASES = 300
 # Players the binder refuses, by the reason it gives.
-REFUSED_EXPORTS = {
-    "echo-test": "echo builds",
-    **{name: "multi-SID" for name in ALL_EXPORTS if name.endswith("SID")},
-}
+REFUSED_EXPORTS = {name: "multi-SID" for name in ALL_EXPORTS if name.endswith("SID")}
 REFUSED_TUNES = {
-    **{
-        name: "partly relocated"
-        for name in (
-            "moofistication",
-            "easyriff",
-            "mega_run",
-            "mid_of_ages",
-            "memory_invaders",
-            "club64",
-            "too_long_on_disk",
-        )
-    },
-    "sheepoid_dx": "SID-Wizard 1.0",
-    "pantheon": "SID-Wizard 1.0",
+    name: "partly relocated"
+    for name in (
+        "moofistication",
+        "easyriff",
+        "mega_run",
+        "mid_of_ages",
+        "memory_invaders",
+        "club64",
+        "too_long_on_disk",
+    )
 }
 STATED_TUNES = {k: v for k, v in TUNES.items() if k not in REFUSED_TUNES}
 
@@ -152,8 +145,10 @@ def routines(found: dict, view: bytes):
         ("SELNTFX", "voice[0].at_selntfx", found["selntfx"], found["indexj1_end"] - 2, one),
         ("SMALPFX", "voice[0].at_smalsel", found["smalpfx"], found["indexj2_end"] - 2, one),
         ("BIGPTFX", "voice[0].at_bigptfx", found["bigptfx"], found["indexjp"] - 1, one),
-        ("COMMONREGS", "commonregs.step", found["commonregs"], found["retplay"], one),
+        ("COMMONREGS", "commonregs.step", found["chipregs"], found["retplay"], one),
     ]
+    if found["subtune_restarts"]:
+        out.append(("SETSTUNE", "subtune.at_setstune", found["setstune"], None, one))
     if not found["chordsupport"]:
         out.append(("WFARPTB", "voice[0].at_wfarptb", found["wfarptb"], None, one))
     for label, routine, flag in (
@@ -242,6 +237,7 @@ GROUPS = {
         "SMALPFX",
         "BIGPTFX",
         "COMMONREGS",
+        "SETSTUNE",
         "SEQ_FX",
         "SETSEQA",
         "TRAKTMP",
@@ -253,10 +249,16 @@ GROUPS = {
 # The table and sound-start routines, whose proofs take minutes: oracle-marked.
 LONG_GROUPS = {"tables": ("VIBSLIDE", "FILTPRG", "SETPWID", "WFARPTB", "STRTSND")}
 # The exports whose routines are proven in the default suite: every build of the set.
-PROOF_EXPORTS = EXPORTS + ("kicksamule", "cloudlessr", "demo-example")
+PROOF_EXPORTS = EXPORTS + ("kicksamule", "cloudlessr", "demo-example", "echo-test")
+# A SID-Wizard 1.0 player, whose routines are proven in the oracle job.
+V10_TUNE = "pantheon"
 # The exports whose table routines are proven in the oracle job; the four larger songs'
 # proofs outlast its budget.
 TABLE_EXPORTS = ("kicksamule", "cloudlessr", "demo-example")
+
+
+def _tune_view(name: str) -> bytes:
+    return _view(Path(resolve_tune(TUNES[name])).read_bytes())
 
 
 def _prove_group(view: bytes, group: str) -> int:
@@ -359,6 +361,32 @@ def test_table_routines_are_proven_against_the_6502(name, group):
 
 
 @pytest.mark.oracle
+@pytest.mark.parametrize("group", {**GROUPS, **LONG_GROUPS})
+def test_every_routine_of_a_v10_player_is_proven_against_the_6502(group):
+    """SID-Wizard 1.0's routines, their release differences included, from their labels."""
+    assert _prove_group(_tune_view(V10_TUNE), group)
+
+
+@pytest.mark.oracle
+def test_a_v10_voice_restart_is_proven_against_the_6502():
+    """1.0's subtune restart of the last voice (X = 14), up to the next voice's."""
+    view = _tune_view(V10_TUNE)
+    found = playspec.binding(view)
+    pc = found["restart"] + 2
+    result = validate(
+        playspec.SPEC,
+        found,
+        "voice[2].restart",
+        view,
+        pc,
+        registers={"X": 14},
+        preserve=("X",),
+        stop=found["restart_next"],
+    )
+    _assert_proven(result, found, "RESTART", "voice[2].restart", pc)
+
+
+@pytest.mark.oracle
 def test_spec_memory_equals_the_6502_for_every_oracle_tune(tune_path):  # noqa: F811
     """Every call of every stated oracle tune's whole song leaves both players equal."""
     data = tune_path.read_bytes()
@@ -383,6 +411,6 @@ def test_sound_effects_of_an_sfx_build_equal_the_6502(name):
 @pytest.mark.parametrize("name", REFUSED_TUNES)
 def test_players_the_spec_does_not_state_are_refused(name):
     """The binder names why it does not bind each player the spec does not state."""
-    view = _view(Path(resolve_tune(TUNES[name])).read_bytes())
+    view = _tune_view(name)
     with pytest.raises(ValueError, match=REFUSED_TUNES[name]):
         playspec.binding(view)
