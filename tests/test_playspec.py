@@ -2,23 +2,23 @@
 
 # pylint: disable=redefined-outer-name
 
+import itertools
 import json
-import random
+import subprocess
 import sys
 from pathlib import Path
 
-import coverage
 import pytest
 import z3
-from jennings.devices.mpu6502 import MPU
 from pysidtracker import SidImage
 from pysidtracker.disasm import image_after_init
 from pysidtracker.maincli import main as cli
-from pysidtracker.playspec import elaborate, run
+from pysidtracker.playspec import elaborate
 from pysidtracker.playspec.tv import replay, validate
 from pysidtracker.testing import make_tune_fixtures, resolve_tune, song_frames
 
 from pysidwizard import playspec
+from tests._refused import REASONS, REFUSED
 from tests._swm_cache import SW197_EXPORT_SHA256, sw197_export_path
 from tests.test_oracle import TUNES
 
@@ -31,46 +31,12 @@ _SID_EXPORTS = "native/examples/sid-exports/"
 ALL_EXPORTS = tuple(Path(m).stem for m in SW197_EXPORT_SHA256 if m.startswith(_SID_EXPORTS))
 STACK = range(0x100, 0x200)
 BUDGET = 20000
-RANDOM_CASES = 300
 # Players the binder refuses, by the reason it gives.
-REFUSED_EXPORTS = {
-    "echo-test": "echo builds",
-    **{name: "multi-SID" for name in ALL_EXPORTS if name.endswith("SID")},
-}
-REFUSED_TUNES = {
-    **{
-        name: "partly relocated"
-        for name in (
-            "moofistication",
-            "easyriff",
-            "mega_run",
-            "mid_of_ages",
-            "memory_invaders",
-            "club64",
-            "too_long_on_disk",
-        )
-    },
-    "sheepoid_dx": "SID-Wizard 1.0",
-    "pantheon": "SID-Wizard 1.0",
-}
+REFUSED_EXPORTS = {name: "multi-SID" for name in ALL_EXPORTS if name.endswith("SID")}
+REFUSED_TUNES = {k: REASONS[REFUSED[v][1]] for k, v in TUNES.items() if 1 in REFUSED.get(v, {})}
 STATED_TUNES = {k: v for k, v in TUNES.items() if k not in REFUSED_TUNES}
 
 tune_id, tune_path = make_tune_fixtures(STATED_TUNES)
-
-
-def _first_difference(*args, **kwargs):
-    """``sw_spec_diff.first_difference`` with every coverage collector paused (an xdist
-    worker runs two): tracing the generated frame function slows SpecPlayer many times
-    over and measures no line of the package."""
-    paused = []
-    while (cov := coverage.Coverage.current()) is not None:
-        cov.stop()
-        paused.append(cov)
-    try:
-        return sw_spec_diff.first_difference(*args, progress=False, **kwargs)
-    finally:
-        for cov in reversed(paused):
-            cov.start()
 
 
 def _export(name: str) -> bytes:
@@ -78,37 +44,14 @@ def _export(name: str) -> bytes:
 
 
 def _view(data: bytes) -> bytes:
-    """The 64 KiB memory after the tune's init."""
+    """The whole memory after the tune's init."""
     return bytes(image_after_init(SidImage.from_sid(data)).window(0, 0x10000))
 
 
-def _rows(mem: bytearray, found: dict, rng: random.Random) -> None:
-    """A random pattern at a random pointer and random row-reader state."""
-    base = rng.choice([0x4000, 0x40C0, 0x7000])
-    for field in ("zp_note", "zp_inst", "zp_fx", "zp_value"):
-        mem[found[field]], mem[found[field] + 1] = base & 0xFF, base >> 8
-    row_bytes = [0, 0, 1, 0x31, 0x70, 0x71, 0x77, 0x78, 0x80, 0x85, 0x90, 0xB1, 0xC0, 0xFF]
-    for offset in range(0x100):
-        mem[base + offset] = rng.choice(row_bytes + [rng.randrange(256)])
-    mem[found["ptnpos"]] = rng.randrange(256)
-    mem[found["packcnt"]] = rng.choice([0, 0, 0, 1, 2, 5, 9])
-    for cell in ("curnot", "curifx", "curifx_long", "curfx2", "curval"):
-        mem[found[cell]] = rng.randrange(256)
-
-
-def _ticks(mem: bytearray, found: dict, rng: random.Random) -> None:
-    """A random tempo program and tick-clock state."""
-    for offset in range(0x100):
-        mem[found["tempotbl"] + offset] = rng.choice([0, 1, 2, 3, 5, 0x7F, 0x80, 0x81, 0xFF])
-    mem[found["spdcnt"]] = rng.choice([0, 1, 2, 3, rng.randrange(256)])
-    mem[found["tmppos"]] = rng.randrange(256)
-    mem[found["tmpbase"]] = rng.randrange(256)
-
-
-# Stretches whose code runs on into code they do not state: first address, end, random state.
+# Stretches whose code runs on into code they do not state: first address, end.
 STRETCHES = {
-    "read_row": (lambda b: b["read_row"], lambda b: b["reader_end"], _rows),
-    "tick": (lambda b: b["dotrack"], lambda b: b["tick_0"] - 7, _ticks),
+    "read_row": (lambda b: b["read_row"], lambda b: b["reader_end"]),
+    "tick": (lambda b: b["dotrack"], lambda b: b["tick_0"] - 7),
 }
 
 
@@ -121,26 +64,111 @@ def _word(view: bytes, at: int) -> int:
     return view[at] | view[at + 1] << 8
 
 
-def _table_row(found: dict, position: str):
-    """The table byte at voice 0's ``position`` through the zero-page pointer, as z3 reads it."""
+def _table_row(found: dict, position: str, column: int = 0):
+    """The byte ``column`` past voice 0's table ``position`` through the zero-page pointer,
+    as z3 reads it."""
 
     def byte(mem0):
         ptr = z3.Concat(z3.Select(mem0, found["zp"] + 1), z3.Select(mem0, found["zp"]))
-        return z3.Select(mem0, ptr + z3.ZeroExt(8, z3.Select(mem0, found[position])))
+        return z3.Select(mem0, ptr + z3.ZeroExt(8, z3.Select(mem0, found[position]) + column))
 
     return byte
 
 
-def _row_kinds(found: dict, position: str):
-    """The four kinds of table row by its first byte, $00..$7F, $80..$FD, $FE, $FF: cases
-    that together cover every table."""
+def _row_kinds(found: dict, position: str, counter: str = ""):
+    """The kinds of table row by its first byte, $00..$7F, $80..$FD, $FE, $FF: cases that
+    together cover every table. With the sweep ``counter`` cell, a $00..$7F row splits by
+    the code's branches: the sweep ended (its byte equals the counter), or a sweep step of
+    either sign."""
     byte = _table_row(found, position)
-    return [
-        (lambda m, _r: z3.ULT(byte(m), 0x80),),
-        (lambda m, _r: z3.And(z3.UGE(byte(m), 0x80), z3.ULT(byte(m), 0xFE)),),
-        (lambda m, _r: byte(m) == 0xFE,),
-        (lambda m, _r: byte(m) == 0xFF,),
+    step = _table_row(found, position, 1)
+
+    def sweep(m):
+        return z3.ULT(byte(m), 0x80)
+
+    kinds = [sweep]
+    if counter:
+        kinds = [
+            lambda m: z3.And(sweep(m), byte(m) == z3.Select(m, found[counter])),
+            lambda m: z3.And(
+                sweep(m), byte(m) != z3.Select(m, found[counter]), z3.ULT(step(m), 0x80)
+            ),
+            lambda m: z3.And(
+                sweep(m), byte(m) != z3.Select(m, found[counter]), z3.UGE(step(m), 0x80)
+            ),
+        ]
+    kinds += [
+        lambda m: z3.And(z3.UGE(byte(m), 0x80), z3.ULT(byte(m), 0xFE)),
+        lambda m: byte(m) == 0xFE,
+        lambda m: byte(m) == 0xFF,
     ]
+    return [(lambda m, _r, k=k: k(m),) for k in kinds]
+
+
+def _satisfiable(cases: list) -> list:
+    """The ``cases`` some memory satisfies."""
+    mem = z3.Array("cases", z3.BitVecSort(16), z3.BitVecSort(8))
+    return [c for c in cases if z3.Solver().check(c[0](mem, {})) == z3.sat]
+
+
+def _slidevib_kinds(found: dict):
+    """VIBSLIDE's branches by voice 0's SLIDEVIB (vibrato type 0, vibrato, slide down, slide
+    up, portamento, with PORTAVIBRA the note portamento $FF apart), a portamento further by
+    its direction to the note's frequency and the carries out of its low-byte difference,
+    comparison and step: the satisfiable cases, which together cover every state."""
+
+    def cell(m, name):
+        return z3.Select(m, found[name])
+
+    def target(m, table):
+        return z3.Select(m, found[table] + z3.ZeroExt(8, cell(m, "dpitch")))
+
+    def holds(lo: int, hi: int):
+        return lambda m: z3.And(z3.UGE(cell(m, "slidevib"), lo), z3.ULE(cell(m, "slidevib"), hi))
+
+    def below(m):
+        now = z3.Concat(cell(m, "freqhi"), cell(m, "freqlo"))
+        return z3.ULT(z3.Concat(target(m, "freqtbh"), target(m, "freqtbl")), now)
+
+    def low_borrow(m):
+        return z3.ULT(target(m, "freqtbl"), cell(m, "freqlo"))
+
+    def reach_carry(m):
+        diff, step = target(m, "freqtbl") - cell(m, "freqlo"), cell(m, "freqmodl")
+        return z3.If(below(m), z3.ULT(diff + step, diff), z3.ULT(diff, step))
+
+    def step_carry(m):
+        lo, step = cell(m, "freqlo"), cell(m, "freqmodl")
+        return z3.If(below(m), z3.ULT(lo, step), z3.ULT(lo + step, lo))
+
+    def case(*conds):
+        return (lambda m, _r: z3.And(*(c(m) for c in conds)),)
+
+    cases = [case(holds(lo, hi)) for lo, hi in ((0, 0), (1, 0x7F), (0x82, 0x82), (0x80, 0x81))]
+    portamentos = ((0xFF, 0xFF), (0x83, 0xFE)) if found["portavibra"] else ((0x83, 0xFF),)
+    for (lo, hi), signs in itertools.product(
+        portamentos, itertools.product((True, False), repeat=4)
+    ):
+        conds = [
+            c if sign else (lambda m, c=c: z3.Not(c(m)))
+            for c, sign in zip((below, low_borrow, reach_carry, step_carry), signs, strict=True)
+        ]
+        cases.append(case(holds(lo, hi), *conds))
+    return _satisfiable(cases)
+
+
+def _instrument_in_data(found: dict):
+    """The case where the instrument PLAYERZP addresses lies in the module's data: above
+    its instrument pointer tables and below the I/O area, so its bytes alias no player
+    cell, operand or chip register (as in every player the editor or SID-Maker builds)."""
+    tables = [found[k] for k in found if k.startswith(("p_insl", "p_insh")) and found[k]]
+    low = min(tables) if tables else 0
+
+    def holds(m, _r):
+        ptr = z3.Concat(z3.Select(m, found["zp"] + 1), z3.Select(m, found["zp"]))
+        return z3.And(z3.UGE(ptr, low), z3.ULT(ptr, 0xD000 - 0x200))
+
+    return [(holds,)]
 
 
 def routines(found: dict, view: bytes):
@@ -150,26 +178,47 @@ def routines(found: dict, view: bytes):
     one = [()]
     out = [
         ("CNTPLY1", "voice[0].at_cntply1", found["cntplay"] + 6, found["cntply2"], one),
-        ("VIBSLIDE", "voice[0].vibslide", found["cntply2"], found["filtprg"], one),
-        ("FILTPRG", "voice[0].filtprg", found["filtprg"], found["setpwid"], one),
+        (
+            "VIBSLIDE",
+            "voice[0].vibslide",
+            found["cntply2"],
+            found["filtprg"],
+            _slidevib_kinds(found),
+        ),
+        (
+            "FILTPRG",
+            "voice[0].filtprg",
+            found["filtprg"],
+            found["setpwid"],
+            _row_kinds(found, "fltposi", "cwepcnt"),
+        ),
         (
             "SETPWID",
-            "voice[0].pw_table",
+            "voice[0].at_pw_rows",
             found["setpwid"],
-            found["wfarptb"],
-            _row_kinds(found, "pwtpos"),
+            found["endpwtb"],
+            _row_kinds(found, "pwtpos", "pweepcnt"),
         ),
+        ("ENDPWTB", "voice[0].at_endpwtb", found["endpwtb"], found["wfarptb"], one),
         ("SETVIB0", "voice[0].setvib0", found["setvib0"], None, one),
         ("SETVIB1", "voice[0].setvib1", found["setvib1"], None, one),
         ("SETVIBR", "voice[0].at_setvibr", found["setvibr"], None, one),
         ("SETFMOD", "voice[0].at_setfmod", found["setfmod"], None, one),
         ("FORCVIB", "voice[0].forcvib", found["forcvib"], None, one),
-        ("STRTSND", "voice[0].startsound", found["to_strtsnd"], found["setadsr_fx"], one),
+        (
+            "STRTSND",
+            "voice[0].startsound",
+            found["to_strtsnd"],
+            found["setadsr_fx"],
+            _instrument_in_data(found),
+        ),
         ("SELNTFX", "voice[0].at_selntfx", found["selntfx"], found["indexj1_end"] - 2, one),
         ("SMALPFX", "voice[0].at_smalsel", found["smalpfx"], found["indexj2_end"] - 2, one),
         ("BIGPTFX", "voice[0].at_bigptfx", found["bigptfx"], found["indexjp"] - 1, one),
-        ("COMMONREGS", "commonregs.step", found["commonregs"], found["retplay"], one),
+        ("COMMONREGS", "commonregs.step", found["chipregs"], found["retplay"], one),
     ]
+    if found["subtune_restarts"]:
+        out.append(("SETSTUNE", "subtune.at_setstune", found["setstune"], None, one))
     if not found["chordsupport"]:
         out.append(("WFARPTB", "voice[0].at_wfarptb", found["wfarptb"], None, one))
     for label, routine, flag in (
@@ -214,26 +263,6 @@ def _prove(
     )
 
 
-def _stretch_replay(found: dict, stretch: str, memory: bytes, entry: int, stop: int) -> list:
-    """The addresses outside the stack page where the spec routine and the jennings run
-    of the code from ``entry`` to ``stop`` leave ``memory`` differently."""
-    spec_mem = run(
-        elaborate(playspec.SPEC, found, routine=f"voice[0].{stretch}"),
-        bytearray(memory),
-        registers={"x": 0},
-    )
-    cpu_mem = bytearray(memory)
-    cpu = MPU(memory=cpu_mem)
-    cpu.x, cpu.sp, cpu.pc = 0, 0xFF, entry
-    for _ in range(BUDGET):
-        if cpu.pc == stop:
-            break
-        cpu.step()
-    else:
-        raise AssertionError(f"the code does not reach ${stop:04x}")
-    return [a for a in range(0x10000) if spec_mem[a] != cpu_mem[a] and a not in STACK]
-
-
 def _assert_proven(result, found: dict, label: str, routine: str, pc: int) -> None:
     """A proof, or the counterexample confirmed on jennings."""
     if result.proven:
@@ -258,6 +287,7 @@ GROUPS = {
         "SMALPFX",
         "BIGPTFX",
         "COMMONREGS",
+        "SETSTUNE",
         "SEQ_FX",
         "SETSEQA",
         "TRAKTMP",
@@ -266,13 +296,29 @@ GROUPS = {
     "small": ("small",),
     "big": ("big",),
 }
-# The table and sound-start routines, whose proofs take minutes: oracle-marked.
-LONG_GROUPS = {"tables": ("VIBSLIDE", "FILTPRG", "SETPWID", "WFARPTB", "STRTSND")}
+# The table and sound-start routines, whose proofs take minutes, by their shards of cases:
+# oracle-marked, each shard in its own interpreter, since z3's search (so a proof's time)
+# hangs on every term made before it.
+LONG_ROUTINES = {
+    "VIBSLIDE": 4,
+    "FILTPRG": 1,
+    "SETPWID": 1,
+    "ENDPWTB": 1,
+    "WFARPTB": 1,
+    "STRTSND": 1,
+}
+CENSUS = Path(__file__).resolve().parent.parent / "scripts" / "sw_proof_census.py"
 # The exports whose routines are proven in the default suite: every build of the set.
-PROOF_EXPORTS = EXPORTS + ("kicksamule", "cloudlessr", "demo-example")
+PROOF_EXPORTS = EXPORTS + ("kicksamule", "cloudlessr", "demo-example", "echo-test")
+# A SID-Wizard 1.0 player, whose routines are proven in the oracle job.
+V10_TUNE = "pantheon"
 # The exports whose table routines are proven in the oracle job; the four larger songs'
 # proofs outlast its budget.
 TABLE_EXPORTS = ("kicksamule", "cloudlessr", "demo-example")
+
+
+def _tune_view(name: str) -> bytes:
+    return _view(Path(resolve_tune(TUNES[name])).read_bytes())
 
 
 def _prove_group(view: bytes, group: str) -> int:
@@ -280,7 +326,7 @@ def _prove_group(view: bytes, group: str) -> int:
     found = playspec.binding(view)
     proven = 0
     for label, routine, pc, stop, cases in routines(found, view):
-        if label.split()[0] not in {**GROUPS, **LONG_GROUPS}[group]:
+        if label.split()[0] not in GROUPS[group]:
             continue
         for assume in cases:
             result = _prove(view, found, routine, pc, stop=stop, assume=assume)
@@ -299,20 +345,6 @@ def test_the_voices_cells_sit_seven_bytes_apart_from_the_found_addresses(name):
             a for cell in program.cells if cell.name == cell_name for a in cell.extent()
         )
         assert placed == [found[cell_name] + 7 * voice for voice in range(3)]
-
-
-@pytest.mark.parametrize("stretch", STRETCHES)
-@pytest.mark.parametrize("name", EXPORTS)
-def test_stretch_equals_the_6502_on_random_state(name, stretch):
-    """Every random state leaves memory as the 6502 code leaves it."""
-    view = _view(_export(name))
-    found = playspec.binding(view)
-    entry, stop = STRETCHES[stretch][0](found), STRETCHES[stretch][1](found)
-    rng = random.Random(name)
-    for _ in range(RANDOM_CASES):
-        memory = bytearray(view)
-        STRETCHES[stretch][2](memory, found, rng)
-        assert not _stretch_replay(found, stretch, bytes(memory), entry, stop)
 
 
 @pytest.mark.parametrize("stretch", STRETCHES)
@@ -338,13 +370,13 @@ def test_every_routine_is_proven_against_the_6502(name, group):
 @pytest.mark.parametrize("name", ALL_EXPORTS)
 def test_spec_memory_equals_the_6502_over_the_whole_song(name):
     """SpecPlayer over the spec and the tune's own play routine leave the SID registers
-    and the 64 KiB outside the stack page equal after every call of the song."""
+    and the whole memory outside the stack page equal after every call of the song."""
     data = _export(name)
     if name in REFUSED_EXPORTS:
         with pytest.raises(ValueError, match=REFUSED_EXPORTS[name]):
             playspec.binding(_view(data))
         return
-    assert _first_difference(data, song_frames(data, 1)) is None
+    assert sw_spec_diff.first_difference(data, song_frames(data, 1), progress=False) is None
 
 
 @pytest.mark.parametrize("name", [n for n in ALL_EXPORTS if n not in REFUSED_EXPORTS])
@@ -366,19 +398,71 @@ def test_entries_are_the_players_play_and_multispeed_calls():
     assert playspec.entries(view) == {_word(view, table + 4), _word(view, table + 7)}
 
 
+def _long_cases(names):
+    return [
+        pytest.param(name, label, k, n, id=f"{name}-{label}-{k}/{n}")
+        for name in names
+        for label, n in LONG_ROUTINES.items()
+        for k in range(n)
+        if not (name == V10_TUNE and label == "WFARPTB")
+    ]
+
+
 @pytest.mark.oracle
-@pytest.mark.parametrize("group", LONG_GROUPS)
-@pytest.mark.parametrize("name", TABLE_EXPORTS)
-def test_table_routines_are_proven_against_the_6502(name, group):
-    """The table and sound-start routines from their labels, on every build of the set."""
-    assert _prove_group(_view(_export(name)), group)
+@pytest.mark.parametrize("name,label,shard,shards", _long_cases(TABLE_EXPORTS + (V10_TUNE,)))
+def test_table_routines_are_proven_against_the_6502(name, label, shard, shards):
+    """The table and sound-start routines from their labels, on every build of the set
+    and a 1.0 player (WFARPTB, proven on builds without chords, aside)."""
+    out = subprocess.run(
+        [sys.executable, str(CENSUS), name, "--only", label, "--shard", f"{shard}/{shards}"]
+        + ["--jobs", "1"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert out.returncode == 0, out.stdout[-4000:] + out.stderr[-4000:]
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize("group", GROUPS)
+def test_every_routine_of_a_v10_player_is_proven_against_the_6502(group):
+    """SID-Wizard 1.0's routines, their release differences included, from their labels."""
+    assert _prove_group(_tune_view(V10_TUNE), group)
+
+
+@pytest.mark.oracle
+@pytest.mark.skip(reason="the 1.0 voice restart proof does not finish (#126)")
+def test_a_v10_voice_restart_is_proven_against_the_6502():
+    """1.0's subtune restart of the last voice (X = 14), up to the next voice's, for an
+    orderlist that starts with at most one sequence effect."""
+    view = _tune_view(V10_TUNE)
+    found = playspec.binding(view)
+    pc = found["restart"] + 2
+    orderlist = _word(view, found["seqsub"] + 15)
+
+    def fx(mem0, offset):
+        byte = z3.Select(mem0, orderlist + offset)
+        return z3.And(z3.UGE(byte, 0x80), z3.ULT(byte, 0xFE))
+
+    result = validate(
+        playspec.SPEC,
+        found,
+        "voice[2].restart",
+        view,
+        pc,
+        registers={"X": 14},
+        preserve=("X",),
+        stop=found["restart_next"],
+        assume=(lambda mem0, _regs: z3.Not(z3.And(fx(mem0, 0), fx(mem0, 1))),),
+    )
+    _assert_proven(result, found, "RESTART", "voice[2].restart", pc)
 
 
 @pytest.mark.oracle
 def test_spec_memory_equals_the_6502_for_every_oracle_tune(tune_path):  # noqa: F811
     """Every call of every stated oracle tune's whole song leaves both players equal."""
     data = tune_path.read_bytes()
-    assert _first_difference(data, song_frames(data, None)) is None
+    assert sw_spec_diff.first_difference(data, song_frames(data, None), progress=False) is None
 
 
 @pytest.mark.oracle
@@ -392,13 +476,13 @@ def test_sound_effects_of_an_sfx_build_equal_the_6502(name):
         f: (sfxsub, (0x18 + f % 0x40, 0x20 + f % 0x30, 1 + f % 5)) for f in range(40, 3000, 97)
     }
     frames = song_frames(data, None)
-    assert _first_difference(data, frames, calls=calls) is None
+    assert sw_spec_diff.first_difference(data, frames, calls=calls, progress=False) is None
 
 
 @pytest.mark.oracle
 @pytest.mark.parametrize("name", REFUSED_TUNES)
 def test_players_the_spec_does_not_state_are_refused(name):
     """The binder names why it does not bind each player the spec does not state."""
-    view = _view(Path(resolve_tune(TUNES[name])).read_bytes())
+    view = _tune_view(name)
     with pytest.raises(ValueError, match=REFUSED_TUNES[name]):
         playspec.binding(view)

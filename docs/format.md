@@ -3,10 +3,10 @@
 ## Overview
 
 [SID-Wizard](https://csdb.dk/release/?id=258573) is a C64 music tracker by
-Hermit (Mihaly Horvath). `pysidwizard` implements its SWM file format and player
-IRQ from first principles, reads and writes native `.swm` modules byte-exactly,
-and additionally reads SID-Wizard `.sid` exports (plain or packed `SWP`) into the
-same `SWMFile` model for playback.
+Hermit (Mihaly Horvath). `pysidwizard` implements its SWM file format from first
+principles, reads and writes native `.swm` modules byte-exactly, reads SID-Wizard
+`.sid` exports (plain or packed `SWP`) into the same `SWMFile` model, and plays them
+with the playspec of the SID-Wizard player ([playspec.md](playspec.md)).
 
 ## Container and detection notes
 
@@ -176,8 +176,7 @@ subtunes — decode to empty (an unused pattern becomes an empty pattern of the
 tune's default length, the C64's own "empty but lengthy" slot). The correctness
 gate is strict where it matters: every pattern the primary subtune plays, and
 every instrument a played pattern selects, must decode from real in-image data,
-or the layout is rejected. The recovered module's SID-register output tracks the
-original `.sid` player's frame by frame.
+or the layout is rejected.
 
 ### Detection and relocation
 
@@ -232,15 +231,40 @@ prints each stream's parse tree. One start rule per stream kind:
 |---|---|---|
 | `sequence` | Orderlist bytes: `$00..$7F` pattern, `$80..$9F` transpose, `$A0..$AF` main volume, `$B0..$EF` tempo, `$F0..$FD` no-op | `$FE`, or `$FF` + a loop position (`< $80`) or subtune jump (`>= $80`) |
 | `pattern` | Rows: a note byte, then an instrument byte if the note's bit 7 is set, then an effect byte if the instrument's bit 7 is set, then a value byte if the effect is below `$20` | `$FF` |
-| `instrument` | 16-byte header, then the waveform, pulse and filter tables of three-byte rows | the filter table's `$FF` |
+| `instrument` | 16-byte header (one terminal per field), then the waveform, pulse and filter tables of three-byte rows | the filter table's `$FF` |
+| `wf_table`, `pw_table`, `filter_table` | One table read from its start | its `$FF` |
 | `chords` | Chords, each closed by `$7E` or `$7F` | the table's end |
 | `tempos` | Programs, each closed by a byte with bit 7 set | the table's end |
 
 Bytes after a stream's terminator are never read through its pointer. In a
 `pattern`, a `$70..$77` byte that follows a zero byte or another `$70..$77` byte
-is a run of 2..9 further empty rows; anywhere else it is an ordinary byte. An
-instrument's header pointers to its pulse and filter tables must equal where
+is a run of 2..9 further empty rows; anywhere else it is an ordinary byte. The
+postlexer (a `pysidtracker` `BitmapPostLex`) tags a note or instrument byte with
+bit 7 set, so the next column is a grammar alternative rather than a byte range.
+An instrument's header pointers to its pulse and filter tables must equal where
 those tables start.
+
+Every terminal names what the player does with its byte, and the transformer
+builds typed values (`pysidwizard.typed`) as `player.asm` decodes them:
+
+| Column / row | Bytes | Type |
+|---|---|---|
+| Note | `$01..$5F`, `$60..$77`, `$78..$7E`, `$7F` | `Note`, `VibratoAmplitude` (`.amplitude`), `Portamento` / `SyncOn` / `SyncOff` / `RingOn` / `RingOff` / `GateOn` / `GateOff`, `NoteEffect` (NOTEFXTBL's zero offset) |
+| Instrument | `$01..$3E`, `$3F`, `$40..$7F` | `SelectInstrument`, `Legato`, `SmallEffect` |
+| Effect | `$01..$1F` (+ value), `$20..$FF` | `BigEffect` (value in `Row.fx_value`), `SmallEffect` (`.effect` high nibble, `.value` low nibble) |
+| WF table | `$00..$0F`, `$10..$FD` | `RepeatRow`, `WaveRow`; pitch `RelativePitch` (`$00..$7E`, `$E0..$FF`, `.semitones`), `ChordPitch` (`$7F`), `KeepPitch` (`$80`), `AbsolutePitch` (`$81..$DF`, `.note`); detune `None` for `$FF` |
+| PW table | `$00..$7F`, `$80..$FD` | `PulseSweep(frames, step, keytrack)`, `PulseSet(high, low, keytrack)` |
+| Filter table | `$00..$7F`, `$80..$FD` | `FilterSweep(frames, step, keytrack)`, `FilterSet(band, resonance, cutoff, keytrack)` |
+| Any table | `$FE` | `TableJump(target, pad)`, `target` an offset from the instrument's base |
+| Chord / tempo table | | `Chord(intervals, loop)`, `TempoProgram(tempos)` |
+
+A column value is an `int` subclass equal to its byte, so typed rows compare and
+encode as plain ones; table rows, chords and tempo programs `encode()` back to
+their bytes. `Instrument.wf_rows` / `pw_rows` / `filter_rows` parse each table as
+the player reads it from its start, and `SWMFile.chords` / `tempo_programs` the
+song's tables. Ranges follow the full player build: a build without a feature
+reads some bytes differently (e.g. `$80` as an absolute pitch without
+`WFARP_NOP_SUPP`, instruments only below its `maxinstamount`).
 
 ## Data model
 
@@ -344,16 +368,19 @@ Every column of a `Row` is `None` by default and contributes nothing.
 
 ## Player and playback notes
 
-`SWMPlayer(swm).play_frame()` returns the per-frame `(offset, value)` writes for
-the SID registers that changed this frame, in the same order the real SID-Wizard
-player emits them (channel 3 → 2 → 1, then global filter + volume). Offsets are
+`SWMPlayer(swm)` is a `pysidtracker.playspec.SpecPlayer`: a model read from a `.sid`
+plays that container (`SWMFile.source`, from song `SWMFile.song`), a bare module the
+`.sid` SID-Maker `SWMFile.player_version` exports for it. The init runs on the 6502 and
+each play call runs `specs/sidwizard.play` on the tune's memory. `play_frame()`
+returns the `(offset, value)` writes for the SID registers that changed this call, in
+the player's order (channel 3 → 2 → 1, then global filter + volume). Offsets are
 `0..0x18` register offsets, not absolute `$D4xx` addresses. `iter_register_writes`
 wraps this into `RegWrite(clock, reg, val)`; `SWMPlayer(swm).render_grid(n)`
 returns `n` forward-filled 25-register rows.
 
-A `.sid`'s build flags, release quirks and init state are one `SWMFile.player`
-(`pysidwizard.PlayerImage`); a bare `.swm` has none, so the player takes its
-driver byte's build and the latest release's behaviour. Every build flag and
+A `.sid`'s build flags and release quirks are one `SWMFile.player`
+(`pysidwizard.PlayerImage`); a bare `.swm` has none, so its SID-Maker export takes
+its driver byte's build. Every build flag and
 release difference is one facet in `pysidwizard.features.FACETS`, keyed by its
 `player.asm` site (a `SitePattern`); `PlayerImage.provenance` records where each
 detected facet value was read (`detected@$addr`) and `PlayerImage.variant()` is
@@ -367,40 +394,28 @@ and validates.
 
 ### Player correctness
 
-The per-frame SID register output is validated byte-for-byte against the
-[`anarkiwi/sidtrace`](https://github.com/anarkiwi/sidtrace) sidplayfp oracle:
-`tests/test_oracle.py` renders the native `SWMPlayer` over a curated set of real
-HVSC SID-Wizard `.sid` exports and compares each frame against the oracle. These
-tunes collectively exercise the full 1-SID feature surface: pitched notes,
-gate-off note-FX, chord tables, multispeed (`frame_speed=2`), funktempo, BIGFX
-portamento, vibrato, filter walking, instrument inheritance across F1, the
-WRPITCH detune-with-carry chain. Run it with `pytest -m oracle` (requires
-Docker).
+`tests/test_playspec.py` proves spec routines against the player's 6502 (`tv.validate`)
+and plays whole songs with the full 64 KiB outside the stack page equal to the tune's
+own 6502 (`EmuPlayer`) after every call; `tests/test_spec_player.py` does the same for
+every SID-Maker build and the example modules. `tests/test_oracle.py` compares
+`SWMPlayer` frame by frame with the
+[`anarkiwi/sidtrace`](https://github.com/anarkiwi/sidtrace) sidplayfp oracle over a
+curated set of HVSC SID-Wizard exports (`pytest -m oracle`, requires Docker).
 
-### Init and setup frames
-
-`SWMPlayer` starts from the driver's INITER state, so its render lines up with
-the first play call:
+### Player semantics
 
 - INITER zeroes every per-track variable. SPDCNT, PTNGATE and ARPSCNT start at 0,
   so call 0 runs TICK_0 (the row read), call 1 runs TICK_1, and the row's note
   starts at TICK_2. The default build never reaches TICK_2 at tempo 1 or 2.
 - During those setup ticks of a new-note row, HARDRST → HRENDER loads PLAYERZP
   from CURINS without testing it. While CURINS is still 0, it reads instrument
-  0, which the exporter links to instrument 1 (`packdepack.inc:621-633`). It
-  walks that instrument from absolute offset 0, so the header bytes are read as
-  WF rows. HRGTOFF sets PTNGATE first; an instrument without a TICK_0 HR bit
-  keeps INITER's gate of 0. CNTPLAY returns on CURINS = 0, so note-less rows
-  walk nothing.
+  0, which the exporter links to instrument 1 (`packdepack.inc:621-633`), from
+  absolute offset 0, so the header bytes are read as WF rows. CNTPLAY returns on
+  CURINS = 0, so note-less rows walk nothing.
 - The CIA multispeed player (`exporter.asm` CIAPLAY) counts calls from 0, so
-  the first `frame_speed - 1` calls are MULPLY and call `frame_speed` is
-  PLAYER. MULCNTP does not test CURINS, so it walks instrument 0 until the
-  first STRTSND sets ARPSCNT to `$FF`.
-- The SID starts from the registers the init wrote (`PlayerImage.sid_init`):
-  INITER clears the chip with `$00`, or with `$08` in early drivers.
-- Pitch lookups use the image's own `FREQTBL`/`FREQTBH` (PAL or NTSC). Before
-  SID-Wizard 1.8, STRTSND loads the first-frame pitch with `lda FREQTBH,x`, a
-  typo (ChangeLog.txt:101). The reader detects this from the player code
+  the first `frame_speed - 1` calls are MULPLY and call `frame_speed` is PLAYER.
+- Before SID-Wizard 1.8, STRTSND loads the first-frame pitch with `lda FREQTBH,x`,
+  a typo (ChangeLog.txt:101), detected from the player code
   (`PlayerQuirks.first_frame_freq_by_track`).
 - Build gates: without ARPSPEEDSUPP, WF bytes `$00-$0F` are waveforms. Without
   CHORDSUPPORT, arp `$7F` is a relative step. Without WFARP_NOP_SUPP, `$80` is
@@ -410,27 +425,16 @@ the first play call:
   players are assembled from an edited `settings.cfg`, and some exports carry no
   header. Each modelled flag is read at its `.if feature.X_ON` site, matched
   relocation-free in both its on and off form; a flag whose site is missing keeps
-  the driver byte's build. TRANSPOSESUPP is read at CLEGATO and RETAINZEROPAGE at
-  PLAYER's `PLAYERZP` push.
-- Release differences the reader takes from the player code: FLADVAN reads a
-  filter row's `$80-$8F` third column as FSWITCH from 1.4 on
-  (`PlayerQuirks.kbtrack_fswitch`); SMALFXE stores its WFGHOST merge before 1.5
-  (`PlayerQuirks.wfctrl_fx_stores`).
-- FREQLO/FREQHI are per-track state, as in the player: the WF table's RELPTCH /
-  ABSPTCH / chord rows load them from FREQTBL, VIBSLIDE's vibrato and slides
-  add or subtract FREQMOD, PORTAME steps them (an unsigned 16-bit compare)
-  toward FREQTBL at DPITCH and TARGETN snaps to it, and WRPITCH adds the
-  detune. Rows that write no pitch leave them as they are.
+  the driver byte's build.
+- Release differences read from the player code: FLADVAN reads a filter row's
+  `$80-$8F` third column as FSWITCH from 1.4 on (`PlayerQuirks.kbtrack_fswitch`);
+  SMALFXE stores its WFGHOST merge before 1.5 (`PlayerQuirks.wfctrl_fx_stores`).
+- ABSPTCH masks its note index (`and #$7F`, `player.asm:2525`), so an arp step or
+  transpose past note 95 reads the image bytes after FREQTBL (in standard note mode,
+  `frequency(i - 1, clock)`, which is 0 beyond the 16-bit range).
 - DPITCH is latched when CLEGATO starts a note (note + the PLAYERZP
   instrument's octave shift + TRANSP). An instrument selected without a note,
   or a later transpose, does not move a held note.
-- SEL_INS takes any instrument below `$3F`. A slot past the count reads the
-  INSPTLO/HI bytes that follow the tables, and the instrument at that pointer
-  (the image, else libsidplayfp's power-on RAM) is
-  `PlayerImage.spare_instruments`; a bare `.swm` uses the depacker's blank
-  instrument.
-- PLAYERZP starts where the init left it (`PlayerImage.zp_init`). A RETAINZEROPAGE
-  PLAYER restores it every call, so a TICK_2 with CURINS = 0 reads it.
 
 ### Song selection
 
@@ -462,12 +466,13 @@ layout with `CHN_AMOUNT = 3 * sid_amount` orderlists per subtune: each
 funktempo pair in its last two bytes (settings.cfg `PPTRLO`), and the RESTEMP gap
 ahead of the tempo programs is `2 + 2 * CHN_AMOUNT` bytes. The 1.97 multi-SID
 exports decode to their native `.sws` / `.swt` sequences, chord and tempo tables.
-`SWMPlayer` renders one chip, so it raises `SWMFormatError` for a multi-SID
-module.
+The playspec states one chip, so `SWMPlayer` raises `SWMFormatError` for a
+multi-SID module.
 
 ### Out of scope
 
-Multi-SID playback, SFX, slowdown, and non-440 Hz tuning tables.
+Multi-SID playback, and players `pysidwizard.playspec` does not bind (it raises
+`ValueError` naming the routine).
 
 ## References
 

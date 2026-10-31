@@ -19,6 +19,7 @@ from pysidwizard import (
 from pysidwizard.errors import SWMFormatError
 from pysidwizard.formats import FORMAT
 from pysidwizard.grammar import GRAMMAR, parse_instrument, parse_pattern, parse_sequence
+from pysidwizard.typed import Chord, TempoProgram
 from tests._swm_cache import all_swm_paths
 
 
@@ -130,16 +131,20 @@ def test_instrument_pointers_must_match_the_table_layout():
 
 
 def test_chord_table_is_chords_each_ending_7e_or_7f():
-    assert (
-        GRAMMAR.parse_exact(b"\x00\x04\x07\x7e\x00\x03\x7f", "chords")
-        == b"\x00\x04\x07\x7e\x00\x03\x7f"
-    )
+    assert GRAMMAR.parse_exact(b"\x00\x04\x07\x7e\x00\xfd\x7f", "chords") == [
+        Chord((0, 4, 7)),
+        Chord((0, -3), loop=True),
+    ]
     with pytest.raises(SWMFormatError):
         GRAMMAR.parse_exact(b"\x00\x04\x07", "chords")
 
 
 def test_tempo_table_is_programs_each_closed_by_a_byte_with_bit_7():
-    assert GRAMMAR.parse_exact(b"\x03\x04\x85\x82", "tempos") == b"\x03\x04\x85\x82"
+    assert GRAMMAR.parse_exact(b"\x03\x04\x85\x82", "tempos") == [
+        TempoProgram((3, 4, 5)),
+        TempoProgram((2,)),
+    ]
+    assert b"".join(p.encode() for p in GRAMMAR.parse_exact(b"\x03\x85", "tempos")) == b"\x03\x85"
     with pytest.raises(SWMFormatError):
         GRAMMAR.parse_exact(b"\x03\x04", "tempos")
 

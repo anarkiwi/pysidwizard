@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import replace
-from typing import Union
-
-from pysidtracker.facets import inferred
+from typing import Optional, Union
 
 from .constants import (
     INSTRUMENT_NAME_LEN,
@@ -21,44 +18,18 @@ from .constants import (
     subtunes_for,
 )
 from .errors import SWMFormatError
-from .features import features_for_driver
 from .grammar import GRAMMAR, parse_instrument, parse_pattern, parse_sequence
 from .model import Instrument, Pattern, SWMFile
-from .player_images import LATEST_PLAYER_VERSION, image_for
-from .variant import PlayerImage
 
 
-def apply_player_image(swm: SWMFile, player_version: str | None) -> SWMFile:
-    """Fill a mono module's FREQTBL image from the named release's build.
+def sidmaker_version(version: Optional[str]) -> str:
+    """``version``, the SID-Maker release a bare module exports with, checked; None is the latest."""
+    from .sidmaker import LATEST, VERSIONS  # pylint: disable=import-outside-toplevel,cyclic-import
 
-    A ``.swm`` has no player image, so past-``FREQTBL`` lookups would
-    otherwise read a fallback; this sets :attr:`SWMFile.player`'s tables and
-    first-frame quirk from the shipped image for the driver (no-op if unshipped
-    or for multi-SID files).
-    """
-    player = swm.player
-    if (
-        swm.sid_amount != 1
-        or player_version is None
-        or (player and player.freq_lo and player.freq_hi)
-    ):
-        return swm
-    image = image_for(player_version, swm.driver_type)
-    if image is None:
-        return swm
-    lo, hi, by_track = image
-    player = player or PlayerImage(features_for_driver(swm.driver_type))
-    swm.player = replace(
-        player,
-        freq_lo=lo,
-        freq_hi=hi,
-        quirks=replace(player.quirks, first_frame_freq_by_track=by_track),
-        provenance={
-            **player.provenance,
-            "first_frame_freq_by_track": inferred(f"player image {player_version}"),
-        },
-    )
-    return swm
+    version = LATEST if version is None else version
+    if version not in VERSIONS:
+        raise ValueError(f"no SID-Maker {version!r}; shipped: {', '.join(VERSIONS)}")
+    return version
 
 
 def _detect_layout(data: bytes) -> tuple[int, int | None, SWMFormat, bytes | None]:
@@ -100,14 +71,13 @@ def _detect_layout(data: bytes) -> tuple[int, int | None, SWMFormat, bytes | Non
     )
 
 
-def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -> SWMFile:
+def parse_swm(data: bytes, player_version: Optional[str] = None) -> SWMFile:
     """Parse a SWM module and return a :class:`SWMFile`.
 
-    ``player_version`` selects the release whose player image a bare
-    (image-less) module plays with (see :mod:`pysidwizard.player_images`); it
-    is ignored by an image that a ``.sid`` already carries.
+    ``player_version`` is the SID-Maker release (:data:`pysidwizard.sidmaker.VERSIONS`, default
+    the latest) whose export the module plays as (:attr:`SWMFile.player_version`).
     """
-
+    version = sidmaker_version(player_version)
     header_offset, load_address, fmt, p00_name = _detect_layout(data)
     if len(data) - header_offset < fmt.header_size:
         raise SWMFormatError(
@@ -233,7 +203,7 @@ def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -
             f"offset {body_start} but stopped at {cursor}"
         )
 
-    swm = SWMFile(
+    return SWMFile(
         **fmt.header_meta(header),
         sequences=sequences,
         patterns=patterns,
@@ -243,13 +213,11 @@ def parse_swm(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -
         subtune_tempos=subtune_tempos,
         load_address=load_address,
         p00_name=p00_name or b"",
+        player_version=version,
     )
-    return apply_player_image(swm, player_version)
 
 
-def read_swm(
-    path: Union[str, os.PathLike[str]], player_version: str | None = LATEST_PLAYER_VERSION
-) -> SWMFile:
+def read_swm(path: Union[str, os.PathLike[str]], player_version: Optional[str] = None) -> SWMFile:
     """Read a SWM module from a filesystem path into a :class:`SWMFile`."""
     with open(path, "rb") as fh:
         return parse_swm(fh.read(), player_version)

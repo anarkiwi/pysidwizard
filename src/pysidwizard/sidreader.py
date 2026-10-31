@@ -71,10 +71,9 @@ remaining lossy metadata (frame speed, driver/tuning); else model defaults.
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import dataclass, replace
-from functools import lru_cache, wraps
-from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple, Union
+from functools import wraps
+from typing import Any, Callable, Iterable, List, NamedTuple, Optional, Tuple, Union
 
 from pysidtracker import (
     MEM_SIZE,
@@ -93,8 +92,6 @@ from pysidtracker import (
 )
 from pysidtracker.facets import Source, inferred
 from pysidtracker.locate import STATIC, VARIANT_FACET
-from pysidtracker.oracle import DRIVER_VOLUME, SID_VOLUME
-from pysidtracker.poweron import power_on_ram
 from pysidtracker.registers import sid_model_for_flags
 from pysidtracker.sidid import identify
 
@@ -102,7 +99,6 @@ from .constants import (
     AUTHOR_LEN,
     AUTHOR_POS,
     INST_FILTER_TABLE_PTR_POS,
-    INST_HEADER_SIZE,
     SWM1_FORMAT,
     SWM_MAGIC,
     TABLE_END,
@@ -121,8 +117,7 @@ from .model import (
     SWMFile,
     unpack_pattern,
 )
-from .player import FREQ_TABLE_SPAN, FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
-from .reader import LATEST_PLAYER_VERSION, apply_player_image
+from .reader import sidmaker_version
 from .sidfile import (
     as_container,
     find_player_signature,
@@ -227,89 +222,6 @@ def _validate_pattern_refs(sequences, n_patterns: int) -> None:
                 )
 
 
-def _freq_table_tail(data: bytes) -> bytes:
-    """Image bytes following the player's FREQTBL, anchored on the table itself.
-
-    ``and #$7F`` / ``ldy DPITCH,x`` pitch loads (player.asm:2523-2535) index past
-    the table's 96 notes into whatever the assembler put there, so reproducing
-    those frequencies needs the real bytes rather than a clamp.
-    """
-    pos = data.find(NOTE_FREQ_LO)
-    if pos < 0:
-        return b""
-    end = pos + len(NOTE_FREQ_LO)
-    return data[end : end + FREQ_TABLE_TAIL_LEN]
-
-
-# ABSPTCH's pitch load (player.asm:2531-2535): ``tay ; lda FREQTBL,y ; sta FREQLO,x ; lda FREQTBH,y ; sta FREQHI,x``.
-_CODE_FREQTBL = CodePattern("A8 B9 {lo:w} 9D ?? ?? B9 {hi:w} 9D")
-# FREQTBL follows FREQTBH directly, or after the 8-byte keyboard-track slope.
-_FREQTBH_SPANS = (len(NOTE_FREQ_LO), len(NOTE_FREQ_LO) + 8)
-
-
-def _freq_table_images(data: bytes) -> tuple:
-    """``(lo, hi)``: the 256-byte spans from the image's FREQTBL / FREQTBH bases.
-
-    Read from the player's own pitch load, so an NTSC export's table and the
-    bytes past each table are the ones its player indexes. Empty when no load
-    matches.
-    """
-    image = SidImage.from_sid(data)
-    for match in find_code_all(image, _CODE_FREQTBL):
-        lo, hi = match.captures["lo"], match.captures["hi"]
-        if lo - hi in _FREQTBH_SPANS:
-            return bytes(image.mem[lo : lo + FREQ_TABLE_SPAN]), bytes(
-                image.mem[hi : hi + FREQ_TABLE_SPAN]
-            )
-    return b"", b""
-
-
-# COMMONREGS (player.asm:748-797): ``lda #FSWITCH ; ora #RESONIB ; sta $D417 ; ... ; clc`` then, past the
-# optional FILTKBTRACK prelude, CTFHGHO's ``lda|adc #``; CTFLGHO's ``lda # ; sta $D415``
-# follows ``sta $D416``.
-_FILTER_HI = re.compile(
-    rb"\xa9(.)\x09(.)\x8d\x17\xd4\xa9.\x09.\x8d\x18\xd4\x18"
-    rb"(?:\xa9.\xf0.\xae..(?:\x7d..|\x75.)\xa8\xb9..\x69|\xa9)(.)",
-    re.S,
-)
-_FILTER_LO = re.compile(rb"\x8d\x16\xd4(?:\x8d..)?\xa9(.)\x8d\x15\xd4", re.S)
-_STA_FCUT_HI = b"\x8d\x16\xd4"
-
-
-def _filter_init(data: bytes) -> tuple:
-    """``(resonance, cutoff_hi, cutoff_lo, switch)``: the filter operands the first play call writes.
-
-    Zero for a component the image has no code for (no FINEFILTSWEEP, say).
-    """
-    hi = _FILTER_HI.search(data)
-    if hi is None:
-        return (0, 0, 0, 0)
-    pos = data.find(_STA_FCUT_HI, hi.end())
-    lo = _FILTER_LO.match(data, pos) if pos >= 0 else None
-    return (hi.group(2)[0], hi.group(3)[0], lo.group(1)[0] if lo else 0, hi.group(1)[0])
-
-
-# A PLAYER entry gated on a self-modifying toggle: ``lda #s ; eor #m ; sta <lda operand> ;
-# bpl|bmi +1 ; rts`` before the player body, so the body runs only on calls whose toggled
-# operand has bit 7 clear (``bpl``) or set (``bmi``).
-_PLAY_GATE = re.compile(rb"\xa9(.)\x49(.)\x8d(..)([\x10\x30])\x01\x60", re.S)
-_BPL = 0x10
-_SIGN = 0x80
-
-
-def _play_gate(mem, base: int) -> tuple:
-    """``(operand, mask, play_sign)`` of the gate at ``base``'s ``playsub`` target, else ``()``."""
-    mem = bytes(mem)
-    playsub = base + _JMP_LEN
-    if mem[playsub : playsub + 1] != bytes([_JMP]):
-        return ()
-    target = int.from_bytes(mem[playsub + 1 : playsub + _JMP_LEN], "little")
-    match = _PLAY_GATE.match(mem, target)
-    if match is None or int.from_bytes(match.group(3), "little") != target + 1:
-        return ()
-    return (match.group(1)[0], match.group(2)[0], 0 if match.group(4)[0] == _BPL else _SIGN)
-
-
 def _player_code(data: bytes) -> tuple:
     """``(code, load)`` of the player the ``.sid``'s init enters.
 
@@ -352,27 +264,18 @@ def parse_sid(data: bytes) -> SWMFile:
     """Parse a SID-Wizard ``.sid`` image into a :class:`SWMFile`.
 
     Its :attr:`~pysidwizard.model.SWMFile.player` holds the image's build flags
-    (:func:`~pysidwizard.features.detect_variant`), release quirks and tables,
-    so the player reproduces its code and past-table pitch lookups exactly.
+    (:func:`~pysidwizard.features.detect_variant`) and release quirks, and its
+    :attr:`~pysidwizard.model.SWMFile.source` the container its player plays.
     """
     data = as_container(data)
     swm = _parse_sid_layout(data)
     code, load = _player_code(data)
-    image = SidImage.from_sid(data)
     base = swm.player or PlayerImage(features_for_driver(swm.driver_type))
-    freq_lo, freq_hi = _freq_table_images(data)
     features, quirks, provenance = detect_variant(code, load, data, base.features)
     swm.player = replace(
-        base,
-        features=features,
-        quirks=quirks,
-        provenance={**base.provenance, **provenance},
-        freq_lo=freq_lo,
-        freq_hi=freq_hi,
-        freq_table_tail=_freq_table_tail(data),
-        filter_init=_filter_init(data),
-        play_gate=_play_gate(image.mem, image.header.init_address or image.load),
+        base, features=features, quirks=quirks, provenance={**base.provenance, **provenance}
     )
+    swm.source = data
     _check_played_instruments(swm)
     return swm
 
@@ -468,10 +371,6 @@ _INIT_MAX_CYCLES = 8_000_000
 _PSID_LOAD = slice(0x08, 0x0A)
 _PSID_INIT = slice(0x0A, 0x0C)
 _PSID_PLAY = slice(0x0C, 0x0E)
-# The SID's I/O page: 32-byte register mirrors, 25 registers each.
-SID_IO, SID_IO_END = 0xD400, 0xD800
-SID_MIRROR_MASK = 0x1F
-SID_REGS = 25
 # SETSEQA (player.asm:2669) stores the subtune times the SUBTUNES block size in SUBTPOS.
 
 
@@ -523,17 +422,14 @@ def _play_target(mem, play: int) -> int:
 
 
 def _song_entry(data: bytes, song: int):
-    """``(entry, sid, mem)``: the player song ``song``'s init starts, and the SID and memory it leaves.
+    """``(entry, mem)``: the player song ``song``'s init starts, and the memory it leaves.
 
     Runs the tune's init (accumulator = 0-based ``song``). ``base`` is the last
     player jump table it enters and ``mem`` a snapshot of memory at that entry
     (the wrapper's own data patches applied, INITER not yet run). ``subtune`` is
     what that player's SETSEQA stores (``None`` when it never runs during init)
     and ``swp`` the SWP data base INITER receives in X / Y. ``None`` when the init
-    enters no player. ``sid`` is the register file the whole init wrote (the
-    chip's ``$20``-byte mirrors folded) over the PSID driver's maximum ``$D418``
-    volume, which the first play call starts from,
-    and ``mem`` the memory the whole init left.
+    enters no player. ``mem`` is the memory the whole init left.
     """
     image = SidImage.from_sid(data)
     header = image.header
@@ -547,15 +443,6 @@ def _song_entry(data: bytes, song: int):
     mpu, mem = wire_mpu(image.mem, sid_model=sid_model_for_flags(header.flags))
     written = {}
     mem.subscribe_to_write(subtpos, lambda addr, value: written.__setitem__(subtpos[addr], value))
-    sid = bytearray(SID_REGS)
-    sid[SID_VOLUME - SID_IO] = DRIVER_VOLUME
-
-    def _sid_write(addr: int, value: int) -> None:
-        reg = addr & SID_MIRROR_MASK
-        if reg < SID_REGS:
-            sid[reg] = value
-
-    mem.subscribe_to_write(range(SID_IO, SID_IO_END), _sid_write)
     entry = None
     top = mpu.sp
     for byte_ in (0x00, 0x01):  # return address the final RTS climbs above ``top``
@@ -578,13 +465,13 @@ def _song_entry(data: bytes, song: int):
                     f"song {song + 1}'s init enters no SID-Wizard player "
                     f"({foreign} at ${target:04X})"
                 )
-        return None, bytes(sid), bytes(image.mem)
+        return None, bytes(image.mem)
     snapshot, base, swp = entry
     value = written.get(base)
     has_subtunes = any(owner == base for owner in subtpos.values())
     block = sid_format(data, header).subtune_block
     subtune = value // block if value is not None else (None if has_subtunes else 0)
-    return (snapshot, base, subtune, swp), bytes(sid), bytes(image.mem)
+    return (snapshot, base, subtune, swp), bytes(image.mem)
 
 
 def _module_window(data: bytes, mem: bytes, base: int, swp: int) -> bytes:
@@ -621,7 +508,7 @@ def parse_sid_song(data: bytes, song: int) -> SWMFile:
     """
     data = as_container(data)
     header = _sid_header(data)
-    found, sid, after = _song_entry(data, song - 1)
+    found, after = _song_entry(data, song - 1)
     if found is None or found[2] is None:
         swm, subtune = parse_sid(data), song - 1
     else:
@@ -636,18 +523,10 @@ def parse_sid_song(data: bytes, song: int) -> SWMFile:
             f"song {song} selects subtune {subtune}, but the module decodes "
             f"{swm.subtune_count} subtune(s)"
         )
-    zp = after[_PLAYERZP] | (after[_PLAYERZP + 1] << 8)
-    init = {
-        "sid_init": sid,
-        # INITER zeroes FSWITCH only under FILT_CTRL_FX_ON (player.asm:418), so read the operands it left.
-        "filter_init": _filter_init(after[found[1] if found else 0 :]),
-        "zp_init": (after + after)[zp : zp + _ZP_REACH],
-    }
-    if found is not None:
-        init["play_gate"] = _play_gate(after, found[1])
-    swm.player = replace(swm.player, **init)
     _check_played_instruments(swm)
-    return swm.subtune(subtune)
+    view = swm.subtune(subtune)
+    view.source, view.song = data, song - 1
+    return view
 
 
 def _patched_instruments(swm: SWMFile, data: bytes, after: bytes, base: int, swp: int) -> None:
@@ -663,11 +542,6 @@ def _patched_instruments(swm: SWMFile, data: bytes, after: bytes, base: int, swp
         return
     if len(runtime.instruments) == len(swm.instruments):
         swm.instruments = runtime.instruments
-        swm.player = replace(
-            swm.player,
-            dummy_instrument=runtime.player.dummy_instrument,
-            spare_instruments=runtime.player.spare_instruments,
-        )
 
 
 def read_sid(path: Union[str, os.PathLike[str]]) -> SWMFile:
@@ -676,12 +550,12 @@ def read_sid(path: Union[str, os.PathLike[str]]) -> SWMFile:
         return parse_sid(fh.read())
 
 
-def parse_swp(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -> SWMFile:
+def parse_swp(data: bytes, player_version: Optional[str] = None) -> SWMFile:
     """Decode a standalone SID-Maker-SWP (``SWP1``) packed tune to :class:`SWMFile`.
 
     ``SWP1`` magic sits at offset 0 or after a 2-byte PRG load prefix; with no
-    ``SWM1`` header the lengths and author come from the ``SWP1`` block. The
-    ``player_version`` picks the bare module's FREQTBL image as in parse_swm.
+    ``SWM1`` header the lengths and author come from the ``SWP1`` block; ``player_version``
+    is the SID-Maker release it plays the export of, as in :func:`~pysidwizard.reader.parse_swm`.
     """
     if len(data) >= 4 and data[0:4] == SWP_MAGIC:
         magic, load = 0, 0
@@ -689,18 +563,18 @@ def parse_swp(data: bytes, player_version: str | None = LATEST_PLAYER_VERSION) -
         magic, load = 2, int.from_bytes(data[0:2], "little")
     else:
         raise SIDFormatError("input is not an SWP module (no 'SWP1' magic at offset 0 or 2)")
+    version = sidmaker_version(player_version)
     try:
         byte, chunk = _memory_accessors(data, load, 0)
         swm = _decode_layout(_swp_layout(data, load, 0, magic, SWM1_FORMAT), _Reader(byte, chunk))
     except _LayoutError as exc:
         raise SIDFormatError(f"SWP tables did not resolve: {exc}") from exc
     _record_layout(swm, "swp", inferred("layout strategy static"))
-    return apply_player_image(swm, player_version)
+    swm.player_version = version
+    return swm
 
 
-def read_swp(
-    path: Union[str, os.PathLike[str]], player_version: str | None = LATEST_PLAYER_VERSION
-) -> SWMFile:
+def read_swp(path: Union[str, os.PathLike[str]], player_version: Optional[str] = None) -> SWMFile:
     """Read a standalone SID-Wizard ``.swp`` file from ``path`` into a :class:`SWMFile`."""
     with open(path, "rb") as fh:
         return parse_swp(fh.read(), player_version)
@@ -778,7 +652,7 @@ def _resolve_ptr(raw, ptr_base, load, end, reloc_delta):
     return addr
 
 
-def _filter_table_end(byte, start: int, bound: int) -> Optional[int]:
+def _filter_table_end(byte, chunk, start: int, bound: int) -> Optional[int]:
     """Address of a filter table's terminating ``$FF`` row (column 0), else None.
 
     Filter rows are 3 bytes; only column 0 is a command (player.asm
@@ -786,6 +660,15 @@ def _filter_table_end(byte, start: int, bound: int) -> Optional[int]:
     ``$00..$7F`` sweep). ``$FF`` in the sweep-amount or keyboard-tracking
     columns is data, so the walk steps whole rows.
     """
+    if start >= bound:
+        return None
+    try:
+        rows = chunk(start, bound - start)[::3]
+    except _LayoutError:
+        rows = None
+    if rows is not None:
+        row = rows.find(TABLE_END)
+        return None if row < 0 else start + 3 * row
     cursor = start
     while cursor < bound:
         if byte(cursor) == TABLE_END:
@@ -797,18 +680,17 @@ def _filter_table_end(byte, start: int, bound: int) -> Optional[int]:
 def _decode_instruments(
     byte, chunk, inst_lo, inst_hi, inst_amount, load, end, ptr_base=0, reloc_delta=0
 ):
-    """Decode the ``inst_amount`` instruments (1-based) and the image slots past them.
+    """Decode the ``inst_amount`` instruments (1-based).
 
     Each instrument is a 16-byte header followed by three inline ``$FF``-
     terminated tables (waveform / pulse-width / filter). The body runs to the
     filter table's terminating ``$FF`` row (column 0) and is handed to
-    :meth:`Instrument.decode`. Returns ``(instruments, slots)`` (see
-    :func:`_decode_slots`).
+    :meth:`Instrument.decode`.
     """
     instruments: List[Instrument] = []
     addrs = [
         _resolve_ptr(_slot_ptr(byte, inst_lo, inst_hi, k), ptr_base, load, end, reloc_delta)
-        for k in range(MAX_INSTRUMENT_SLOT + 1)
+        for k in range(inst_amount + 1)
     ]
     for k in range(1, inst_amount + 1):
         tries = (addrs[k], addrs[k] + reloc_delta) if reloc_delta else (addrs[k],)
@@ -820,16 +702,14 @@ def _decode_instruments(
             except _LayoutError:
                 if n == len(tries):
                     raise
-    return instruments, _decode_slots(
-        byte, chunk, addrs, inst_amount, inst_lo, lambda a: load <= a < end
-    )
+    return instruments
 
 
 def _decode_slot(byte, chunk, addr: int, k: int, load: int, end: int, inst_lo: int) -> Instrument:
     """Instrument ``k`` at ``addr``, or :class:`_LayoutError`."""
     if not load <= addr < end:
         raise _LayoutError(f"instrument {k} pointer {addr:#06x} out of range")
-    cursor = _filter_table_end(byte, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), inst_lo)
+    cursor = _filter_table_end(byte, chunk, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), inst_lo)
     if cursor is None:
         raise _LayoutError(f"instrument {k} filter table unterminated")
     try:
@@ -840,81 +720,28 @@ def _decode_slot(byte, chunk, addr: int, k: int, load: int, end: int, inst_lo: i
         raise _LayoutError(f"instrument {k} did not decode: {exc}") from exc
 
 
-# SEL_INS's ``cmp #maxinstamount`` bound: CURINS ranges over slots 1..$3E.
-MAX_INSTRUMENT_SLOT = 0x3E
-
-
-@lru_cache(maxsize=1)
-def _power_on() -> bytes:
-    return bytes(power_on_ram())
-
-
-def _booted(byte):
-    """``byte`` over the image, and libsidplayfp's power-on RAM everywhere else."""
-    ram = _power_on()
-
-    def read(addr: int) -> int:
-        try:
-            return byte(addr)
-        except _LayoutError:
-            return ram[addr & 0xFFFF]
-
-    return read
-
-
 def _slot_ptr(byte, inst_lo: int, inst_hi: int, k: int) -> int:
-    """INSPTLO/HI slot ``k``; a slot past the tables reads whatever bytes follow them."""
-    byte = _booted(byte) if k else byte
+    """INSPTLO/HI slot ``k``."""
     return byte(inst_lo + k) | (byte(inst_hi + k) << 8)
 
 
-def _decode_slots(byte, chunk, addrs, amount, bound, inrange) -> Dict[int, Instrument]:
-    """The instruments INSPTLO/HI slot 0 and the slots past ``amount`` point at.
-
-    PLAYERZP reads slot 0 whenever a path loads CURINS=0 without testing it.
-    The exporter links it to instrument 1 (packdepack.inc:621-633), but a
-    re-packed image can point it elsewhere, e.g. at a blank instrument while
-    instrument 1's own pointer is left stale; slot 0 is left out when it is
-    instrument 1's pointer or does not hold a decodable instrument. A slot past
-    the count (SEL_INS takes any reference below $3F) reads the pointer bytes
-    that follow the tables, so it is decoded leniently from wherever it lands.
-    """
-    slots: Dict[int, Instrument] = {}
-    addr = addrs[0]
-    if addr not in addrs[1:2] and inrange(addr):
-        try:
-            cursor = _filter_table_end(byte, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), bound)
-            if cursor is not None:
-                slots[0] = _decode_at(byte, chunk, addr, cursor, name=b"INST 00")
-        except SWMFormatError:
-            pass
-    booted = _booted(byte)
-    for k in range(amount + 1, len(addrs)):
-        ram = bytes(booted((addrs[k] + y) & 0xFFFF) for y in range(_ZP_REACH))
-        start = max(ram[INST_FILTER_TABLE_PTR_POS], INST_HEADER_SIZE + 1)
-        end = _filter_table_end(ram.__getitem__, start, _SPARE_BODY)
-        body = ram[: _SPARE_BODY if end is None else end]
-        slots[k] = Instrument.decode(body, name=b"INST %02d" % k, strict=False)
-        slots[k].ram = ram
-    return slots
-
-
-# PLAYERZP's ``lda (PLAYERZP),y`` reach, and its zeropage address (player.asm:7).
+# PLAYERZP's ``lda (PLAYERZP),y`` reach (player.asm:7).
 _ZP_REACH = 0x100
-_PLAYERZP = 0xFE
-# The longest body whose re-encoded table pointers still fit a byte.
-_SPARE_BODY = _ZP_REACH - 3
 
 
 def _decode_at(byte, chunk, addr: int, cursor: int, name: bytes) -> Instrument:
     """The instrument whose body is ``[addr, cursor)``, with its :attr:`~pysidwizard.model.Instrument.ram` window."""
     ins = Instrument.decode(chunk(addr, cursor - addr), name=name)
-    ins.ram = _ram_window(byte, addr)
+    ins.ram = _ram_window(byte, chunk, addr)
     return ins
 
 
-def _ram_window(byte, addr: int) -> bytes:
+def _ram_window(byte, chunk, addr: int) -> bytes:
     """The bytes ``lda (PLAYERZP),y`` can reach from ``addr``, up to the image's end."""
+    try:
+        return chunk(addr, _ZP_REACH)
+    except _LayoutError:
+        pass
     ram = bytearray()
     for a in range(addr, addr + _ZP_REACH):
         try:
@@ -963,7 +790,7 @@ def _decode_patterns(byte, chunk, ptn_lo, ptn_hi, pat_amount, load, end, ptr_bas
         min_pattern = min(min_pattern, addr)
         term = _stream_end(byte, addr, "pattern") - 1
         pat = _read_pattern(byte, chunk, addr, term)
-        pat.ram = _ram_window(byte, addr)
+        pat.ram = _ram_window(byte, chunk, addr)
         patterns.append(pat)
     return patterns, min_pattern
 
@@ -1264,7 +1091,7 @@ def _player_patterns(
             patterns.append(Pattern(rows=[Row() for _ in range(empty_len)]))
             continue
         pat = _read_pattern(byte, chunk, addr, term)
-        pat.ram = _ram_window(byte, addr)
+        pat.ram = _ram_window(byte, chunk, addr)
         patterns.append(pat)
         if k in ref_all:
             for row in pat.rows:
@@ -1307,7 +1134,7 @@ def _player_instruments(byte, chunk, header, fmt, ordered, ptn_lo, ceil, inrange
 
 def _decode_player_instruments(byte, chunk, inst_lo, inst_hi, amount, ceil, inrange, ref_inst):
     instruments: List[Instrument] = []
-    addrs = [_slot_ptr(byte, inst_lo, inst_hi, k) for k in range(MAX_INSTRUMENT_SLOT + 1)]
+    addrs = [_slot_ptr(byte, inst_lo, inst_hi, k) for k in range(amount + 1)]
     for k in range(1, amount + 1):
         name = b"INST %02d" % k
         addr = addrs[k]
@@ -1316,7 +1143,7 @@ def _decode_player_instruments(byte, chunk, inst_lo, inst_hi, amount, ceil, inra
                 raise _LayoutError(f"referenced instrument {k} is absent from the image")
             instruments.append(Instrument(name=name))
             continue
-        cursor = _filter_table_end(byte, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), ceil)
+        cursor = _filter_table_end(byte, chunk, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), ceil)
         if cursor is None:
             cursor = ceil
         try:
@@ -1327,7 +1154,7 @@ def _decode_player_instruments(byte, chunk, inst_lo, inst_hi, amount, ceil, inra
             if k in ref_inst:
                 raise _LayoutError(f"referenced instrument {k} did not decode: {exc}") from exc
             instruments.append(Instrument(name=name))
-    return instruments, _decode_slots(byte, chunk, addrs, amount, ceil, inrange)
+    return instruments
 
 
 # --- Layout location: ``locate()`` strategies yield a Layout; one decode reads it -----------------
@@ -1437,7 +1264,6 @@ class _Tables(NamedTuple):
     sequences: list
     patterns: list
     instruments: list
-    slots: Optional[Dict[int, Instrument]]
     subtune_base: Optional[int]
     subtunes: int
     min_pattern: int
@@ -1748,7 +1574,7 @@ def _player_layouts(data: bytes, load: int, base: int, fmt: SWMFormat):
 
 def _read_strict(lay: Layout, rd: _Reader) -> _Tables:
     """Read a layout whose sequences hang off a subtune table: every region must decode."""
-    instruments, slots = _decode_instruments(
+    instruments = _decode_instruments(
         rd.byte,
         rd.chunk,
         lay.inst_lo,
@@ -1790,7 +1616,7 @@ def _read_strict(lay: Layout, rd: _Reader) -> _Tables:
         except _LayoutError as exc:
             last = exc
             continue
-        return _Tables(sequences, patterns, instruments, slots, subtune_base, subtunes, min_pattern)
+        return _Tables(sequences, patterns, instruments, subtune_base, subtunes, min_pattern)
     raise last or _LayoutError("no coherent subtune table")
 
 
@@ -1834,11 +1660,11 @@ def _read_tolerant(lay: Layout, rd: _Reader) -> _Tables:
         ref_primary,
         default_len,
     )
-    instruments, slots = _player_instruments(
+    instruments = _player_instruments(
         rd.byte, rd.chunk, lay.header, lay.fmt, lay.ordered, lay.ptn_lo, lay.ceil, inrange, ref_inst
     )
     _validate_pattern_refs(sequences, len(patterns))
-    return _Tables(sequences, patterns, instruments, slots, None, lay.subtune_count, lay.floor)
+    return _Tables(sequences, patterns, instruments, None, lay.subtune_count, lay.floor)
 
 
 def _subtune_tempos(lay: Layout, rd: _Reader, tables: _Tables) -> list:
@@ -1897,7 +1723,6 @@ def _assemble(lay: Layout, tables: _Tables, rd: _Reader) -> SWMFile:
     meta = lay.fmt.header_meta(header) if header is not None else {"sid_amount": lay.fmt.sid_amount}
     subtune_tempos = _subtune_tempos(lay, rd, tables)
     chord_table, tempo_table = _chord_tempo(lay, rd, tables)
-    slots = tables.slots
     if lay.author is not None:
         meta["author"] = lay.author
     return SWMFile(
@@ -1908,15 +1733,6 @@ def _assemble(lay: Layout, tables: _Tables, rd: _Reader) -> SWMFile:
         tempo_table=tempo_table,
         subtune_tempos=subtune_tempos,
         load_address=lay.load,
-        player=(
-            PlayerImage(
-                features_for_driver(meta.get("driver_type", 0)),
-                dummy_instrument=slots.get(0),
-                spare_instruments={k: ins for k, ins in slots.items() if k},
-            )
-            if slots
-            else None
-        ),
         **meta,
     )
 

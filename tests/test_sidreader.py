@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import csv
 import os
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -34,25 +36,33 @@ from pysidwizard import (
 from pysidwizard.constants import (
     AUTHOR_LEN,
     AUTHOR_POS,
-    INST_HEADER_SIZE,
     SWM_MAGIC,
     TUNE_HEADER_SIZE,
 )
 from pysidwizard.model import encode_sequence, pack_pattern
-from pysidwizard.player import FREQ_TABLE_TAIL_LEN, NOTE_FREQ_LO
 from pysidwizard.sidfile import sid_chips
 from pysidwizard.sidreader import (
     _check_played_instruments,
-    _decode_instruments,
-    _decode_player_instruments,
-    _filter_init,
     _filter_table_end,
-    _freq_table_tail,
+    _LayoutError,
     _memory_accessors,
 )
+from tests._hvsc_corpus import PLAYER_RECOVERED, SAMPLE
 from tests._hvsc_fetch import HVSC_ROOT, resolve
+from tests._refused import assert_refused, assert_spec_plays
+from tests._toy import assert_6502
 
 LOAD = 0x1000
+# Enough play calls to reach every row of the synthetic patterns.
+_PLAY_FRAMES = 24
+
+
+def _plays_bare(swm: SWMFile, frames: int = _PLAY_FRAMES) -> None:
+    """The decoded module, exported by SID-Maker as a bare module, plays as the 6502 does.
+
+    The synthetic containers hold tune data but no player, so their own image cannot play.
+    """
+    assert_6502(replace(swm, source=b""), frames)
 
 
 def _swm_header(seq, pat, inst, chord_len, tempo_len, author=b"TESTER"):
@@ -471,7 +481,7 @@ def test_parse_swp_recovers_counts_and_content():
 
 
 def test_parse_swp_recovers_pattern_and_instrument_content():
-    sid, exp = _build_swp_image()
+    sid, _ = _build_swp_image()
     swm = parse_sid(sid)
     p0 = swm.patterns[0]
     assert [r.note for r in p0.rows] == [0x31, 0x33, None, 0x35]
@@ -489,9 +499,7 @@ def test_parse_swp_recovers_pattern_and_instrument_content():
 
 def test_parse_swp_result_plays():
     sid, _ = _build_swp_image()
-    player = SWMPlayer(parse_sid(sid))
-    for _ in range(200):
-        player.play_frame()
+    _plays_bare(parse_sid(sid))
 
 
 def test_parse_swp_without_swm1_header():
@@ -504,21 +512,19 @@ def test_parse_swp_without_swm1_header():
     assert swm.chord_table == exp["chord_table"]
     assert swm.chord_table
     assert swm.author.startswith(b"SWPTESTER")
-    SWMPlayer(swm).play_frame()
+    _plays_bare(swm)
 
 
 def test_parse_swp_exposes_all_subtunes():
     sid, exp = _build_swp_image(subtunes=2, with_chord=False)
-    swm = parse_sid(sid)
+    swm = replace(parse_sid(sid), source=b"")
     assert swm.subtune_count == 2
     assert len(swm.sequences) == 6
     assert swm.subtune_tempos == exp["subtune_tempos"]
     for n in range(2):
         st = swm.subtune(n)
         assert len(st.sequences) == 3
-        player = SWMPlayer(st)
-        for _ in range(60):
-            player.play_frame()
+        _plays_bare(st)
 
 
 def test_parse_sid_recovers_counts_and_content():
@@ -569,8 +575,13 @@ def test_filter_table_end_walks_rows_not_bytes():
         "fe0200"  # $FE jump row, column 0
     )
     data = rows + b"\xff\x00\x00"
-    assert _filter_table_end(data.__getitem__, 0, len(data)) == len(rows)
-    assert _filter_table_end(data.__getitem__, 0, len(rows)) is None
+    byte, chunk = _memory_accessors(data, 0, 0)
+    assert _filter_table_end(byte, chunk, 0, len(data)) == len(rows)
+    assert _filter_table_end(byte, chunk, 0, len(rows)) is None
+    assert _filter_table_end(byte, chunk, 0, len(data) + 9) == len(rows)
+    byte, chunk = _memory_accessors(rows, 0, 0)
+    with pytest.raises(_LayoutError):
+        _filter_table_end(byte, chunk, 0, len(rows) + 3)
 
 
 def test_parse_sid_recovers_sequences():
@@ -584,48 +595,12 @@ def test_parse_sid_recovers_sequences():
 
 def test_parse_sid_result_plays():
     sid, _ = _build_reference_image()
-    swm = parse_sid(sid)
-    player = SWMPlayer(swm)
-    for _ in range(200):
-        player.play_frame()
-
-
-def test_parse_sid_captures_the_bytes_past_freqtbl():
-    """Past-table pitch lookups (player.asm:2523-2535) need the image's own bytes."""
-    sid, _ = _build_reference_image()
-    tail = bytes(range(FREQ_TABLE_TAIL_LEN))
-    swm = parse_sid(sid + NOTE_FREQ_LO + tail)
-    assert swm.player.freq_table_tail == tail
-    assert SWMPlayer(swm).freq_lo[96:] == tail
-
-
-def test_freq_table_tail_is_empty_when_the_image_has_no_frequency_table():
-    """Without FREQTBL in the image the player stays on its shipped-build fallback."""
-    assert _freq_table_tail(b"\x00" * 4096) == b""
-
-
-# COMMONREGS through $D418, then CTFHGHO with and without the FILTKBTRACK prelude.
-_COMMONREGS = bytes.fromhex("a90109a08d17d4a90f09008d18d418")
-_KBDTRACK = bytes.fromhex("a900f00aae76997d5094a8b9119c69")
-
-
-@pytest.mark.parametrize(
-    "code, expect",
-    [
-        (_COMMONREGS + bytes.fromhex("a90b69008d16d4a9078d15d4"), (0xA0, 0x0B, 0x07, 0x01)),
-        (_COMMONREGS + _KBDTRACK + bytes.fromhex("0b8d16d460a9078d15d4"), (0xA0, 0x0B, 0x00, 0x01)),
-        (_COMMONREGS + _KBDTRACK + bytes.fromhex("0ba000f01f"), (0xA0, 0x0B, 0x00, 0x01)),
-        (bytes(64), (0, 0, 0, 0)),
-    ],
-)
-def test_filter_init_reads_the_operands_initer_leaves(code, expect):
-    """RESONIB / CTFHGHO / CTFLGHO / FSWITCH (player.asm:749-797); CTFLGHO only right after ``sta $D416``."""
-    assert _filter_init(bytes(16) + code) == expect
+    _plays_bare(parse_sid(sid))
 
 
 def test_parse_sid_exposes_all_subtunes():
     sid, exp = _build_two_subtune_image()
-    swm = parse_sid(sid)
+    swm = replace(parse_sid(sid), source=b"")
     assert len(swm.sequences) == exp["seq_amount"]
     assert swm.subtune_count == exp["subtune_count"]
     assert swm.subtune_tempos == exp["subtune_tempos"]
@@ -638,9 +613,7 @@ def test_parse_sid_exposes_all_subtunes():
         # Shared global tables are preserved.
         assert st.patterns is swm.patterns
         assert st.instruments is swm.instruments
-        player = SWMPlayer(st)
-        for _ in range(60):
-            player.play_frame()
+        _plays_bare(st)
 
 
 def test_subtune_out_of_range_raises():
@@ -693,7 +666,7 @@ def test_parse_sid_accepts_rsid_with_resolvable_data():
     swm = parse_sid(rsid)
     assert len(swm.patterns) == exp["pat_amount"]
     assert len(swm.instruments) == exp["inst_amount"]
-    SWMPlayer(swm).play_frame()
+    _plays_bare(swm)
 
 
 def test_parse_sid_rejects_unresolvable_swp_tune():
@@ -775,6 +748,18 @@ def _corpus_rows():
 
 # Materialised once at import so xdist workers parametrize over a stable set.
 _CORPUS_ROWS = _corpus_rows()
+# The rows test_hvsc_corpus already parses, detects and plays.
+_SAMPLED = set(SAMPLE) | set(PLAYER_RECOVERED)
+
+
+def _is_multi_sid(rel: str) -> bool:
+    try:
+        return parse_psid_header(Path(_HVSC, rel).read_bytes()).is_multi_sid
+    except (OSError, SIDFormatError):
+        return False
+
+
+_MULTI_SID_ROWS = [r for r in _CORPUS_ROWS if _is_multi_sid(r[0])]
 
 
 def _corpus_id(row):
@@ -782,7 +767,7 @@ def _corpus_id(row):
 
 
 @pytest.mark.skipif(not _CORPUS_PRESENT, reason=_CORPUS_SKIP)
-@pytest.mark.parametrize("row", _CORPUS_ROWS, ids=_corpus_id)
+@pytest.mark.parametrize("row", [r for r in _CORPUS_ROWS if r[0] not in _SAMPLED], ids=_corpus_id)
 def test_real_corpus_row_parses_and_plays(row):
     # Per-tune parse + bounded playback. Parametrized (one case per corpus
     # row) so xdist distributes the work and a failure points at one tune.
@@ -822,16 +807,27 @@ def test_real_corpus_row_parses_and_plays(row):
             assert len(swm.sequences) == header[0x0C]
     if swm.sid_amount > 1:
         return  # SWMPlayer renders one chip (test_multi_sid_parses_every_chip)
-    # Drive the player for a bounded sample.
-    player = SWMPlayer(swm)
-    for _ in range(300):
-        player.play_frame()
+    if assert_refused(row[0], swm):
+        return
+    assert_spec_plays(row[0], swm, 300)
     if swm.subtune_count > 1:
-        # Every subtune must be independently playable.
         for n in range(swm.subtune_count):
-            sub_player = SWMPlayer(swm.subtune(n))
-            for _ in range(120):
-                sub_player.play_frame()
+            assert_spec_plays(row[0], swm.subtune(n), 120)
+
+
+def _corpus_census(rel: str):
+    """``(swp, rsid, subtunes)`` of a corpus tune that parses, else None."""
+    try:
+        data = Path(_HVSC, rel).read_bytes()
+    except OSError:
+        return None
+    if not is_sidwizard_sid(data):
+        return None
+    try:
+        swm = parse_sid(data)
+    except SIDFormatError:
+        return None  # the relocated tail is allowed to fail cleanly
+    return data.find(b"SWP1", 0x7E) >= 0, is_rsid(data), swm.subtune_count
 
 
 @pytest.mark.skipif(not _CORPUS_PRESENT, reason=_CORPUS_SKIP)
@@ -839,30 +835,14 @@ def test_real_corpus_has_expected_coverage():
     # Corpus-health fold (natural loop): the catalog must actually resolve to
     # a substantial set of parseable tunes, including the RSID and
     # multi-subtune categories the per-row test exercises.
-    parsed = 0
-    rsid_seen = False
-    multisubtune_seen = False
-    swp_parsed = 0
-    for r in _CORPUS_ROWS:
-        path = os.path.join(_HVSC, r[0])
-        try:
-            data = open(path, "rb").read()
-        except OSError:
-            continue
-        if not is_sidwizard_sid(data):
-            continue
-        is_swp = data.find(b"SWP1", 0x7E) >= 0
-        try:
-            swm = parse_sid(data)
-        except SIDFormatError:
-            continue  # the relocated tail is allowed to fail cleanly
-        parsed += 1
-        if is_swp:
-            swp_parsed += 1
-        if is_rsid(data):
-            rsid_seen = True
-        if swm.subtune_count > 1:
-            multisubtune_seen = True
+    with ProcessPoolExecutor(min(8, os.cpu_count() or 1)) as pool:
+        found = [
+            c for c in pool.map(_corpus_census, [r[0] for r in _CORPUS_ROWS], chunksize=16) if c
+        ]
+    parsed = len(found)
+    swp_parsed = sum(swp for swp, _, _ in found)
+    rsid_seen = any(rsid for _, rsid, _ in found)
+    multisubtune_seen = any(n > 1 for _, _, n in found)
     assert parsed >= 800, "expected to parse the bulk of the corpus"
     assert rsid_seen, "expected at least one RSID tune to parse and play"
     assert multisubtune_seen, "expected at least one multi-subtune tune"
@@ -870,7 +850,7 @@ def test_real_corpus_has_expected_coverage():
 
 
 @pytest.mark.skipif(not _CORPUS_PRESENT, reason=_CORPUS_SKIP)
-@pytest.mark.parametrize("row", _CORPUS_ROWS, ids=_corpus_id)
+@pytest.mark.parametrize("row", _MULTI_SID_ROWS, ids=_corpus_id)
 def test_real_corpus_row_multi_sid_parses_or_rejection_is_clear(row):
     # A multi-SID tune parses to one module driving every chip, or (one player
     # per chip) raises a specific error. Parametrized per row for isolation.
@@ -883,34 +863,12 @@ def test_real_corpus_row_multi_sid_parses_or_rejection_is_clear(row):
         header = parse_psid_header(data)
     except SIDFormatError:
         pytest.skip("not a parseable PSID/RSID header")
-    if not header.is_multi_sid:
-        pytest.skip("not a multi-SID tune")
     try:
         swm = parse_sid(data)
     except SIDFormatError as exc:
         assert "one player per chip" in str(exc)
     else:
         assert swm.sid_amount == sid_chips(header)
-
-
-@pytest.mark.skipif(not _CORPUS_PRESENT, reason=_CORPUS_SKIP)
-def test_real_corpus_has_rejection_categories():
-    # Corpus-health fold: the catalog must contain at least one multi-SID tune
-    # so the per-row rejection test actually exercises it.
-    saw_multisid = False
-    for r in _CORPUS_ROWS:
-        path = os.path.join(_HVSC, r[0])
-        try:
-            data = open(path, "rb").read()
-        except OSError:
-            continue
-        try:
-            header = parse_psid_header(data)
-        except SIDFormatError:
-            continue
-        if header.version >= 3 or header.is_multi_sid:
-            saw_multisid = True
-    assert saw_multisid
 
 
 # The 27 known SID-Wizard "packed" (SWP) tunes in HVSC, relative to the HVSC root.
@@ -972,67 +930,12 @@ def test_known_swp_file_parses_and_plays(rel):
         default=0,
     )
     assert max_ref <= len(swm.patterns)
+    if assert_refused(rel, swm):
+        return
     for n in range(swm.subtune_count):
         player = SWMPlayer(swm.subtune(n))
         for _ in range(500):
             player.play_frame()
-
-
-_BLANK = Instrument(control=0x1A, hr_decay=0xF, sustain=0xF, first_waveform=0x09)
-_REAL = Instrument(control=0x10, attack=2, wf_table=bytes([0x41, 0x00, 0x00]))
-
-
-_SLOTS = LOAD + 0x60
-
-
-def _slot_image(slot0: int, slot1: int):
-    """The blank and the real instrument at LOAD, then one instrument's ``inst_lo`` / ``inst_hi`` at _SLOTS."""
-    blank = _BLANK.encode() + b"\xff"
-    body = blank + _REAL.encode() + b"\xff"
-    mem = bytearray(0x80)
-    mem[: len(body)] = body
-    addrs = {"blank": LOAD, "real": LOAD + len(blank), "stale": 0x7F00}
-    for k, which in enumerate((slot0, slot1)):
-        mem[_SLOTS - LOAD + k] = addrs[which] & 0xFF
-        mem[_SLOTS - LOAD + 2 + k] = addrs[which] >> 8
-    return _memory_accessors(bytes(mem), LOAD, 0), body, LOAD + len(mem)
-
-
-def test_slot_0_decodes_where_it_is_not_instrument_1():
-    """PLAYERZP reads INSPTLO/HI slot 0 for CURINS=0; the exporter's link to slot 1 is not guaranteed."""
-    (byte, chunk), body, end = _slot_image("blank", "real")
-    (real,), slots = _decode_instruments(byte, chunk, _SLOTS, _SLOTS + 2, 1, LOAD, end)
-    dummy = slots[0]
-    assert real.encode() == _REAL.encode()
-    assert dummy.encode() == _BLANK.encode()
-    assert dummy.ram.startswith(body), "the RAM window runs on past the instrument's own tables"
-    assert real.ram.startswith(body[len(_BLANK.encode()) + 1 :])
-    (byte, chunk), _, end = _slot_image("real", "real")
-    assert 0 not in _decode_instruments(byte, chunk, _SLOTS, _SLOTS + 2, 1, LOAD, end)[1]
-
-
-def test_slot_0_beside_a_stale_unused_instrument_1():
-    """A player-read image can leave an unused instrument's pointer stale while slot 0 holds a blank."""
-    (byte, chunk), _, end = _slot_image("blank", "stale")
-
-    def inrange(addr):
-        return LOAD <= addr < end
-
-    args = (_SLOTS, _SLOTS + 2, 1, _SLOTS, inrange, set())
-    (unused,), slots = _decode_player_instruments(byte, chunk, *args)
-    assert unused == Instrument(name=b"INST 01")
-    assert slots[0].encode() == _BLANK.encode()
-    (byte, chunk), _, end = _slot_image("stale", "stale")
-    assert 0 not in _decode_player_instruments(byte, chunk, *args)[1]
-
-
-def test_slots_past_the_count_read_the_bytes_after_the_pointer_tables():
-    """SEL_INS takes any slot below $3F; past the count INSPTLO/HI run on into what follows."""
-    (byte, chunk), body, end = _slot_image("real", "blank")
-    _, slots = _decode_instruments(byte, chunk, _SLOTS, _SLOTS + 2, 0, LOAD, end)
-    assert slots[0].encode() == _REAL.encode()
-    assert slots[1].encode()[:INST_HEADER_SIZE] == _BLANK.encode()[:INST_HEADER_SIZE]
-    assert slots[1].ram.startswith(body)
 
 
 def test_parse_sid_patterns_carry_their_ram():
@@ -1047,7 +950,6 @@ def test_parse_sid_patterns_carry_their_ram():
 def test_parse_sid_instruments_carry_their_ram():
     sid, exp = _build_reference_image()
     swm = parse_sid(sid)
-    assert swm.player.dummy_instrument is None
     for got, want in zip(swm.instruments, exp["insts"], strict=True):
         assert got.ram.startswith(want.encode() + b"\xff")
 
@@ -1078,7 +980,7 @@ def test_parse_sid_reads_whether_smalfxe_stores_wfghost(store, stores):
 
 
 def test_a_wrapper_patched_instrument_reads_from_post_init_memory():
-    """First Storm's wrapper patches instrument bytes per song before INITER, which PLAYERZP reads."""
+    """First Storm's wrapper patches instrument bytes per song before INITER (PLAYERZP reads them)."""
     path = resolve("MUSICIANS/C/C0zmo/First_Storm.sid")
     if path is None:
         pytest.skip("unreachable (offline)")

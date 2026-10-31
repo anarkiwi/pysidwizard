@@ -1,4 +1,4 @@
-"""Byte-exact comparison of the native SWMPlayer against the sidtrace oracle.
+"""Byte-exact comparison of SWMPlayer (the playspec on the tune's 6502) against the sidtrace oracle.
 
 Marked ``oracle``: these tests need Docker (the ``anarkiwi/sidtrace`` image) and
 HVSC ``.sid`` tunes, so the default suite excludes them (see ``pyproject``); a
@@ -9,13 +9,9 @@ cache (or a local ``$HVSC`` tree), never committed.
 
 The sidtrace oracle renders a PSID/RSID container through ``sidplayfp``; the four
 bundled SID-Wizard example tunes are raw ``.swm`` modules it cannot read, so the
-native player is validated against real HVSC SID-Wizard ``.sid`` exports instead.
-:data:`TUNES` is the curated set of such exports whose native
-:class:`~pysidwizard.player.SWMPlayer` render matches the oracle frame-for-frame.
-
-The native player models the driver's INITER state and the TICK_0 / TICK_1 setup
-frames of the first row, so its render matches the oracle from the first play
-call: no leading frame is trimmed or excused.
+player is validated against real HVSC SID-Wizard ``.sid`` exports instead.
+:data:`TUNES` is the curated set of such exports; each render matches the oracle
+from the first play call: no leading frame is trimmed or excused.
 """
 
 import sys
@@ -32,6 +28,7 @@ from pysidtracker.testing import (
 )
 
 from pysidwizard import SWMPlayer, parse_sid_song
+from tests._refused import REFUSED
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -141,8 +138,11 @@ def _player(data):
 
 
 # A mismatch fails with pysidtracker's whydiff report, also saved under ``build/why/``.
+# The tunes whose first song the binder plays (tests/_refused.py names the others' issues).
+STATED_TUNES = {k: v for k, v in TUNES.items() if 1 not in REFUSED.get(v, {})}
+
 tune_id, oracle_match = make_oracle_fixtures(
-    TUNES,
+    STATED_TUNES,
     player=_player,
     max_lead=0,
     report_dir=_WHY,
@@ -170,21 +170,19 @@ def test_gate_off_without_instrument_selects_legatoo_route():
     )
 
 
-# WF-arp relative steps whose sum leaves the 96-note table (masked indices 97 / 107 / 109 / 117).
 # The tune's own RSID raster IRQ ($0948) calls a play routine that first copies the
-# previous call's ghost registers ($0800-$0818) to the SID, so each driver frame
-# reaches the chip one interrupt later and the first interrupt writes nothing.
+# previous call's ghost registers ($0800-$0818) to the SID, so the first interrupt writes nothing.
 DELAYED_TUNE = "MUSICIANS/D/Deetsay/1_2_3_C64.sid"
 
 
 @pytest.mark.oracle
-def test_ghost_buffered_rsid_matches_oracle_one_interrupt_late():
+def test_ghost_buffered_rsid_matches_oracle_from_its_silent_first_interrupt():
     path = resolve_tune(DELAYED_TUNE)
     if path is None:
         raise TuneFetchError(f"{DELAYED_TUNE} unavailable (offline, not cached)")
-    expected = oracle_grid(path, seconds=FRAMES // 50 + 2, frames=FRAMES + 1)
+    expected = oracle_grid(path, seconds=FRAMES // 50 + 2, frames=FRAMES)
     assert expected[0] == [0] * len(expected[0])
-    assert expected[1:] == _render(Path(path).read_bytes(), FRAMES)
+    assert expected == _render(Path(path).read_bytes(), FRAMES)
 
 
 # Songs whose init maps the header song to another subtune or to another

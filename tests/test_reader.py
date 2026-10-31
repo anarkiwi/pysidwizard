@@ -8,11 +8,15 @@ import pytest
 
 from pysidwizard import (
     SWMFormatError,
+    SWMPlayer,
+    parse_sid,
     parse_swm,
     read_swm,
+    sidmaker,
 )
 from pysidwizard.constants import SWM_MAGIC, subtunes_for
 from pysidwizard.reader import _detect_layout
+from tests._swm_cache import sw197_path, swm_path
 
 
 def test_detect_layout_recognises_bare_swm():
@@ -73,8 +77,6 @@ def test_read_swm_returns_object_with_known_fields(sample_path: Path):
 
 def test_read_swm_decodes_recognisable_metadata():
     # 'flashitback.swm' is by Hermit and has well-known header values.
-    from tests._swm_cache import swm_path
-
     swm = read_swm(swm_path("flashitback"))
     assert swm.author_str().lower().startswith("hermit")
     # The header recorded by SID-Wizard for this file.
@@ -133,3 +135,22 @@ def test_parse_swm_truncated_pattern_data_raises():
     body += bytes([0x80, 0x80])
     with pytest.raises(SWMFormatError):
         parse_swm(bytes(header) + body)
+
+
+@pytest.mark.parametrize("version", [None, *sidmaker.VERSIONS])
+def test_parse_swm_records_the_sid_maker_release(version):
+    swm = parse_swm(swm_path("flashitback").read_bytes(), player_version=version)
+    assert swm.player_version == (version or sidmaker.LATEST)
+
+
+def test_parse_swm_rejects_an_unshipped_sid_maker_release():
+    with pytest.raises(ValueError, match="no SID-Maker '2.99'"):
+        read_swm(swm_path("flashitback"), player_version="2.99")
+
+
+@pytest.mark.parametrize("name", ["bronkosaurus", "glacialblues"])
+def test_native_swm_renders_like_its_release_sid(name):
+    """A bare module plays the SID-Maker export, which renders as the release's own ``.sid``."""
+    swm = parse_swm(sw197_path(name).read_bytes())
+    sid = parse_sid(sw197_path(name + ".sid").read_bytes())
+    assert SWMPlayer(swm).render_grid(900) == SWMPlayer(sid).render_grid(900)

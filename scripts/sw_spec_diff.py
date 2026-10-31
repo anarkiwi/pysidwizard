@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from pysidtracker import SidImage
+from pysidtracker.disasm import image_after_init
 from pysidtracker.header import parse_sid_header
 from pysidtracker.oracle import EmuPlayer
 from pysidtracker.playspec import SpecPlayer
@@ -24,18 +25,33 @@ STACK = range(0x100, 0x200)
 MAX_CYCLES = 200_000
 
 
+def play_entry(image: SidImage) -> int:
+    """The PLAYER an interrupt-driven tune's own interrupt calls: the play entry, after the
+    tune's init, that binds (a copy the init left behind addresses the moved player)."""
+    view = bytes(image_after_init(image).window(0, 0x10000))
+    for entry in sorted(playspec.entries(view)):
+        try:
+            if not playspec.binding(view, entry)["mulply"]:
+                return entry
+        except ValueError:
+            continue
+    raise ValueError("no SID-Wizard play entry binds after the tune's init")
+
+
 def players(data: bytes, song: int = 1):
-    """``(spec, cpu)``: the playspec's SpecPlayer and the tune's own EmuPlayer."""
+    """``(spec, cpu)``: the playspec's SpecPlayer and the tune's own EmuPlayer, each
+    calling the header's play address, or :func:`play_entry` for a tune without one, as
+    a PSID driver calls it."""
     image = SidImage.from_bytes(data)
     header = parse_sid_header(data)
-    args = (image.image, image.load, header.init_address, header.play_address, song - 1)
+    play = header.play_address or play_entry(image)
+    args = (image.image, image.load, header.init_address, play, song - 1)
     spec = SpecPlayer(
         playspec.SPEC,
         *args,
         bind=playspec.binder(),
         entries=playspec.entries,
-        psid=header.is_psid,
-        sid=image if header.play_address == 0 else None,
+        psid=header.is_psid or not header.play_address,
     )
     return spec, EmuPlayer(*args)
 

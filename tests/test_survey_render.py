@@ -84,7 +84,7 @@ def test_non_sidwizard_raises_sid_parse_error(data):
 
 
 def test_multi_sid_is_not_decompiled():
-    with pytest.raises(SidParseError, match="SID playback is not modelled"):
+    with pytest.raises(SidParseError, match="SID playback is not stated"):
         oracle_hvsc.render(_tune(MULTI_SID[0]), 1, 10)
 
 

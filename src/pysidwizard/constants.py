@@ -260,10 +260,28 @@ RING_OFF_FX = 0x7C
 GATE_ON_FX = 0x7D
 GATE_OFF_FX = 0x7E
 
+# Instrument column: instruments, then legato, then small effects (SWM_LEGATO_INSFX).
+INSTRUMENT_MAX = 0x3E
+LEGATO_INSFX = 0x3F
+SMALL_FX_INST_MIN = 0x40
+# Effect column: big effects below the small ones.
+SMALL_FX_MIN = 0x20
+
 # Universal terminator used in instrument WF / PW / filter tables. On disk,
 # the *final* filter-table terminator is replaced with the instrument's
 # size byte; the writer handles that translation automatically.
 TABLE_END = 0xFF
+# A table row's first column: ``$FE`` jumps; in the PW and filter tables bit 7 sets
+# rather than sweeps.
+TABLE_JUMP = 0xFE
+TABLE_SET_FLAG = 0x80
+
+# Chord table: each chord ends ``$7E`` (back to the WF table) or ``$7F`` (loop).
+CHORD_RETURN = 0x7E
+CHORD_LOOP = 0x7F
+
+# Tempo table: bit 7 marks a program's last row.
+TEMPO_PROGRAM_LAST = 0x80
 
 # Pattern row flag. The note and instrument columns of a row both use
 # bit 7 to signal "the next column byte follows me". A row that consists

@@ -382,15 +382,14 @@ def test_raw_sequence_byte_rejects_out_of_range_value():
         RawSequenceByte(256).encode()
 
 
-def test_deprecated_player_aliases_warn_and_read_the_player_image():
-    """``features`` / ``filter_init`` / ``play_gate`` read ``SWMFile.player`` for one release."""
+def test_deprecated_player_alias_warns_and_reads_the_player_image():
+    """``features`` reads ``SWMFile.player`` for one release."""
     bare = SWMFile()
-    image = PlayerImage(features_for_driver(2), filter_init=(1, 2, 3, 4), play_gate=(0, 0x80, 0))
+    image = PlayerImage(features_for_driver(2))
     loaded = SWMFile(player=image)
-    assert {"features", "filter_init", "play_gate"}.isdisjoint(f.name for f in fields(SWMFile))
-    for name, default in (("features", None), ("filter_init", (0, 0, 0, 0)), ("play_gate", ())):
-        with pytest.warns(DeprecationWarning, match=f"SWMFile.player.{name}"):
-            assert getattr(bare, name) == default
-        with pytest.warns(DeprecationWarning, match=f"SWMFile.player.{name}"):
-            assert getattr(loaded, name) == getattr(image, name)
+    assert "features" not in {f.name for f in fields(SWMFile)}
+    with pytest.warns(DeprecationWarning, match="SWMFile.player.features"):
+        assert bare.features is None
+    with pytest.warns(DeprecationWarning, match="SWMFile.player.features"):
+        assert loaded.features == features_for_driver(2)
     assert loaded == SWMFile(player=image) and loaded != bare

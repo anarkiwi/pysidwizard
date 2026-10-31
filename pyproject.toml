@@ -19,7 +19,7 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio",
 ]
 dependencies = [
-    # The ``MemPlayer`` base (``SWMPlayer`` subclasses it), the ``SidFormat``
+    # ``SpecPlayer`` (``SWMPlayer`` subclasses it) and the playspec DSL, the ``SidFormat``
     # registry + generic CLI, the sidtrace oracle test factory, and
     # ``run_init``, which the ``.sid`` reader uses to run a tune's own init
     # (see pysidwizard.sidreader._build_via_player). 0.20 explains oracle mismatches
@@ -33,8 +33,11 @@ dependencies = [
     # registry (``SitePattern`` sites with provenance) and the ``locate()`` layout strategies.
     # 0.43 adds ``pysidtracker.playspec`` and whole-song oracle fixtures (no ``frames=``); 0.46
     # adds ``validate(stop=)``, which proves a spec routine against a stretch of a longer one;
-    # 0.48.1 has ``SpecPlayer``'s fallback to the lowest static entry.
-    "pysidtracker>=0.48.1",
+    # 0.48.1 has ``SpecPlayer``'s fallback to the lowest static entry; 0.49 lowers each proc
+    # once (a small generated player, fast under a tracer) and has ``volatile`` cells; 0.50
+    # runs ``run_editor`` entries as ``(start, stop)`` pairs (``pysidwizard.sidmaker``'s echo save); 0.50.1 banks SID access by ``$01``; 0.53.1
+    # refuses a hosted tune whose interrupts reach no modelled entry.
+    "pysidtracker>=0.53.1",
 ]
 
 [project.optional-dependencies]
@@ -46,9 +49,13 @@ dev = [
     "pytest>=7.4",
     "pytest-cov>=4.0",
     "pytest-xdist>=3.0",
+    "pytest-timeout>=2.1",
     "ruff>=0.4",
     "black>=24.0",
     "zstandard>=0.21",
+    "tqdm>=4.0",
+    # scripts/build_sidmaker.py unpacks the SID-Wizard 1.8 release, a 7z archive.
+    "py7zr>=0.20",
 ]
 
 # The generic ``pysidtracker`` CLI (info / reglog / wav) discovers SID-Wizard
@@ -63,7 +70,7 @@ Homepage = "https://github.com/anarkiwi/pysidwizard"
 where = ["src"]
 
 [tool.setuptools.package-data]
-pysidwizard = ["*.lark", "specs/*.play"]
+pysidwizard = ["*.lark", "specs/*.play", "data/*.prg", "data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -71,6 +78,9 @@ testpaths = ["tests"]
 # sidtrace oracle comparison (``-m oracle``) needs Docker + network, so it is
 # excluded from the default run and driven by its own CI job.
 addopts = "-ra -n auto -m 'not oracle'"
+# Every test, the oracle job's proofs included, finishes well inside this; one that does
+# not fails rather than hangs, its worker (and its coverage) kept.
+timeout = 120
 markers = [
     "oracle: byte-exact comparison against the sidtrace Docker oracle (opt-in via ``-m oracle``)",
 ]

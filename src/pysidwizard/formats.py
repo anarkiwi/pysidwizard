@@ -2,36 +2,38 @@
 
 Installing pysidwizard exposes a :class:`~pysidtracker.formats.SidFormat` on the
 ``pysidtracker.formats`` entry-point group, so ``pysidtracker info|reglog|wav``
-work on SID-Wizard ``.sid`` tunes with no bespoke binary: the format's parser
+work on SID-Wizard ``.sid`` tunes: the format's parser
 (:class:`~pysidwizard.sidreader.SidWizardSidParser`) recognises and decodes the
-tune, and its player (:class:`~pysidwizard.player.SWMPlayer`, a
-:class:`~pysidtracker.player.MemPlayer`) renders it through the shared
-``reglog`` / ``wav`` commands.
+tune, its player (:class:`~pysidwizard.player.SWMPlayer`) plays it, and its
+``spec`` hook is the playspec of the tune's own image, which
+:meth:`~pysidtracker.formats.SidFormat.spec_player` plays (``notes=clock`` for
+standard note words).
 """
 
 from __future__ import annotations
 
 from typing import Iterable, Sequence
 
-from pysidtracker import SidFormat
+from pysidtracker import SidFormat, parse_sid_header
 
 from .grammar import GRAMMAR, streams
 from .model import SWMFile
-from .player import SWMPlayer
+from .player import SWMPlayer, spec_binding, tune_sid
 from .sidreader import SidWizardSidParser
 
 
 def _metadata(swm: SWMFile) -> Sequence:
-    """The shared info block for an SWM model: name/author/released/load/init/play.
-
-    The song name, release date, and exact init/play addresses live in the
-    ``.sid`` container header rather than the recovered SWM model, so the author
-    and load address are surfaced and the remaining fields fall back to blank /
-    the load address.
-    """
-    load = swm.load_address or 0
-    author = swm.author_str()
-    return (author or "SID-Wizard tune", author, "", load, load, load)
+    """``(name, author, released, load, init, play)`` from the header of the ``.sid`` played."""
+    header = parse_sid_header(tune_sid(swm)[0])
+    load = header.real_load_address
+    return (
+        header.name,
+        header.author,
+        header.released,
+        load,
+        header.init_address or load,
+        header.play_address,
+    )
 
 
 def _describe(swm: SWMFile) -> Iterable[str]:
@@ -48,4 +50,6 @@ FORMAT = SidFormat(
     metadata=_metadata,
     grammar=GRAMMAR,
     streams=streams,
+    player_modules=("pysidwizard.playspec", "pysidwizard:specs/sidwizard.play"),
+    spec=spec_binding,
 )

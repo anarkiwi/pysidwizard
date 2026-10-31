@@ -59,6 +59,7 @@ from .constants import (
     subtunes_for,
 )
 from .errors import SWMFormatError
+from .typed import Chord, TableRow, TempoProgram
 
 if TYPE_CHECKING:
     from .variant import PlayerImage
@@ -330,19 +331,16 @@ def decode_sequence(data: bytes) -> List[SequenceCommand]:
 class Row:
     """A single pattern row.
 
-    Setting any field to ``None`` means "no event for that column".
+    Setting any field to ``None`` means "no event for that column". A parsed row's
+    columns are :class:`~pysidwizard.typed.Column` values typed by what the player does with them.
 
     Attributes:
-        note: Note value in ``0..0x7F``. ``0x00..0x5F`` are pitches;
-            ``0x60..0x6F`` set vibrato; ``0x78..0x7E`` are note-column
-            effects (portamento, sync/ring on/off, gate on/off).
-        instrument: Instrument-column byte in ``1..0x7F``. ``1..0x3E``
-            selects an instrument from :attr:`SWMFile.instruments`;
-            ``0x3F``-and-above values are instrument-column effects
-            (legato, volume, chord-set, ...).
-        fx: Effect-column byte in ``1..0xFF``. Codes ``< 0x20`` are
-            "big" effects which require an ``fx_value``; codes
-            ``>= 0x20`` are self-contained small effects.
+        note: Note column in ``0..0x7F``: a :class:`Note`, a
+            :class:`VibratoAmplitude` or a :class:`NoteEffect`.
+        instrument: Instrument column in ``1..0x7F``: a :class:`SelectInstrument`,
+            :class:`Legato` or :class:`SmallEffect`.
+        fx: Effect column in ``1..0xFF``: a :class:`BigEffect` (below ``0x20``),
+            which requires an ``fx_value``, or a :class:`SmallEffect`.
         fx_value: Parameter byte for big effects.
     """
 
@@ -566,6 +564,22 @@ class Instrument:
         """
         return self.encode()
 
+    @property
+    def wf_rows(self) -> List[TableRow]:
+        """The waveform/arpeggio table's rows as the player reads them from its start."""
+        return _table_rows(self.table_image(), "wf_table")
+
+    @property
+    def pw_rows(self) -> List[TableRow]:
+        """The pulse table's rows as the player reads them from its start."""
+        return _table_rows(self.table_image()[len(self.wf_table) + 1 :], "pw_table")
+
+    @property
+    def filter_rows(self) -> List[TableRow]:
+        """The filter table's rows as the player reads them from its start."""
+        start = len(self.wf_table) + len(self.pw_table) + 2
+        return _table_rows(self.table_image()[start:], "filter_table")
+
     @staticmethod
     def _check_nibble(value: int, field_name: str) -> int:
         if not (0 <= value <= 0xF):
@@ -676,6 +690,17 @@ class Instrument:
         )
 
 
+def _parsed(data: bytes, rule: str, exact: bool = False):
+    """The model the song grammar builds of ``data``'s ``rule`` stream."""
+    from .grammar import GRAMMAR  # pylint: disable=import-outside-toplevel,cyclic-import
+
+    return GRAMMAR.parse_exact(data, rule) if exact else GRAMMAR.parse_prefix(data, rule).model
+
+
+def _table_rows(image: bytes, rule: str) -> List[TableRow]:
+    return _parsed(image + bytes([TABLE_END]), rule)
+
+
 # --------------------------------------------------------------------------
 # Top-level container.
 # --------------------------------------------------------------------------
@@ -729,14 +754,17 @@ class SWMFile:
     tempo_table: bytes = b""
     subtune_tempos: List[Tuple[int, int]] = field(default_factory=list)
     load_address: Optional[int] = DEFAULT_LOAD_ADDRESS
-    # The ``.sid``'s player build, release quirks and init state; None for a bare ``.swm`` until :func:`~pysidwizard.reader.apply_player_image`.
+    # The ``.sid``'s player build and release quirks; None for a bare ``.swm``.
     player: Optional[PlayerImage] = None
     # ".P00" wrapper name (16-byte PETSCII field from disk); transport metadata, excluded from equality.
     p00_name: bytes = field(default=b"", compare=False)
+    # The PSID/RSID the module was read from (its own player plays it), and the 0-based song its init receives; empty for a bare ``.swm``.
+    source: bytes = field(default=b"", compare=False, repr=False)
+    song: int = field(default=0, compare=False)
+    # The SID-Maker release (:data:`pysidwizard.sidmaker.VERSIONS`) a bare module plays the export of; None is the latest.
+    player_version: Optional[str] = field(default=None, compare=False)
 
     features = _player_alias("features", None)
-    filter_init = _player_alias("filter_init", (0, 0, 0, 0))
-    play_gate = _player_alias("play_gate", ())
 
     @property
     def sequence_count(self) -> int:
@@ -785,7 +813,20 @@ class SWMFile:
             subtune_tempos=tempos,
             load_address=self.load_address,
             player=self.player,
+            source=self.source,
+            song=index if self.source else 0,
+            player_version=self.player_version,
         )
+
+    @property
+    def chords(self) -> List[Chord]:
+        """:attr:`chord_table`'s chords."""
+        return _parsed(self.chord_table, "chords", exact=True)
+
+    @property
+    def tempo_programs(self) -> List[TempoProgram]:
+        """:attr:`tempo_table`'s programs."""
+        return _parsed(self.tempo_table, "tempos", exact=True)
 
     def author_str(self) -> str:
         return self.author.decode("latin-1").rstrip(" \x00")

@@ -7,19 +7,18 @@ Each stream kind is one start rule; a stream that does not parse raises
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Iterator, List
+from typing import Callable, Dict, Iterator, List, Optional
 
-from lark import Token, Transformer
-from lark.lark import PostLex
-from pysidtracker.bytegrammar import ByteGrammar, Parsed, Stream
+from lark import Token, Transformer, v_args
+from pysidtracker.bytegrammar import BitmapPostLex, ByteGrammar, Parsed, Stream
 
 from .constants import (
     PACKED_MAX,
     PACKED_MIN,
-    SEQUENCE_END_WITH_LOOP,
-    SEQUENCE_SUBTUNE_JUMP_BASE,
+    SEQUENCE_MAINVOL_BASE,
     SEQUENCE_TEMPO_BASE,
     SEQUENCE_TRANSPOSE_BASE,
+    TABLE_SET_FLAG,
 )
 from .errors import SWMFormatError
 from .model import (
@@ -38,8 +37,103 @@ from .model import (
     encode_sequence,
     pack_pattern,
 )
+from .typed import (
+    AbsolutePitch,
+    BigEffect,
+    Chord,
+    ChordPitch,
+    FilterSet,
+    FilterSweep,
+    GateOff,
+    GateOn,
+    KeepPitch,
+    Legato,
+    Note,
+    NoteEffect,
+    Portamento,
+    PulseSet,
+    PulseSweep,
+    RelativePitch,
+    RepeatRow,
+    RingOff,
+    RingOn,
+    SelectInstrument,
+    SmallEffect,
+    SyncOff,
+    SyncOn,
+    TableJump,
+    TempoProgram,
+    VibratoAmplitude,
+    WaveRow,
+    signed_byte,
+)
 
 RULES = ("sequence", "pattern", "instrument", "chords", "tempos")
+TABLE_RULES = ("wf_table", "pw_table", "filter_table")
+
+_SEQUENCE: Dict[str, Callable[[int], SequenceCommand]] = {
+    "PLAY": PlayPattern,
+    "TRANSPOSE": lambda b: Transpose(b - SEQUENCE_TRANSPOSE_BASE),
+    "MAINVOL": lambda b: MainVolume(b - SEQUENCE_MAINVOL_BASE),
+    "TEMPO": lambda b: TempoOverride(b - SEQUENCE_TEMPO_BASE),
+    "NOP": RawSequenceByte,
+    "SEQ_END": lambda b: End(),
+    "LOOP_POSITION": Loop,
+    "SUBTUNE_JUMP": SubtuneJump,
+}
+
+_Kind = Optional[Callable[[int], int]]
+
+_NOTE_COLUMN: Dict[str, _Kind] = {
+    "EMPTY": None,
+    "NOTE": Note,
+    "VIBRATO_AMP": VibratoAmplitude,
+    "PORTAMENTO": Portamento,
+    "SYNC_ON": SyncOn,
+    "SYNC_OFF": SyncOff,
+    "RING_ON": RingOn,
+    "RING_OFF": RingOff,
+    "GATE_ON": GateOn,
+    "GATE_OFF": GateOff,
+    "NOTE_FX": NoteEffect,
+}
+_INST_COLUMN: Dict[str, _Kind] = {
+    "NO_INST": None,
+    "INSTRUMENT": SelectInstrument,
+    "LEGATO": Legato,
+    "INST_FX": SmallEffect,
+}
+_COLUMNS: Dict[str, _Kind] = {
+    **_NOTE_COLUMN,
+    **_INST_COLUMN,
+    "NO_FX": int,
+    "BIG_FX": BigEffect,
+    "SMALL_FX": SmallEffect,
+    "VALUE": int,
+    "PACK": lambda b: 0,
+    "PITCH_UP": RelativePitch,
+    "PITCH_DOWN": RelativePitch,
+    "CHORD": ChordPitch,
+    "KEEP_PITCH": KeepPitch,
+    "ABS_PITCH": AbsolutePitch,
+    "DETUNE": int,
+    "KEEP_DETUNE": None,
+}
+
+# Bit 7 of a note or instrument byte announces the next column.
+_NEXT_COLUMN = {
+    **{name: ((7, "_INST", 0),) for name in _NOTE_COLUMN},
+    **{name: ((7, "_FX", 0),) for name in _INST_COLUMN},
+}
+
+
+_MASKS = (0x7F, 0x7F, 0xFF, 0xFF)
+
+
+def _column(tok: Token, mask: int = 0xFF):
+    """``tok``'s byte (``mask``-ed) as its terminal's column type; ``None`` for none."""
+    kind = _COLUMNS[tok.type]
+    return None if kind is None else kind(ord(tok) & mask)
 
 
 def _end(tokens) -> int:
@@ -47,134 +141,108 @@ def _end(tokens) -> int:
     return max((tok.end_pos for tok in tokens if isinstance(tok, Token)), default=0)
 
 
-def _flat(items) -> List[Token]:
-    out: List[Token] = []
-    for item in items:
-        out.extend(_flat(item) if isinstance(item, list) else [item])
-    return out
+def _zero_rows(count: int) -> List[Row]:
+    return [Row() for _ in range(count)]
+
+
+def _expand(tok: Token) -> int:
+    """The zero rows a ``$70..$77`` run stands for."""
+    return ord(tok) - PACKED_MIN + 2
+
+
+def _table(children) -> Parsed:
+    return Parsed(children[:-1], _end(children))
 
 
 class _Transformer(Transformer):
-    """Builds each stream's model while it parses."""
+    """Builds each stream's typed model while it parses."""
 
     def sequence(self, children) -> Parsed:
-        commands: List[SequenceCommand] = []
-        loop = False
-        for tok in children:
-            value = ord(tok)
-            if loop:
-                loop = False
-                commands.append(
-                    SubtuneJump(byte=value)
-                    if value >= SEQUENCE_SUBTUNE_JUMP_BASE
-                    else Loop(position=value)
-                )
-            elif tok.type == "PLAY":
-                commands.append(PlayPattern(value))
-            elif tok.type == "TRANSPOSE":
-                commands.append(Transpose(value - SEQUENCE_TRANSPOSE_BASE))
-            elif tok.type == "MAINVOL":
-                commands.append(MainVolume(value & 0x0F))
-            elif tok.type == "TEMPO":
-                commands.append(TempoOverride(value - SEQUENCE_TEMPO_BASE))
-            elif tok.type == "NOP":
-                commands.append(RawSequenceByte(value))
-            elif value == SEQUENCE_END_WITH_LOOP:
-                loop = True
-            else:
-                commands.append(End())
+        commands = [_SEQUENCE[tok.type](ord(tok)) for tok in children if tok.type in _SEQUENCE]
         return Parsed(commands, _end(children))
 
     def pattern(self, children) -> Parsed:
         rows: List[Row] = []
         for item in children[:-1]:
-            rows.extend(item if isinstance(item, list) else _zero_rows(_expand([item])))
+            rows.extend(item if isinstance(item, list) else _zero_rows(_expand(item)))
         return Parsed(rows, _end(children))
 
-    def note_row(self, children):
-        return [Row(note=ord(children[0]))]
-
-    def empty_row(self, children):
-        return [Row()]
-
-    def inst_row(self, children):
-        (instrument, fx, value), rest = children[1]
-        note = ord(children[0]) & 0x7F
-        return [Row(note=note or None, instrument=instrument, fx=fx, fx_value=value)] + rest
-
-    def inst_only(self, children):
-        return (ord(children[0]), None, None), []
-
-    def inst_zero(self, children):
-        return (None, None, None), []
-
-    def inst_fx(self, children):
-        (fx, value), rest = children[1]
-        return (ord(children[0]) & 0x7F or None, fx, value), rest
-
-    def fx_small(self, children):
-        return (ord(children[0]), None), []
-
-    def fx_big(self, children):
-        value, rest = children[1]
-        return (ord(children[0]), value), rest
-
-    def fx_zero(self, children):
-        value, rest = children[1]
-        return (0, value), rest
-
-    def val_nz(self, children):
-        return ord(children[0]), []
-
-    def val_zero(self, children):
-        return 0, []
-
-    def val_packed(self, children):
-        return 0, _zero_rows(_expand(children) - 1)
+    def row(self, children) -> List[Row]:
+        cols = [_column(tok, mask) for tok, mask in zip(children, _MASKS, strict=False)]
+        packed = len(children) == 4 and children[3].type == "PACK"
+        return [Row(*cols)] + _zero_rows(_expand(children[3]) - 1 if packed else 0)
 
     def header(self, children) -> bytes:
         return bytes(ord(tok) for tok in children)
 
-    def tab_row(self, children) -> List[Token]:
-        return list(children)
+    wf_table = pw_table = filter_table = staticmethod(_table)
 
-    def table(self, children) -> bytes:
-        return bytes(ord(tok) for tok in _flat(children))
+    def wf(self, children) -> list:
+        return children[:-1]
+
+    pw = filt = wf
+
+    @v_args(inline=True)
+    def wave_row(self, wave, pitch, detune) -> WaveRow:
+        return WaveRow(ord(wave), _column(pitch), _column(detune))
+
+    @v_args(inline=True)
+    def repeat_row(self, count, pitch, detune) -> RepeatRow:
+        return RepeatRow(ord(count), _column(pitch), _column(detune))
+
+    @v_args(inline=True)
+    def pulse_sweep(self, frames, step, keytrack) -> PulseSweep:
+        return PulseSweep(ord(frames), signed_byte(ord(step)), ord(keytrack))
+
+    @v_args(inline=True)
+    def pulse_set(self, high, low, keytrack) -> PulseSet:
+        return PulseSet(ord(high) & ~TABLE_SET_FLAG, ord(low), ord(keytrack))
+
+    @v_args(inline=True)
+    def filter_sweep(self, frames, step, keytrack) -> FilterSweep:
+        return FilterSweep(ord(frames), signed_byte(ord(step)), ord(keytrack))
+
+    @v_args(inline=True)
+    def filter_set(self, control, cutoff, keytrack) -> FilterSet:
+        ctrl = ord(control)
+        return FilterSet(ctrl & 0x70, ctrl & 0x0F, ord(cutoff), ord(keytrack))
+
+    @v_args(inline=True)
+    def table_jump(self, _jump, target, pad) -> TableJump:
+        return TableJump(ord(target), ord(pad))
 
     def instrument(self, children) -> Parsed:
-        body = b"".join(children[:4])
-        return Parsed(Instrument.decode(body[:-1], name=b"", strict=False), len(body))
+        header, *tables = children[:4]
+        body = header + b"\xff".join(b"".join(row.encode() for row in t) for t in tables)
+        return Parsed(Instrument.decode(body, name=b"", strict=False), len(body) + 1)
 
     def chords(self, children) -> Parsed:
-        data = bytes(b for chord in children for b in chord)
-        return Parsed(data, len(data))
+        return Parsed(children, sum(len(chord.encode()) for chord in children))
 
-    def chord(self, children) -> List[int]:
-        return [ord(tok) for tok in children]
-
-    program = chord
+    def chord(self, children) -> Chord:
+        return Chord(
+            tuple(signed_byte(ord(tok)) for tok in children[:-1]), children[-1].type == "CHORD_LOOP"
+        )
 
     def tempos(self, children) -> Parsed:
-        data = bytes(b for program in children for b in program)
-        return Parsed(data, len(data))
+        return Parsed(children, sum(len(program.tempos) for program in children))
+
+    def tempo_program(self, children) -> TempoProgram:
+        return TempoProgram(tuple(ord(tok) & 0x7F for tok in children))
 
 
-def _zero_rows(count: int) -> List[Row]:
-    return [Row() for _ in range(count)]
+_PACKABLE = frozenset({"VIBRATO_AMP", "VALUE"})
 
 
-def _expand(packs) -> int:
-    """The zero rows the ``$70..$77`` runs stand for."""
-    return sum(ord(tok) - PACKED_MIN + 2 for tok in packs)
-
-
-_PATTERN_BYTES = frozenset({"NOTE", "INST_NZ", "FX_SMALL", "VAL_NZ", "PACK"})
-
-
-class _PackPostLex(PostLex):
-    """Retypes a pattern ``$70..$77`` byte after a zero or another ``$70..$77`` byte as ``PACK``."""
+class _PatternPostLex(BitmapPostLex):
+    """Retypes a pattern ``$70..$77`` byte after a zero or another ``$70..$77`` byte as
+    ``PACK``, then tags each note and instrument byte whose bit 7 announces the next column."""
 
     def process(self, stream: Iterator[Token]) -> Iterator[Token]:
+        return super().process(self._packs(stream))
+
+    @staticmethod
+    def _packs(stream: Iterator[Token]) -> Iterator[Token]:
         prev = -1
         for tok in stream:
             if len(tok) != 1:
@@ -182,7 +250,7 @@ class _PackPostLex(PostLex):
                 continue
             value = ord(tok)
             if (
-                tok.type in _PATTERN_BYTES
+                tok.type in _PACKABLE
                 and PACKED_MIN <= value <= PACKED_MAX
                 and (prev == 0 or PACKED_MIN <= prev <= PACKED_MAX)
             ):
@@ -191,8 +259,14 @@ class _PackPostLex(PostLex):
             yield tok
 
 
-GRAMMAR = ByteGrammar("pysidwizard", "sidwizard.lark", RULES, _Transformer(), error=SWMFormatError)
-GRAMMAR.postlex = _PackPostLex()
+GRAMMAR = ByteGrammar(
+    "pysidwizard",
+    "sidwizard.lark",
+    RULES + TABLE_RULES,
+    _Transformer(),
+    error=SWMFormatError,
+)
+GRAMMAR.postlex = _PatternPostLex(_NEXT_COLUMN)
 
 
 def parse_sequence(data: bytes) -> List[SequenceCommand]:

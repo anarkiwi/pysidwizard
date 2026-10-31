@@ -18,6 +18,9 @@ player per chip is rejected rather than read as its first chip.
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ProcessPoolExecutor
+
 import pysidtracker
 import pytest
 
@@ -41,6 +44,7 @@ from tests._hvsc_corpus import (
     SAMPLE,
 )
 from tests._hvsc_fetch import resolve
+from tests._refused import assert_refused, assert_spec_plays
 
 
 def _path(rel: str):
@@ -85,9 +89,9 @@ def test_sample_parses_detects_direct_and_plays(rel):
         for row in pat.rows:
             assert row.note is None or row.note <= 0x7F
 
-    player = SWMPlayer(swm)
-    for _ in range(300):
-        player.play_frame()
+    if assert_refused(rel, swm):
+        return
+    assert_spec_plays(rel, swm, 300)
 
     if swm.subtune_count > 1:
         for n in range(swm.subtune_count):
@@ -96,18 +100,21 @@ def test_sample_parses_detects_direct_and_plays(rel):
                 sub_player.play_frame()
 
 
+def _shape(rel: str):
+    """``(rsid, swp, subtunes)`` of a sample tune, its subtunes from the parsed module."""
+    data = _read(rel)
+    swp = data.find(b"SWP1", parse_psid_header(data).data_start) >= 0
+    return pysidtracker.is_rsid(data), swp, parse_sid(data).subtune_count
+
+
 def test_sample_is_representative():
     # Guard against the deterministic sample silently degrading to a single
     # trivial shape: it must still span RSID, packed (SWP) and multi-subtune.
-    rsid = swp = multisubtune = 0
-    for rel in SAMPLE:
-        data = _read(rel)
-        if pysidtracker.is_rsid(data):
-            rsid += 1
-        if data.find(b"SWP1", parse_psid_header(data).data_start) >= 0:
-            swp += 1
-        if parse_sid(data).subtune_count > 1:
-            multisubtune += 1
+    with ProcessPoolExecutor(min(8, os.cpu_count() or 1)) as pool:
+        shapes = list(pool.map(_shape, SAMPLE, chunksize=8))
+    rsid = sum(r for r, _, _ in shapes)
+    swp = sum(w for _, w, _ in shapes)
+    multisubtune = sum(n > 1 for _, _, n in shapes)
     assert rsid >= 1, "sample lost its RSID coverage"
     assert swp >= 1, "sample lost its packed (SWP) coverage"
     assert multisubtune >= 5, "sample lost its multi-subtune coverage"
@@ -166,7 +173,7 @@ def test_player_recovered_parses_and_plays(rel):
         for row in pat.rows:
             assert row.note is None or row.note <= 0x7F
 
+    if assert_refused(rel, swm):
+        return
     for n in range(swm.subtune_count):
-        player = SWMPlayer(swm.subtune(n))
-        for _ in range(200):
-            player.play_frame()
+        assert_spec_plays(rel, swm.subtune(n), 200)
