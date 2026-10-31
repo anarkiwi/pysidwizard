@@ -652,7 +652,7 @@ def _resolve_ptr(raw, ptr_base, load, end, reloc_delta):
     return addr
 
 
-def _filter_table_end(byte, start: int, bound: int) -> Optional[int]:
+def _filter_table_end(byte, chunk, start: int, bound: int) -> Optional[int]:
     """Address of a filter table's terminating ``$FF`` row (column 0), else None.
 
     Filter rows are 3 bytes; only column 0 is a command (player.asm
@@ -660,6 +660,15 @@ def _filter_table_end(byte, start: int, bound: int) -> Optional[int]:
     ``$00..$7F`` sweep). ``$FF`` in the sweep-amount or keyboard-tracking
     columns is data, so the walk steps whole rows.
     """
+    if start >= bound:
+        return None
+    try:
+        rows = chunk(start, bound - start)[::3]
+    except _LayoutError:
+        rows = None
+    if rows is not None:
+        row = rows.find(TABLE_END)
+        return None if row < 0 else start + 3 * row
     cursor = start
     while cursor < bound:
         if byte(cursor) == TABLE_END:
@@ -700,7 +709,7 @@ def _decode_slot(byte, chunk, addr: int, k: int, load: int, end: int, inst_lo: i
     """Instrument ``k`` at ``addr``, or :class:`_LayoutError`."""
     if not load <= addr < end:
         raise _LayoutError(f"instrument {k} pointer {addr:#06x} out of range")
-    cursor = _filter_table_end(byte, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), inst_lo)
+    cursor = _filter_table_end(byte, chunk, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), inst_lo)
     if cursor is None:
         raise _LayoutError(f"instrument {k} filter table unterminated")
     try:
@@ -723,12 +732,16 @@ _ZP_REACH = 0x100
 def _decode_at(byte, chunk, addr: int, cursor: int, name: bytes) -> Instrument:
     """The instrument whose body is ``[addr, cursor)``, with its :attr:`~pysidwizard.model.Instrument.ram` window."""
     ins = Instrument.decode(chunk(addr, cursor - addr), name=name)
-    ins.ram = _ram_window(byte, addr)
+    ins.ram = _ram_window(byte, chunk, addr)
     return ins
 
 
-def _ram_window(byte, addr: int) -> bytes:
+def _ram_window(byte, chunk, addr: int) -> bytes:
     """The bytes ``lda (PLAYERZP),y`` can reach from ``addr``, up to the image's end."""
+    try:
+        return chunk(addr, _ZP_REACH)
+    except _LayoutError:
+        pass
     ram = bytearray()
     for a in range(addr, addr + _ZP_REACH):
         try:
@@ -777,7 +790,7 @@ def _decode_patterns(byte, chunk, ptn_lo, ptn_hi, pat_amount, load, end, ptr_bas
         min_pattern = min(min_pattern, addr)
         term = _stream_end(byte, addr, "pattern") - 1
         pat = _read_pattern(byte, chunk, addr, term)
-        pat.ram = _ram_window(byte, addr)
+        pat.ram = _ram_window(byte, chunk, addr)
         patterns.append(pat)
     return patterns, min_pattern
 
@@ -1078,7 +1091,7 @@ def _player_patterns(
             patterns.append(Pattern(rows=[Row() for _ in range(empty_len)]))
             continue
         pat = _read_pattern(byte, chunk, addr, term)
-        pat.ram = _ram_window(byte, addr)
+        pat.ram = _ram_window(byte, chunk, addr)
         patterns.append(pat)
         if k in ref_all:
             for row in pat.rows:
@@ -1130,7 +1143,7 @@ def _decode_player_instruments(byte, chunk, inst_lo, inst_hi, amount, ceil, inra
                 raise _LayoutError(f"referenced instrument {k} is absent from the image")
             instruments.append(Instrument(name=name))
             continue
-        cursor = _filter_table_end(byte, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), ceil)
+        cursor = _filter_table_end(byte, chunk, addr + byte(addr + INST_FILTER_TABLE_PTR_POS), ceil)
         if cursor is None:
             cursor = ceil
         try:

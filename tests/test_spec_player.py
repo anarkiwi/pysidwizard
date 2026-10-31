@@ -121,7 +121,6 @@ def test_standard_mode_answers_reads_past_the_note_table():
     assert max(row[0] | row[1] << 8 for row in native) > 1
 
 
-@pytest.mark.xfail(strict=True, reason="the trap is armed only once init returns: pysidtracker#184")
 def test_a_play_address_0_tune_whose_init_never_returns_runs_the_spec():
     """An RSID that installs its own interrupt and loops in its init still plays as the spec:
     the interrupt's call to PLAYER is a modelled entry."""

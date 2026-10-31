@@ -39,4 +39,15 @@ def assert_refused(path: str, swm) -> bool:
     return True
 
 
-__all__ = ["REASONS", "REFUSED", "assert_refused"]
+# Tunes whose interrupt reaches no modelled entry: SpecPlayer plays their own 6502 without
+# the spec (pysidtracker#187; the build is #124's).
+SPEC_NEVER_RUNS = {"MUSICIANS/D/Deetsay/Asmlook.sid"}
+
+
+def assert_spec_ran(path: str, player) -> None:
+    """The spec played ``player``'s calls (a modelled entry ran), except for the tunes of
+    :data:`SPEC_NEVER_RUNS`, whose calls it does not reach."""
+    assert (player.entry is None) == (path in SPEC_NEVER_RUNS)
+
+
+__all__ = ["REASONS", "REFUSED", "SPEC_NEVER_RUNS", "assert_refused", "assert_spec_ran"]

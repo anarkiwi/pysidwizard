@@ -44,10 +44,12 @@ from pysidwizard.sidfile import sid_chips
 from pysidwizard.sidreader import (
     _check_played_instruments,
     _filter_table_end,
+    _LayoutError,
+    _memory_accessors,
 )
 from tests._hvsc_corpus import PLAYER_RECOVERED, SAMPLE
 from tests._hvsc_fetch import HVSC_ROOT, resolve
-from tests._refused import assert_refused
+from tests._refused import assert_refused, assert_spec_ran
 from tests._toy import assert_6502
 
 LOAD = 0x1000
@@ -573,8 +575,13 @@ def test_filter_table_end_walks_rows_not_bytes():
         "fe0200"  # $FE jump row, column 0
     )
     data = rows + b"\xff\x00\x00"
-    assert _filter_table_end(data.__getitem__, 0, len(data)) == len(rows)
-    assert _filter_table_end(data.__getitem__, 0, len(rows)) is None
+    byte, chunk = _memory_accessors(data, 0, 0)
+    assert _filter_table_end(byte, chunk, 0, len(data)) == len(rows)
+    assert _filter_table_end(byte, chunk, 0, len(rows)) is None
+    assert _filter_table_end(byte, chunk, 0, len(data) + 9) == len(rows)
+    byte, chunk = _memory_accessors(rows, 0, 0)
+    with pytest.raises(_LayoutError):
+        _filter_table_end(byte, chunk, 0, len(rows) + 3)
 
 
 def test_parse_sid_recovers_sequences():
@@ -806,6 +813,7 @@ def test_real_corpus_row_parses_and_plays(row):
     player = SWMPlayer(swm)
     for _ in range(300):
         player.play_frame()
+    assert_spec_ran(row[0], player)
     if swm.subtune_count > 1:
         # Every subtune must be independently playable.
         for n in range(swm.subtune_count):
