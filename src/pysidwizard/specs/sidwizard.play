@@ -21,7 +21,7 @@ layout {
   tablrst, insctrl, storfrl, fltctrl, fltposi, cwepcnt, fswitch, resonib, mainvol,
   fltband, ckbdtrk, ctfhgho, flshift, ctflgho, seqvolu, valstor, mergest, mul3tmp,
   astorez, indexj1, indexj2, indexjp, xstore, subtpos, gate, swp_offset, sfxtimer, sfxleng,
-  curinstemp: addr;
+  curinstemp, subtjmp: addr;
   sel_ins_limit, exp_end, exp_threshold, chn, gate_mask: byte;
   transposesupp, octaveshift, chordsupport, calcvibrato, vibratotypes, detunesupport,
   portavibra, arpspeedsupp, portame_notefx, gateoffptr, filtresetsw, filtkbtrack,
@@ -32,7 +32,8 @@ layout {
   filter_smallfx, detune_smallfx, wfctrl_smallfx,
   first_frame_freq_by_track, first_frame_fixed_waveform, filter_stop_rewinds,
   kbtrack_fswitch, wfctrl_fx_stores, mulply, play_gate, gate_minus, swp, sfx, hr_ad_first,
-  adsr_ad_first, seq_tempo_capped, table_fx_resets: flag;
+  adsr_ad_first, seq_tempo_capped, table_fx_resets, subtune_restarts, sound_tables_first,
+  sound_resets_flshift, vibamfx_amp_only, bigfx_v10, echo_support: flag;
   order, chain: list;
 }
 
@@ -151,6 +152,7 @@ cell indexj2: u8 @ L.indexj2 operand;
 cell indexjp: u16 @ L.indexjp operand;
 cell xstore: u8 @ L.xstore operand;
 cell subtpos: u8 @ L.subtpos operand;
+cell subtjmp: u8 @ L.subtjmp operand;
 
 // The chip's shared registers.
 cell sid_resfc: u8 @ L.sid + 0x17 out;
@@ -240,12 +242,19 @@ machine voice[x in 0..L.chn] {
   // The orderlist read: ``lda SEQUENCES,y`` whose operand the subtune setter rewrites.
   cell seqt: u16 @ L.p_seqt1 + x * 4 operand;
 
-  // The carry the voice's multispeed call leaves for the next voice's, and the tick
-  // number the clock leaves for DOTRACK.
+  // The carry the voice's multispeed call leaves for the next voice's, the tick number
+  // the clock leaves for DOTRACK, and whether the voice has played this call (a second
+  // step is the subtune restart).
   signal c: bool = false;
   signal ticks: u8 = 0;
+  signal played: bool = false;
 
   step {
+    if played {
+      restart();
+      return;
+    }
+    played := true;
     if L.sfx && x == 2 && !L.mulply {
       sfx();
     }
@@ -480,6 +489,9 @@ machine voice[x in 0..L.chn] {
           if L.subtunejump {
             setseqa(target);
           }
+          if L.subtune_restarts {
+            subtjmp := target;
+          }
           target := 0;
         }
         y := target;
@@ -491,15 +503,15 @@ machine voice[x in 0..L.chn] {
   // SEQ_FX: an orderlist effect. $80..$9F set the delayed transpose, $A0..$AF the
   // delayed main volume, $B0..$EF the delayed track tempo (in older releases $B0..$FD).
   proc seq_fx(a: u8) {
-    if a < 0xA0 {
+    if L.seq_tempo_capped && a < 0xA0 || !L.seq_tempo_capped && neg(a - 0xA0) {
       if L.transposesupp {
         transp2 := a - 0x90;
       }
-    } elif a < 0xB0 {
+    } elif L.seq_tempo_capped && a < 0xB0 || !L.seq_tempo_capped && neg(a - 0xB0) {
       seqvolu := a & 0x0F;
     } elif a < 0xF0 || !L.seq_tempo_capped {
       if L.tempoprgsupp {
-        seqtempo := a - 0xB0;
+        seqtempo := a - 0xB0 - u8(a < 0xB0);
       }
     }
   }
@@ -515,6 +527,37 @@ machine voice[x in 0..L.chn] {
     let y = (track >> 1) + subtpos;
     mem[L.p_seqt1 - 1 + u16(track)] := subt1[y];
     mem[L.p_seqt1 + u16(track)] := subt2[y + 1];
+  }
+
+  // SID-Wizard 1.0's INIT for the voice: the delayed values cleared, then the orderlist
+  // from its start, its effects run up to the first pattern.
+  proc restart() {
+    transp2 := 0;
+    seqtempo := 0;
+    ptnpos := 0;
+    tmppos := 0;
+    tmpbase := 0;
+    seqpos := 0;
+    subtjmp := 0;
+    let y = 0;
+    let walking = true;
+    while walking bound 256 {
+      let a = mem[seqt + y];
+      if !neg(a) {
+        curptn := a;
+        walking := false;
+      } elif a >= SEQ_END {
+        walking := false;
+      } else {
+        seq_fx(a);
+        y += 1;
+        seqpos := y;
+        if y == 0 {
+          curptn := 0;
+          walking := false;
+        }
+      }
+    }
   }
 
   // HARDRST: a note in the row (not a note effect, not under tone portamento, not
@@ -705,19 +748,26 @@ machine voice[x in 0..L.chn] {
   // STRTSND: the sound starts. The instrument's control byte (its PW and filter
   // reset-off bits cleared when an instrument was just selected) is kept in
   // INSCTRL; the first-frame waveform and pitch, the table positions, the gate,
-  // vibrato, chord, PW and filter tables, and the ADSR are set; the effects follow.
+  // vibrato, chord, PW and filter tables, and the ADSR are set (1.0: the PW and filter
+  // tables and the ADSR first, the filter shift cleared); the effects follow.
   proc strtsnd() {
     startsound();
     legatoo();
   }
 
   proc startsound() {
+    if L.sound_resets_flshift {
+      flshift := 0;
+    }
     let ctrl = ind(L.zp, 0);
     if L.pwresetsw || L.filtresetsw {
       ctrl &= tablrst;
     }
     insctrl := ctrl;
     slidevib := ctrl & 0x30;
+    if L.sound_tables_first {
+      sound_tables();
+    }
     if L.frame1switch {
       if insctrl & 8 != 0 {
         if L.first_frame_fixed_waveform {
@@ -742,12 +792,26 @@ machine voice[x in 0..L.chn] {
     if L.arpspeedsupp {
       arpsped := ind(L.zp, 7);
     }
-    setvib0();
+    if L.sound_tables_first {
+      startchord();
+      setvib0();
+    } else {
+      setvib0();
+      startchord();
+      sound_tables();
+    }
+  }
+
+  proc startchord() {
     if L.chordsupport {
       let chord = ind(L.zp, 8);
       curchord := chord;
       chordpos := chdp1[chord];
     }
+  }
+
+  // The instrument's PW and filter tables (each unless its reset-off bit is set) and ADSR.
+  proc sound_tables() {
     if !L.pwresetsw || insctrl & 0x40 == 0 {
       pwtpos := ind(L.zp, 0x0A);
     }
@@ -1303,8 +1367,10 @@ machine voice[x in 0..L.chn] {
   // the table's zero offset. The instrument and pattern effects follow.
   proc note_fx(a: u8) {
     if neg(a - RUN_MAX) {
-      valstor := a;
-      vibamfx();
+      if !L.vibamfx_amp_only {
+        valstor := a;
+      }
+      vibamfx(a);
     } else {
       selntfx(a);
       note_fx_at(a, wfghost);
@@ -1436,7 +1502,7 @@ machine voice[x in 0..L.chn] {
     } elif n == 7 {
       smalfx7(v);
     } elif n == 8 {
-      vibamfx();
+      vibamfx(v);
     } elif n == 9 {
       if L.vibfreqfx_supp {
         vibfrequ := v << 1;
@@ -1506,10 +1572,17 @@ machine voice[x in 0..L.chn] {
     }
   }
 
-  // VIBAMFX: the instrument's vibrato with the effect's amplitude nibble.
-  proc vibamfx() {
-    let a = setinbh(5);
-    bigfx08(a);
+  // VIBAMFX: the instrument's vibrato with the effect's amplitude nibble (1.0: the
+  // value's low nibble as the amplitude, and the instrument's vibrato type).
+  proc vibamfx(a: u8) {
+    if L.vibamfx_amp_only {
+      let amp = (a << 4) >> 1;
+      setfmod(amp, amp == 0);
+      forcvib();
+    } else {
+      let v = setinbh(5);
+      bigfx08(v);
+    }
   }
 
   proc bigfx08(a: u8) {
@@ -1520,7 +1593,9 @@ machine voice[x in 0..L.chn] {
   // A big effect with its value: slides, portamento, register values, vibrato,
   // table positions, chord, arp speed, detune, pulse width, cutoff, tempos, vibrato
   // type, filter shift, delays, and filter switch/resonance; ``z`` is the zero flag the
-  // value's load leaves, which the tempo program effects test.
+  // value's load leaves, which the tempo program effects test. 1.0 numbers them
+  // otherwise: $04 with $Fx sets the waveform table, $09 the vibrato type, $0F the filter
+  // shift, and $16..$1E are none.
   proc bigfx(n: u8, a: u8, z: bool) {
     if n == 1 {
       slidevib := SLIDE_UP;
@@ -1532,7 +1607,12 @@ machine voice[x in 0..L.chn] {
       slidevib := TONE_PORTA;
       setfmod(a, a == 0);
     } elif n == 4 {
-      wfghost := a;
+      if L.bigfx_v10 && a >= 0xF0 {
+        let m = multi3c(a & 0x0F);
+        wftpos := lo(m) + WFTABLEPOS + hi(m);
+      } else {
+        wfghost := a;
+      }
     } elif n == 5 {
       sidg_ad := a;
     } elif n == 6 {
@@ -1542,8 +1622,12 @@ machine voice[x in 0..L.chn] {
     } elif n == 8 {
       bigfx08(a);
     } elif n == 9 {
-      let m = multi3c(a);
-      wftpos := lo(m) + WFTABLEPOS + hi(m);
+      if L.bigfx_v10 {
+        slidevib := a & 0x30;
+      } else {
+        let m = multi3c(a);
+        wftpos := lo(m) + WFTABLEPOS + hi(m);
+      }
     } elif n == 0x0A {
       let m = multi3c(a);
       pwtpos := lo(m) + ind(L.zp, 0x0A) + hi(m);
@@ -1563,7 +1647,11 @@ machine voice[x in 0..L.chn] {
     } elif n == 0x0E {
       pwhigho := a & 0x0F;
     } elif n == 0x0F {
-      ctfhgho := a;
+      if L.bigfx_v10 {
+        flshift := a;
+      } else {
+        ctfhgho := a;
+      }
     } elif n == 0x10 {
       maintmp(a | 0x80);
     } elif n == 0x11 {
@@ -1589,9 +1677,11 @@ machine voice[x in 0..L.chn] {
         trktmp3(tmpp2[a]);
       }
     } elif n == 0x16 {
-      slidevib := a & 0x30;
+      if !L.bigfx_v10 {
+        slidevib := a & 0x30;
+      }
     } elif n < 0x1D {
-      if L.filtshift_supp {
+      if L.filtshift_supp && !L.bigfx_v10 {
         flshift := a;
       }
     } elif n == 0x1D {
@@ -1746,7 +1836,9 @@ machine commonregs {
       }
     }
     sid_resfc := fswitch | resonib;
-    sid_fmvol := mainvol | fltband;
+    if !L.echo_support {
+      sid_fmvol := mainvol | fltband;
+    }
     let cutoff = ctfhgho;
     let c = false;
     if L.filtkbtrack {
@@ -1772,6 +1864,36 @@ machine commonregs {
   }
 }
 
+// SID-Wizard 1.0's SUBTJMP, at COMMONREGS: an orderlist jump to a subtune (its number kept
+// in the immediate) sets the subtune's orderlists and tempos, then every voice restarts,
+// each clearing the immediate.
+machine subtune {
+  signal jump: bool = false;
+
+  step {
+    let s = subtjmp;
+    if s != 0 {
+      setstune(s & 0x7F);
+      jump := true;
+    }
+  }
+
+  proc at_setstune() {
+    setstune(cpu.a);
+  }
+
+  // SETSTUNE: each voice's orderlist read and the two main tempos from SUBTUNES.
+  proc setstune(a: u8) {
+    let y = a << 3;
+    for v in 0..L.chn {
+      mem[L.p_seqt1 + v * 4] := subt1[y + v * 2];
+      mem[L.p_seqt1 + v * 4 + 1] := subt1[y + v * 2 + 1];
+    }
+    tempotbl[1] := subt1[y + L.chn * 2];
+    tempotbl[2] := subt2[y + L.chn * 2];
+  }
+}
+
 // RETPLAY: the zero-page pointer as the call found it.
 machine retplay {
   step {
@@ -1786,6 +1908,14 @@ schedule {
   if !L.mulply || L.multispeedsupp {
     for v in L.order {
       voice[v];
+    }
+    if L.subtune_restarts {
+      subtune;
+      if subtune.jump {
+        for v in L.order {
+          voice[v];
+        }
+      }
     }
     commonregs;
     retplay;

@@ -32,6 +32,15 @@ _BUNCHES: Tuple[Tuple[Optional[str], Tuple[str, ...]], ...] = (
     ("tmpbase", ("tmpbase", "tmppos", "arpsped", "pkbdtrk", "curchord", "chordpos", "arpdpitch")),
     ("sidg", ("sidg",)),
 )
+# SID-Wizard 1.0's bunches (the release whose COMMONREGS restarts a subtune); "" is a byte no
+# routine of the play call addresses.
+_BUNCHES_V10: Tuple[Tuple[Optional[str], Tuple[str, ...]], ...] = (
+    _BUNCHES[0],
+    (None, ("spdcnt", "tmpbase", "tmppos", "seqpos", "ptnpos", "wftpos", "pwtpos")),
+    _BUNCHES[2],
+    (None, ("slidevib", "freqmodl", "freqmodh", "videlcnt", "vibfrequ", "vibracnt", "")),
+    (None, ("packcnt", "transp", "arpsped", "arpscnt", "pkbdtrk", "curchord", "chordpos")),
+)
 # CONST_VAR's bunch: the filter-switch masks and track-tempo slots, then four variables.
 _CONST_BUNCH = ("flswtbl", "flswtb2", "trktmpos", "trdelay", "seqtempo", "transp2", "detuner")
 # The order PLAYER runs the voices in: the last voice of each chip first.
@@ -79,8 +88,9 @@ _OPTIONAL = (
     "curinstemp",
     "swp_offset",
     "mulcntp",
+    "subtjmp",
 )
-# Release differences the binder reads from the routine it matches.
+# Release differences and build settings the binder reads from the routine it matches.
 _RELEASE = (
     "hr_ad_first",
     "adsr_ad_first",
@@ -89,7 +99,15 @@ _RELEASE = (
     "wfctrl_jmp",
     "seq_tempo_capped",
     "table_fx_resets",
+    "subtune_restarts",
+    "sound_tables_first",
+    "sound_resets_flshift",
+    "vibamfx_amp_only",
+    "bigfx_v10",
+    "echo_support",
 )
+# Code shapes that state the same play call, read from the code and not bound.
+_SHAPES = ("legato_jmp",)
 _ALT = re.compile(r"<(\w+):([^<|>]*)(?:\|([^<>]*))?>")
 _ALT_NAME = re.compile(r"<(\w+):")
 _ZP_SAVE = "<retainzeropage: A5 {zp} 48 A5 ?? 48 |> "
@@ -211,21 +229,20 @@ class _Scan:
 
 def _commonregs(scan: _Scan, addr: int) -> None:
     """COMMONREGS (1007) and RETPLAY (1229)."""
-    if scan.match("V1.0's SUBTJMP", addr, "A9 ?? F0 0D 29 7F 20 ?? ?? 20") is not None:
-        raise ValueError(
-            "SID-Wizard 1.0 players (subtune jumps from COMMONREGS, STRTSND in another order)"
-            " are not stated by the spec"
-        )
-    ghost = 20 if scan.flags["allghostregs"] else 0
-    if scan.match("an ECHO build", addr + ghost + 9, "09 ?? 18") is not None:
-        raise ValueError("SID-Wizard echo builds (ECHO_SUPPORT) are not stated by the spec")
+    addr = scan.at(
+        "SUBTJMP",
+        addr,
+        "<subtune_restarts: A9 {at_subtjmp} F0 0D 29 7F 20 {setstune:w} 20 {restart:w} "
+        "A9 00 8D {subtjmp_ref:w} |>",
+    )
+    scan.put("COMMONREGS", "chipregs", addr)
     at = scan.at(
         "COMMONREGS",
         addr,
         "<allghostregs: A2 0E 38 BD {sidg_sr:w} 9D {sid_sr:w} BD ?? ?? 9D ?? ?? BD {sidg:w} "
         "9D ?? ?? BD ?? ?? 9D ?? ?? BD ?? ?? 9D ?? ?? BD ?? ?? 9D ?? ?? BD ?? ?? 9D ?? ?? "
         "8A E9 07 AA B0 ?? |> A9 {at_fswitch} 09 {at_resonib} 8D {sid_resfc:w} A9 {at_mainvol} "
-        "09 {at_fltband} 8D {sid_fmvol:w} 18 <filtkbtrack: A9 "
+        "09 {at_fltband} <echo_support: | 8D {sid_fmvol:w} > 18 <filtkbtrack: A9 "
         "{at_ckbdtrk} F0 0A AE {fltctrl_ref:w} "
         "7D {dpitch:w} A8 B9 {exptabh:w} 69 {at_ctfhgho} | A9 {at_ctfhgho} > "
         "<filtshift_supp: 69 {at_flshift} |> 8D {sid_fcut_hi:w} "
@@ -290,7 +307,8 @@ def _dotrack(scan: _Scan) -> None:
         "BC {ptnpos:w} <transposesupp: BD {transp2:w} 9D {transp:w} |> BD {packcnt:w} D0 ?? "
         "C8 B1 {zp} C9 FF D0 ?? BC {seqpos:w} C8 20 {seqsub:w} 10 ?? C9 FE D0 06 DE {spdcnt:w} "
         "4C {cntplay:w} C9 FF <seq_fx_support: F0 0D 20 {seq_fx:w} C8 20 {seqsub:w} C9 FF F0 ?? "
-        "D0 ?? | D0 ?? > C8 20 {seqsub:w} 10 ?? <subtunejump: 20 {setseqa:w} |> A9 00 A8 4C ?? ?? "
+        "D0 ?? | D0 ?? > C8 20 {seqsub:w} 10 ?? <subtunejump: 20 {setseqa:w} "
+        "| <subtune_restarts: 8D {subtjmp_ref:w} |> > A9 00 A8 4C ?? ?? "
         "9D {curptn:w} 98 9D {seqpos:w} A0 00 98 9D {ptnpos:w} "
         "<fastspeedbind: BC {tmppos:w} B9 {p_tmpt3:w} 29 7F C9 03 30 {to_tick_2} |> "
         "<hardrestypes: A9 01 |> 4C {hardrst:w}",
@@ -335,7 +353,7 @@ def _tick_2(scan: _Scan, at: int) -> None:
         "4C {cntply2:w} 18 <octaveshift: A0 09 71 {zp} |> <transposesupp: 18 7D {transp:w} |> "
         "9D {dpitch:w} A9 03 DD {curfx2:w} F0 ?? <portame_notefx: 7D {slidevib:w} B0 ?? |> "
         "A9 3F DD {curifx:w} D0 {to_strtsnd} A9 7F 9D {freqmodh:w} A9 83 9D {slidevib:w} "
-        "20 {insptfx:w} 4C {wrwfgho:w}",
+        "<legato_jmp: 4C {legatoo:w} | 20 {insptfx:w} 4C {wrwfgho:w} >",
     )
     q = scan.flags
     if not q["frame1switch"]:
@@ -348,25 +366,26 @@ def _tick_2(scan: _Scan, at: int) -> None:
             f"29 08 F0 10 BC {{dpitch:w}} {freq} {{freqtbh_f1:w}} 9D {{sidg_freqhi:w}} "
             "A0 0F B1 {zp} 9D {wfghost:w}"
         )
-    at = scan.at(
-        "STRTSND",
-        scan.found["to_strtsnd"],
-        "A0 00 B1 {zp} <tablereset: 29 {at_tablrst} |> 8D {insctrl_ref:w} 29 30 "
-        f"9D {{slidevib:w}} A9 {{at_insctrl}} {frame1} A9 10 9D {{wftpos:w}} A9 FF "
-        "9D {ptngate:w} <multispeedsupp: 9D {arpscnt:w} |> "
-        "<arpspeedsupp: A0 07 B1 {zp} 9D {arpsped:w} |> 20 {setvib0:w} "
-        "<chordsupport: A0 08 B1 {zp} 9D {curchord:w} A8 B9 {p_chdp1:w} 9D {chordpos:w} |> "
+    start = (
+        f"A9 {{at_insctrl}} {frame1} A9 10 9D {{wftpos:w}} A9 FF 9D {{ptngate:w}} "
+        "<multispeedsupp: 9D {arpscnt:w} |> <arpspeedsupp: A0 07 B1 {zp} 9D {arpsped:w} |> "
+    )
+    chord = "<chordsupport: A0 08 B1 {zp} 9D {curchord:w} A8 B9 {p_chdp1:w} 9D {chordpos:w} |> "
+    tables = (
         "<pwresetsw: 2C {insctrl_ref:w} 70 ?? |> A0 0A B1 {zp} 9D {pwtpos:w} "
         "<filtresetsw: 2C {insctrl_ref:w} 30 ?? |> A0 0B B1 {zp} A8 B1 {zp} F0 ?? C9 FF F0 ?? "
         "8E {fltctrl_ref:w} 8C {fltposi_ref:w} BD {flswtbl:w} 0D {fswitch_ref:w} D0 ?? "
         "<filter_stop_rewinds: EC {fltctrl_ref:w} D0 03 8C {fltposi_ref:w} |> BD {flswtb2:w} "
-        "2D {fswitch_ref:w} 8D {fswitch_ref:w}",
+        "2D {fswitch_ref:w} 8D {fswitch_ref:w} <adsr_ad_first: A0 03 B1 {zp} 9D {sidg_ad:w} "
+        "C8 B1 {zp} 9D {sidg_sr:w} | A0 04 B1 {zp} 9D {sidg_sr:w} 88 B1 {zp} 9D {sidg_ad:w} > "
     )
     at = scan.at(
-        "SETADSR",
-        at,
-        "<adsr_ad_first: A0 03 B1 {zp} 9D {sidg_ad:w} C8 B1 {zp} 9D {sidg_sr:w} "
-        "| A0 04 B1 {zp} 9D {sidg_sr:w} 88 B1 {zp} 9D {sidg_ad:w} >",
+        "STRTSND",
+        scan.found["to_strtsnd"],
+        "A0 00 <sound_resets_flshift: 8C {flshift_ref:w} |> B1 {zp} "
+        "<tablereset: 29 {at_tablrst} |> 8D {insctrl_ref:w} 29 30 9D {slidevib:w} "
+        f"<sound_tables_first: {tables}{start}{chord}20 {{setvib0:w}} "
+        f"| {start}20 {{setvib0:w}} {chord}{tables}>",
     )
     scan.put("SETADSR", "setadsr_fx", at)
     scan.at("SETADSR", at, "20 {insptfx:w} 4C {wrwfgho:w}")
@@ -476,6 +495,29 @@ def _subroutines(scan: _Scan) -> None:
             "69 {at_subtpos} A8 B9 {p_subt1:w} 9D ?? ?? C8 B9 {p_subt2:w} 9D ?? ?? "
             "A2 {at_xstore} 60",
         )
+    if scan.flags["subtune_restarts"]:
+        scan.at(
+            "SETSTUNE",
+            scan.found["setstune"],
+            "0A 0A 0A A8 A2 01 B9 {p_subt1:w} 9D {seqt_m1:w} C8 E8 B9 {p_subt1:w} 9D {seqt_m1:w} "
+            "C8 E8 E8 E8 E0 0D 30 EA B9 {p_subt1:w} 8D {tempotbl_p1:w} B9 {p_subt2:w} "
+            "8D {tempotbl_p2:w} 60",
+        )
+        end = scan.at(
+            "RESTART",
+            scan.found["restart"],
+            "A2 0E A9 00 9D {transp2:w} 9D {seqtempo:w} 9D {ptnpos:w} 9D {tmppos:w} "
+            "9D {tmpbase:w} 9D {seqpos:w} 8D {subtjmp_ref:w} A0 00 20 {seqsub:w} 10 0E C9 FE "
+            "B0 0D 20 {seq_fx:w} C8 98 9D {seqpos:w} D0 ED 9D {curptn:w} 8A 38 E9 07 AA 10 CA 60",
+        )
+        scan.put("RESTART", "restart_next", end - 8)
+        found = scan.found
+        if (found["seqt_m1"] + 1, found["tempotbl_p1"], found["tempotbl_p2"]) != (
+            found["p_seqt1"],
+            found["tempotbl"] + 1,
+            found["tempotbl"] + 2,
+        ):
+            raise ValueError("SID-Wizard SETSTUNE does not set the orderlists and main tempos")
     if scan.flags["seq_fx_support"]:
         scan.at(
             "SEQ_FX",
@@ -505,11 +547,14 @@ def _subroutines(scan: _Scan) -> None:
     at = scan.at(
         "NOTE_FX",
         scan.found["note_fx"],
-        "C9 78 10 09 8D {valstor_ref:w} 20 {vibamfx:w} 4C {insptfx:w} A8 B9 {notefxtbl:w} "
+        "C9 78 <vibamfx_amp_only: 10 06 | 10 09 8D {valstor_ref:w} > 20 {vibamfx:w} "
+        "4C {insptfx:w} A8 B9 {notefxtbl:w} "
         "8D {indexj1_ref:w} BD {wfghost:w} 18 90 {at_indexj1}",
     )
     scan.put("NOTE_FX", "indexj1_end", at)
-    scan.put("NOTE_FX", "selntfx", scan.found["note_fx"] + 13)
+    scan.put(
+        "NOTE_FX", "selntfx", scan.found["note_fx"] + (10 if scan.flags["vibamfx_amp_only"] else 13)
+    )
     scan.put("INSPTFX", "bigptfx", scan.found["insptfx"] + 19)
     at = scan.at(
         "INSPTFX",
@@ -555,7 +600,8 @@ _SMALL_FX = {
     5: "<allghostregs: BD {sidg_sr:w} 20 {setnibh:w} | A0 04 20 {setinbh:w} > 4C {writesr:w}",
     6: "<allghostregs: BD {sidg_sr:w} 20 {setnibl:w} | A0 04 20 {setinbl:w} > 9D {sidg_sr:w} 60",
     7: "<chordsupport: 9D {curchord:w} A8 B9 {p_chdp4:w} 9D {chordpos:w} |> 60",
-    8: "A0 05 20 {setinbh:w} 4C {bigfx08:w}",
+    8: "<vibamfx_amp_only: 0A 0A 0A 0A 20 {setvamp:w} A0 00 B1 {zp} 29 30 9D {slidevib:w} 60 "
+    "| A0 05 20 {setinbh:w} 4C {bigfx08:w} >",
     9: "<vibfreqfx_supp: 0A 9D {vibfrequ:w} |> 60",
     0x0A: "8D {mainvol_ref:w} <seq_fx_support: 8D {seqvolu_ref:w} |> 60",
     0x0B: "<filter_smallfx: 0A 0A 0A 0A 8D {fltband_ref:w} |> 60",
@@ -567,18 +613,19 @@ _BIG_FX = {
     1: "A0 81 D0 {to_setslid}",
     2: "A0 82 48 98 9D {slidevib:w} 68 4C {setfmod:w}",
     3: "A0 83 D0 {to_setslid}",
-    4: "9D {wfghost:w} 60",
+    4: "<bigfx_v10: C9 F0 B0 03 4C {writewf:w} 29 0F 20 {multi3c:w} 69 10 9D {wftpos:w} 60 "
+    "| 9D {wfghost:w} 60 >",
     5: "9D {sidg_ad:w} 60",
     6: "9D {sidg_sr:w} 60",
     8: "48 20 {forcvib:w} 68 4C {setvibr:w}",
-    9: "20 {multi3c:w} 69 10 9D {wftpos:w} 60",
+    9: "<bigfx_v10: 29 30 9D {slidevib:w} | 20 {multi3c:w} 69 10 9D {wftpos:w} > 60",
     0x0A: "20 {multi3c:w} A0 0A 71 {zp} 9D {pwtpos:w} "
     "<table_fx_resets: A9 00 9D {pweepcnt:w} |> 60",
     0x0B: "20 {multi3c:w} A0 0B 71 {zp} 8D {fltposi_ref:w} "
     "<table_fx_resets: A9 00 8D {cwepcnt_ref:w} |> 60",
     0x0D: "9D {detuner:w} 60",
     0x0E: "29 0F 9D {pwhigho:w} 60",
-    0x0F: "8D {ctfhgho_ref:w} 60",
+    0x0F: "<bigfx_v10: 8D {flshift_ref:w} | 8D {ctfhgho_ref:w} > 60",
     0x10: "09 80 8D {p_tmpt6:w} A9 00 <tempoprgsupp: 8D {tmppos:w} 8D ?? ?? 8D ?? ?? "
     "8D {tmpbase:w} 8D ?? ?? 8D ?? ?? |> 60",
     0x11: "<tempoprgsupp: 48 29 0F 09 80 8D {p_tmpt7:w} 68 4A 4A 4A 4A 10 ?? | 60 >",
@@ -587,8 +634,8 @@ _BIG_FX = {
     "9D {tmppos:w} 60 | 60 >",
     0x14: "<tempoprgsupp: 48 4A 4A 4A 4A 20 ?? ?? 68 29 0F 09 80 99 {p_tmpt9:w} 60 | 60 >",
     0x15: "<tempoprgsupp: F0 ?? A8 B9 {p_tmpp2:w} 4C ?? ?? | 60 >",
-    0x16: "29 30 9D {slidevib:w} 60",
-    0x1C: "<filtshift_supp: 8D {flshift_ref:w} |> 60",
+    0x16: "<bigfx_v10: | 29 30 9D {slidevib:w} > 60",
+    0x1C: "<bigfx_v10: | <filtshift_supp: 8D {flshift_ref:w} |> > 60",
     0x1D: "<delaysupport: BC {trdelay:w} F0 ?? C8 D0 ?? 9D {trdelay:w} A9 02 9D {spdcnt:w} "
     "DE {trdelay:w} 60 | 60 >",
     0x1E: "<delaysupport: BC {trdelay:w} D0 ?? 18 7D {spdcnt:w} 9D {spdcnt:w} 4C ?? ?? | 60 >",
@@ -620,10 +667,13 @@ def _effects(scan: _Scan) -> None:
     )
     big = scan.found["bigfxtable"]
     target = {n: scan.word(big + 2 * n) for n in range(1, 0x20)}
+    scan.at("big effect $04", target[4], _BIG_FX[4])
+    v10 = scan.flags["bigfx_v10"]
     for n, name in ((2, "setslid"), (4, "writewf"), (5, "writead"), (6, "writesr"), (8, "bigfx08")):
-        scan.put("BIGFXTABLE", name, target[n] + (2 if n == 2 else 0))
+        if n != 4 or not v10:
+            scan.put("BIGFXTABLE", name, target[n] + (2 if n == 2 else 0))
     scan.put("BIGFXTABLE", "setdetu", target[0x0D])
-    scan.put("BIGFXTABLE", "forcvib", target[0x16] - 4)
+    scan.put("BIGFXTABLE", "forcvib", target[9 if v10 else 0x16] - 4)
     scan.at("FORCVIB", scan.found["forcvib"], "A0 00 B1 {zp} 29 30 9D {slidevib:w} 60")
     if target[7] != end2 + scan.view[small + 7] or target[0x0C] != end2 + scan.view[small + 0x0C]:
         raise ValueError("SID-Wizard BIGFXTABLE: $07/$0C are not SMALFX7/SMALFXC")
@@ -659,12 +709,19 @@ def _vars(found: dict, flags: dict) -> None:
         ),
         "sidg": flags["allghostregs"],
     }
-    at = found["ptnpos"] - (CHANNELS * VOICE_STRIDE + 3)
-    for gate, names in _BUNCHES:
-        if gate is not None and not present[gate]:
-            continue
+    bunches = [
+        names
+        for gate, names in (_BUNCHES_V10 if flags["subtune_restarts"] else _BUNCHES)
+        if gate is None or present[gate]
+    ]
+    at = found["ptnpos"] - next(
+        CHANNELS * VOICE_STRIDE * b + names.index("ptnpos")
+        for b, names in enumerate(bunches)
+        if "ptnpos" in names
+    )
+    for names in bunches:
         for k, name in enumerate(names):
-            if found.setdefault(name, at + k) != at + k:
+            if name and found.setdefault(name, at + k) != at + k:
                 raise ValueError(
                     f"SID-Wizard {name} is at ${found[name]:04x}, not VARIABLES' ${at + k:04x}"
                 )
@@ -676,8 +733,12 @@ def _vars(found: dict, flags: dict) -> None:
 
 def _entries(view: bytes) -> List[Tuple[int, int, int, Optional[int]]]:
     """``(entry, PLAYER, COMMONREGS, MULPLY)`` of each player in ``view``: the entry is
-    PLAYER or a hand-edited gate in front of it, MULPLY None in a build without it."""
+    PLAYER or a hand-edited gate in front of it, MULPLY None in a build without it. Where a
+    ``JMP`` names some of them, stale copies no jump reaches are dropped."""
     flags: Dict[str, Optional[bool]] = {"retainzeropage": None, "sfx": None}
+    jumped = {
+        view[m.start() + 1] | view[m.start() + 2] << 8 for m in re.finditer(rb"\x4c", view[:-2])
+    }
     players, mulplies, end = [], {}, -1
     starts = {m.start() - k for m in re.finditer(rb"\xa2\x0e", view) for k in (0, 6)}
     for addr in sorted(a for a in starts if a >= 0):
@@ -689,9 +750,14 @@ def _entries(view: bytes) -> List[Tuple[int, int, int, Optional[int]]]:
             gate = _gate(view, addr)
             players.append((addr if gate is None else gate["entry"], addr, stop))
             end = stop
-        elif probe.match("MULPLY", addr, _MULPLY) is not None:
-            mulplies.setdefault(probe.found["commonregs"], addr)
-            end = probe.found["commonregs"] - 1
+        else:
+            stop = probe.match("MULPLY", addr, _MULPLY)
+            if stop is not None:
+                if addr in jumped or probe.found["commonregs"] not in mulplies:
+                    mulplies[probe.found["commonregs"]] = addr
+                end = stop - 1
+    if any(e in jumped for e, _p, _c in players):
+        players = [entry for entry in players if entry[0] in jumped]
     return [(e, p, c, mulplies.get(c)) for e, p, c in players]
 
 
@@ -736,6 +802,7 @@ def _flags(features, quirks) -> Dict[str, Optional[bool]]:
     flags.update({k: v for k, v in asdict(quirks).items() if isinstance(v, bool)})
     flags.update({name: None for name in _RELEASE})
     flags["subtunejump"] = None
+    flags.update({name: None for name in _SHAPES})
     flags["tablereset"] = bool(flags["pwresetsw"] or flags["filtresetsw"])
     return flags
 
@@ -795,7 +862,8 @@ def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) 
         found["sidg"] = found["sid"]
     for name in _OPTIONAL:
         found.setdefault(name, 0)
-    del flags["tablereset"]
+    for name in ("tablereset", *_SHAPES):
+        del flags[name]
     found.update(
         {k: bool(getattr(features, k, False)) if v is None else v for k, v in flags.items()}
     )
