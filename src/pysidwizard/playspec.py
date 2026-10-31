@@ -552,7 +552,9 @@ def _subroutines(scan: _Scan) -> None:
         "8D {indexj1_ref:w} BD {wfghost:w} 18 90 {at_indexj1}",
     )
     scan.put("NOTE_FX", "indexj1_end", at)
-    scan.put("NOTE_FX", "selntfx", scan.found["note_fx"] + 13)
+    scan.put(
+        "NOTE_FX", "selntfx", scan.found["note_fx"] + (10 if scan.flags["vibamfx_amp_only"] else 13)
+    )
     scan.put("INSPTFX", "bigptfx", scan.found["insptfx"] + 19)
     at = scan.at(
         "INSPTFX",
@@ -731,8 +733,12 @@ def _vars(found: dict, flags: dict) -> None:
 
 def _entries(view: bytes) -> List[Tuple[int, int, int, Optional[int]]]:
     """``(entry, PLAYER, COMMONREGS, MULPLY)`` of each player in ``view``: the entry is
-    PLAYER or a hand-edited gate in front of it, MULPLY None in a build without it."""
+    PLAYER or a hand-edited gate in front of it, MULPLY None in a build without it. Where a
+    ``JMP`` names some of them, stale copies no jump reaches are dropped."""
     flags: Dict[str, Optional[bool]] = {"retainzeropage": None, "sfx": None}
+    jumped = {
+        view[m.start() + 1] | view[m.start() + 2] << 8 for m in re.finditer(rb"\x4c", view[:-2])
+    }
     players, mulplies, end = [], {}, -1
     starts = {m.start() - k for m in re.finditer(rb"\xa2\x0e", view) for k in (0, 6)}
     for addr in sorted(a for a in starts if a >= 0):
@@ -747,8 +753,11 @@ def _entries(view: bytes) -> List[Tuple[int, int, int, Optional[int]]]:
         else:
             stop = probe.match("MULPLY", addr, _MULPLY)
             if stop is not None:
-                mulplies.setdefault(probe.found["commonregs"], addr)
+                if addr in jumped or probe.found["commonregs"] not in mulplies:
+                    mulplies[probe.found["commonregs"]] = addr
                 end = stop - 1
+    if any(e in jumped for e, _p, _c in players):
+        players = [entry for entry in players if entry[0] in jumped]
     return [(e, p, c, mulplies.get(c)) for e, p, c in players]
 
 

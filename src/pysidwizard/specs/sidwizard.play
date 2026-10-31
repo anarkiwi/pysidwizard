@@ -503,15 +503,15 @@ machine voice[x in 0..L.chn] {
   // SEQ_FX: an orderlist effect. $80..$9F set the delayed transpose, $A0..$AF the
   // delayed main volume, $B0..$EF the delayed track tempo (in older releases $B0..$FD).
   proc seq_fx(a: u8) {
-    if a < 0xA0 {
+    if L.seq_tempo_capped && a < 0xA0 || !L.seq_tempo_capped && neg(a - 0xA0) {
       if L.transposesupp {
         transp2 := a - 0x90;
       }
-    } elif a < 0xB0 {
+    } elif L.seq_tempo_capped && a < 0xB0 || !L.seq_tempo_capped && neg(a - 0xB0) {
       seqvolu := a & 0x0F;
     } elif a < 0xF0 || !L.seq_tempo_capped {
       if L.tempoprgsupp {
-        seqtempo := a - 0xB0;
+        seqtempo := a - 0xB0 - u8(a < 0xB0);
       }
     }
   }
