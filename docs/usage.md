@@ -178,8 +178,8 @@ pysidtracker wav tune.sid out.wav --seconds 60 --model 8580
 ```
 
 The CLI operates on `.sid` files (not `.swm`) and drives
-[`pyresidfp`](https://pypi.org/project/pyresidfp/) (install with
-`pip install pyresidfp`).
+[`pylibresidfp`](https://pypi.org/project/pylibresidfp/) (installed with
+`pysidtracker`).
 
 ### Iterate register writes
 
