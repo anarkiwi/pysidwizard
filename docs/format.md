@@ -430,7 +430,8 @@ curated set of HVSC SID-Wizard exports (`pytest -m oracle`, requires Docker).
   `$80-$8F` third column as FSWITCH from 1.4 on (`PlayerQuirks.kbtrack_fswitch`);
   SMALFXE stores its WFGHOST merge before 1.5 (`PlayerQuirks.wfctrl_fx_stores`).
 - ABSPTCH masks its note index (`and #$7F`, `player.asm:2525`), so an arp step or
-  transpose past note 95 reads the image bytes after FREQTBL.
+  transpose past note 95 reads the image bytes after FREQTBL (in standard note mode,
+  `frequency(i - 1, clock)`, which is 0 beyond the 16-bit range).
 - DPITCH is latched when CLEGATO starts a note (note + the PLAYERZP
   instrument's octave shift + TRANSP). An instrument selected without a note,
   or a later transpose, does not move a held note.

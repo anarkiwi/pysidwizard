@@ -30,12 +30,19 @@ Each `.if feature.X_ON` is `if L.x` (the names of `pysidwizard.features.FACETS`)
 release difference of the 1.0..1.9 players is a flag too (`first_frame_*`,
 `filter_stop_rewinds`, `kbtrack_fswitch`, `wfctrl_fx_stores`, `hr_ad_first`,
 `adsr_ad_first`, `seq_tempo_capped`, `table_fx_resets`, and 1.0's `subtune_restarts`,
-`sound_tables_first`, `sound_resets_flshift`, `vibamfx_amp_only`, `bigfx_v10`). Self-modified immediates are
+`sound_tables_first`, `sound_resets_flshift`, `vibamfx_amp_only`, `bigfx_v10`, and the
+early releases' `hrender_inline`, `hrgtoff_or8`, `restart_trdelay`, `noins_rts`,
+`bigfx0d_falls`, `bigfx_delay_16`, `bigfx1f_toggle`). Self-modified immediates are
 `operand` cells; the computed effect dispatch (`bcc *+2` / `jmp abs` from NOTEFXTBL,
 SMALLFXTBL, BIGFXTABLE) writes its operand and branches on the effect number. Registers
 a routine passes on (the carry into WFARPTB and WRPITCH, the accumulator into WFARPTB,
 the zero flag into SETFMOD and the tempo effects) are parameters; the carry one voice's
 multispeed call leaves for the next is a signal.
+
+FREQTBL and FREQTBH are `notes(lo, -1)` / `notes(hi, -1)`: table index `i` is standard
+note `i - 1` (index 0 is B-1). `FORMAT.spec_player(swm, notes=clock)` answers every read of
+them, past note 95 too, with `pysidtracker.notes.frequency(i - 1, clock)`; native mode
+reads the image.
 
 ## Binding
 
@@ -43,18 +50,26 @@ multispeed call leaves for the next is a signal.
 
 - PLAYER and MULPLY by their DOTRACK / MULCNTP call sequences (a hand-edited gate in
   front of PLAYER becomes `L.play_gate`); `playspec.entries(view)` lists them.
-- The build flags from `features.detect_variant`; a flag no facet site reads (and each
-  release difference and `echo_support`) is the one whose code the routine holds.
+- The build flags from `features.detect_variant`; a flag no facet site reads, each
+  release difference, `echo_support`, and the flags whose probes misread stripped builds
+  (`allghostregs`, `retainzeropage`, `filtkbtrack`, `finefiltsweep`, `hardrestypes`,
+  `transposesupp`, `octaveshift`, TABLRST's presence) are the ones whose code the
+  routine holds. Code-only shapes (`ghostloop_bpl`, `subtjmp_var`, `row_reader_jmp`,
+  `fsb_bmi`, `ptnseq_jmp`, `legato_jmp`) only steer the match.
 - Each routine is matched where the control flow from PLAYER reaches it, its pattern
   assembled from the flags as `player.asm` assembles the routine, so a wrong flag fails
   the match. The dispatch tables are checked entry by entry against the routines their
   effect numbers name.
 - Per-voice variables are laid out from VARIABLES (the row reader's PTNPOS) in bunches
-  of 7 bytes × 3 voices, the TMPBASE and SIDG bunches present as the flags say (1.0 in
-  its own bunch order); every matched operand must agree with that layout.
+  of 7 bytes × 3 voices, the TMPBASE and SIDG bunches present as the flags say, in 1.0's
+  bunch order or the later one, whichever every matched operand agrees with.
+- A variable cell is `per_proc`: a routine that addresses it apart from the rest binds
+  `<name>@<proc>` for its spec procs, so a player relocated per routine is stated.
 
-`binding` raises `ValueError` for players the spec does not state: multi-SID builds, and
-partly relocated players. Those were moved by a tracing relocator (sidreloc), which
+`binding` raises `ValueError` for players the spec does not state: multi-SID builds,
+players partly relocated within a routine (#121), players with effect routines stripped
+(#122), slowdown builds (#123), and the early-release and hand-patched builds of #124.
+Partly relocated players were moved by a tracing relocator (sidreloc), which
 relocates the operands of the instructions it ran and leaves every other one at the
 build it relocated from (base `$1000` or `$4000`, zero page `$FE`): code the song never
 runs (MULPLY, an orderlist `$FE`, unused effects, a tempo-program store) addresses that

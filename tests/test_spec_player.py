@@ -6,14 +6,17 @@ from pysidtracker.notes import frequency
 from pysidtracker.registers import PAL_CLOCK_HZ
 
 from pysidwizard import (
+    End,
     Instrument,
     Pattern,
+    PlayPattern,
     Row,
     SWMFile,
     SWMFormatError,
     SWMPlayer,
     build_swm,
     parse_swm,
+    Transpose,
     sidmaker,
 )
 from pysidwizard.formats import FORMAT
@@ -86,7 +89,6 @@ def test_native_spec_player_is_unchanged():
     assert FORMAT.spec_player(swm).render_grid(FRAMES) == SWMPlayer(swm).render_grid(FRAMES)
 
 
-@pytest.mark.xfail(strict=True, reason="notes() not declared yet")
 def test_standard_mode_reads_the_equal_tempered_word():
     """Each FREQTBL index ``i`` the native player reads answers note ``i - 1`` in standard mode."""
     swm = _scale()
@@ -100,3 +102,17 @@ def test_standard_mode_reads_the_equal_tempered_word():
     read = {(table.index(word), got) for word, got in pairs if word in table}
     assert len(read) > 20
     assert all(got == frequency(i - 1, PAL_CLOCK_HZ) for i, got in read)
+
+
+def test_standard_mode_answers_reads_past_the_note_table():
+    """Notes transposed past FREQTBL's last entry read the equal-tempered word in standard
+    mode too: no note that high fits a 16-bit word, so the table read answers 0 and the
+    voice holds only what the player adds to it, where native mode reads the bytes after it."""
+    swm = _scale()
+    swm.patterns = [Pattern(rows=[Row(note=n, instrument=1) for n in range(88, 96)], length=8)]
+    swm.sequences = [[Transpose(15), PlayPattern(1), End()]] * 3
+    assert all(frequency(n + 15, PAL_CLOCK_HZ) == 0 for n in range(88, 96))
+    standard = FORMAT.spec_player(swm, notes=PAL_CLOCK_HZ).render_grid(24)[1:]
+    native = SWMPlayer(swm).render_grid(24)[1:]
+    assert {row[0] | row[1] << 8 for row in standard} <= {0, 1}
+    assert max(row[0] | row[1] << 8 for row in native) > 1

@@ -118,8 +118,8 @@ cell tempo_byte: u8 @ L.tempo;
 
 // The player's own tables: note frequencies, the exponent table, and the offsets
 // and addresses of the effect dispatch.
-cell freqtbl: u8[256] @ L.freqtbl ro per_proc;
-cell freqtbh: u8[256] @ L.freqtbh ro per_proc;
+cell freqtbl: u8[256] @ L.freqtbl ro per_proc notes(lo, -1);
+cell freqtbh: u8[256] @ L.freqtbh ro per_proc notes(hi, -1);
 cell exptabh: u8[256] @ L.exptabh ro per_proc;
 cell exptabh_m1: u8[256] @ L.exptabh_m1 ro per_proc;
 cell exptbase: u8[256] @ L.exptbase ro per_proc;
