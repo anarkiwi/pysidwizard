@@ -479,7 +479,7 @@ Multi-SID playback, and players `pysidwizard.playspec` does not bind (it raises
 - [SID-Wizard](https://csdb.dk/release/?id=258573) (Hermit / Mihaly Horvath).
 - [`anarkiwi/sidtrace`](https://github.com/anarkiwi/sidtrace) — sidplayfp
   register-trace oracle the player is validated against.
-- [pyresidfp](https://pypi.org/project/pyresidfp/) — reSIDfp SID emulation.
+- [pylibresidfp](https://pypi.org/project/pylibresidfp/) — libresidfp SID emulation.
 - `hvsc-tracker-catalog` — HVSC `Hermit/SidWizard_V1.x` corpus identification.
 - [`pysidtracker`](https://github.com/anarkiwi/pysidtracker) — shared
   container/image/detection base.

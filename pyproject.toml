@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pysidwizard"
-version = "0.6.0"
+version = "0.6.1"
 description = "Pure-Python reader, writer, and player for SID-Wizard SWM modules"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,7 +37,7 @@ dependencies = [
     # once (a small generated player, fast under a tracer) and has ``volatile`` cells; 0.50
     # runs ``run_editor`` entries as ``(start, stop)`` pairs (``pysidwizard.sidmaker``'s echo save); 0.50.1 banks SID access by ``$01``; 0.53.1
     # refuses a hosted tune whose interrupts reach no modelled entry.
-    "pysidtracker>=0.53.1",
+    "pysidtracker>=0.54.0",
 ]
 
 [project.optional-dependencies]
