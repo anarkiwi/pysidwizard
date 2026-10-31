@@ -549,8 +549,14 @@ def _cntplay(scan: _Scan) -> None:
         "DE {pwhigho:w} 18 7D {pwlogho:w} 9D {pwlogho:w} 90 ?? FE {pwhigho:w} B0 ?? "
         "C9 FE F0 04 90 ?? B0 ?? C8 B1 {zp} DD {pwtpos:w} F0 ?? A8 B1 {zp} 10 ?? 29 7F "
         "9D {pwhigho:w} C8 B1 {zp} 9D {pwlogho:w} C8 <pwkeybtrack: B1 {zp} 9D {pkbdtrk:w} |> "
-        "C8 98 9D {pwtpos:w} A9 00 9D {pweepcnt:w} <pwkeybtrack: 18 BD {pkbdtrk:w} F0 0A "
-        "7D {dpitch:w} A8 B9 {exptabh:w} F9 {exptabh_m1:w} 7D {pwhigho:w} | BD {pwhigho:w} > "
+        "C8 98 9D {pwtpos:w} A9 00 9D {pweepcnt:w}",
+    )
+    scan.put("SETPWID", "endpwtb", at)
+    at = scan.at(
+        "ENDPWTB",
+        at,
+        "<pwkeybtrack: 18 BD {pkbdtrk:w} F0 0A 7D {dpitch:w} A8 B9 {exptabh:w} "
+        "F9 {exptabh_m1:w} 7D {pwhigho:w} | BD {pwhigho:w} > "
         "9D {sidg_pwhi:w} BD {pwlogho:w} 9D {sidg_pwlo:w}",
     )
     scan.put("SETPWID", "wfarptb", at)

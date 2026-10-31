@@ -1109,6 +1109,13 @@ machine voice[x in 0..L.chn] {
   // third column is the PW keyboard track, which scales the high nibble by the
   // note. Returns the carry the code leaves.
   proc setpwid() -> bool {
+    let c = pw_rows();
+    let out = endpwtb(c);
+    return out;
+  }
+
+  // SETPWID up to ENDPWTB: the table row. Returns the carry the code leaves there.
+  proc pw_rows() -> bool {
     let y = pwtpos;
     let a = mem[zp + u16(y)];
     let c = false;
@@ -1163,6 +1170,13 @@ machine voice[x in 0..L.chn] {
       }
       sepwpos(y + 1);
     }
+    return c;
+  }
+
+  // ENDPWTB: the PW keyboard track (the note scales the high nibble), then the PW
+  // registers. Returns the carry the code leaves.
+  proc endpwtb(cin: bool) -> bool {
+    let c = cin;
     if L.pwkeybtrack {
       let track = pkbdtrk;
       let k = 0;
@@ -1186,8 +1200,12 @@ machine voice[x in 0..L.chn] {
   }
 
   // SETPWID up to WFARPTB.
-  proc pw_table() {
-    let c = setpwid();
+  proc at_pw_rows() {
+    let c = pw_rows();
+  }
+
+  proc at_endpwtb() {
+    let c = endpwtb(cpu.c);
   }
 
   proc sepwpos(y: u8) {

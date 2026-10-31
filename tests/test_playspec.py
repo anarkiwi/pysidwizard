@@ -2,7 +2,9 @@
 
 # pylint: disable=redefined-outer-name
 
+import itertools
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -62,26 +64,111 @@ def _word(view: bytes, at: int) -> int:
     return view[at] | view[at + 1] << 8
 
 
-def _table_row(found: dict, position: str):
-    """The table byte at voice 0's ``position`` through the zero-page pointer, as z3 reads it."""
+def _table_row(found: dict, position: str, column: int = 0):
+    """The byte ``column`` past voice 0's table ``position`` through the zero-page pointer,
+    as z3 reads it."""
 
     def byte(mem0):
         ptr = z3.Concat(z3.Select(mem0, found["zp"] + 1), z3.Select(mem0, found["zp"]))
-        return z3.Select(mem0, ptr + z3.ZeroExt(8, z3.Select(mem0, found[position])))
+        return z3.Select(mem0, ptr + z3.ZeroExt(8, z3.Select(mem0, found[position]) + column))
 
     return byte
 
 
-def _row_kinds(found: dict, position: str):
-    """The four kinds of table row by its first byte, $00..$7F, $80..$FD, $FE, $FF: cases
-    that together cover every table."""
+def _row_kinds(found: dict, position: str, counter: str = ""):
+    """The kinds of table row by its first byte, $00..$7F, $80..$FD, $FE, $FF: cases that
+    together cover every table. With the sweep ``counter`` cell, a $00..$7F row splits by
+    the code's branches: the sweep ended (its byte equals the counter), or a sweep step of
+    either sign."""
     byte = _table_row(found, position)
-    return [
-        (lambda m, _r: z3.ULT(byte(m), 0x80),),
-        (lambda m, _r: z3.And(z3.UGE(byte(m), 0x80), z3.ULT(byte(m), 0xFE)),),
-        (lambda m, _r: byte(m) == 0xFE,),
-        (lambda m, _r: byte(m) == 0xFF,),
+    step = _table_row(found, position, 1)
+
+    def sweep(m):
+        return z3.ULT(byte(m), 0x80)
+
+    kinds = [sweep]
+    if counter:
+        kinds = [
+            lambda m: z3.And(sweep(m), byte(m) == z3.Select(m, found[counter])),
+            lambda m: z3.And(
+                sweep(m), byte(m) != z3.Select(m, found[counter]), z3.ULT(step(m), 0x80)
+            ),
+            lambda m: z3.And(
+                sweep(m), byte(m) != z3.Select(m, found[counter]), z3.UGE(step(m), 0x80)
+            ),
+        ]
+    kinds += [
+        lambda m: z3.And(z3.UGE(byte(m), 0x80), z3.ULT(byte(m), 0xFE)),
+        lambda m: byte(m) == 0xFE,
+        lambda m: byte(m) == 0xFF,
     ]
+    return [(lambda m, _r, k=k: k(m),) for k in kinds]
+
+
+def _satisfiable(cases: list) -> list:
+    """The ``cases`` some memory satisfies."""
+    mem = z3.Array("cases", z3.BitVecSort(16), z3.BitVecSort(8))
+    return [c for c in cases if z3.Solver().check(c[0](mem, {})) == z3.sat]
+
+
+def _slidevib_kinds(found: dict):
+    """VIBSLIDE's branches by voice 0's SLIDEVIB (vibrato type 0, vibrato, slide down, slide
+    up, portamento, with PORTAVIBRA the note portamento $FF apart), a portamento further by
+    its direction to the note's frequency and the carries out of its low-byte difference,
+    comparison and step: the satisfiable cases, which together cover every state."""
+
+    def cell(m, name):
+        return z3.Select(m, found[name])
+
+    def target(m, table):
+        return z3.Select(m, found[table] + z3.ZeroExt(8, cell(m, "dpitch")))
+
+    def holds(lo: int, hi: int):
+        return lambda m: z3.And(z3.UGE(cell(m, "slidevib"), lo), z3.ULE(cell(m, "slidevib"), hi))
+
+    def below(m):
+        now = z3.Concat(cell(m, "freqhi"), cell(m, "freqlo"))
+        return z3.ULT(z3.Concat(target(m, "freqtbh"), target(m, "freqtbl")), now)
+
+    def low_borrow(m):
+        return z3.ULT(target(m, "freqtbl"), cell(m, "freqlo"))
+
+    def reach_carry(m):
+        diff, step = target(m, "freqtbl") - cell(m, "freqlo"), cell(m, "freqmodl")
+        return z3.If(below(m), z3.ULT(diff + step, diff), z3.ULT(diff, step))
+
+    def step_carry(m):
+        lo, step = cell(m, "freqlo"), cell(m, "freqmodl")
+        return z3.If(below(m), z3.ULT(lo, step), z3.ULT(lo + step, lo))
+
+    def case(*conds):
+        return (lambda m, _r: z3.And(*(c(m) for c in conds)),)
+
+    cases = [case(holds(lo, hi)) for lo, hi in ((0, 0), (1, 0x7F), (0x82, 0x82), (0x80, 0x81))]
+    portamentos = ((0xFF, 0xFF), (0x83, 0xFE)) if found["portavibra"] else ((0x83, 0xFF),)
+    for (lo, hi), signs in itertools.product(
+        portamentos, itertools.product((True, False), repeat=4)
+    ):
+        conds = [
+            c if sign else (lambda m, c=c: z3.Not(c(m)))
+            for c, sign in zip((below, low_borrow, reach_carry, step_carry), signs, strict=True)
+        ]
+        cases.append(case(holds(lo, hi), *conds))
+    return _satisfiable(cases)
+
+
+def _instrument_in_data(found: dict):
+    """The case where the instrument PLAYERZP addresses lies in the module's data: above
+    its instrument pointer tables and below the I/O area, so its bytes alias no player
+    cell, operand or chip register (as in every player the editor or SID-Maker builds)."""
+    tables = [found[k] for k in found if k.startswith(("p_insl", "p_insh")) and found[k]]
+    low = min(tables) if tables else 0
+
+    def holds(m, _r):
+        ptr = z3.Concat(z3.Select(m, found["zp"] + 1), z3.Select(m, found["zp"]))
+        return z3.And(z3.UGE(ptr, low), z3.ULT(ptr, 0xD000 - 0x200))
+
+    return [(holds,)]
 
 
 def routines(found: dict, view: bytes):
@@ -91,21 +178,40 @@ def routines(found: dict, view: bytes):
     one = [()]
     out = [
         ("CNTPLY1", "voice[0].at_cntply1", found["cntplay"] + 6, found["cntply2"], one),
-        ("VIBSLIDE", "voice[0].vibslide", found["cntply2"], found["filtprg"], one),
-        ("FILTPRG", "voice[0].filtprg", found["filtprg"], found["setpwid"], one),
+        (
+            "VIBSLIDE",
+            "voice[0].vibslide",
+            found["cntply2"],
+            found["filtprg"],
+            _slidevib_kinds(found),
+        ),
+        (
+            "FILTPRG",
+            "voice[0].filtprg",
+            found["filtprg"],
+            found["setpwid"],
+            _row_kinds(found, "fltposi", "cwepcnt"),
+        ),
         (
             "SETPWID",
-            "voice[0].pw_table",
+            "voice[0].at_pw_rows",
             found["setpwid"],
-            found["wfarptb"],
-            _row_kinds(found, "pwtpos"),
+            found["endpwtb"],
+            _row_kinds(found, "pwtpos", "pweepcnt"),
         ),
+        ("ENDPWTB", "voice[0].at_endpwtb", found["endpwtb"], found["wfarptb"], one),
         ("SETVIB0", "voice[0].setvib0", found["setvib0"], None, one),
         ("SETVIB1", "voice[0].setvib1", found["setvib1"], None, one),
         ("SETVIBR", "voice[0].at_setvibr", found["setvibr"], None, one),
         ("SETFMOD", "voice[0].at_setfmod", found["setfmod"], None, one),
         ("FORCVIB", "voice[0].forcvib", found["forcvib"], None, one),
-        ("STRTSND", "voice[0].startsound", found["to_strtsnd"], found["setadsr_fx"], one),
+        (
+            "STRTSND",
+            "voice[0].startsound",
+            found["to_strtsnd"],
+            found["setadsr_fx"],
+            _instrument_in_data(found),
+        ),
         ("SELNTFX", "voice[0].at_selntfx", found["selntfx"], found["indexj1_end"] - 2, one),
         ("SMALPFX", "voice[0].at_smalsel", found["smalpfx"], found["indexj2_end"] - 2, one),
         ("BIGPTFX", "voice[0].at_bigptfx", found["bigptfx"], found["indexjp"] - 1, one),
@@ -190,8 +296,18 @@ GROUPS = {
     "small": ("small",),
     "big": ("big",),
 }
-# The table and sound-start routines, whose proofs take minutes: oracle-marked.
-LONG_GROUPS = {"tables": ("VIBSLIDE", "FILTPRG", "SETPWID", "WFARPTB", "STRTSND")}
+# The table and sound-start routines, whose proofs take minutes, by their shards of cases:
+# oracle-marked, each shard in its own interpreter, since z3's search (so a proof's time)
+# hangs on every term made before it.
+LONG_ROUTINES = {
+    "VIBSLIDE": 4,
+    "FILTPRG": 1,
+    "SETPWID": 1,
+    "ENDPWTB": 1,
+    "WFARPTB": 1,
+    "STRTSND": 1,
+}
+CENSUS = Path(__file__).resolve().parent.parent / "scripts" / "sw_proof_census.py"
 # The exports whose routines are proven in the default suite: every build of the set.
 PROOF_EXPORTS = EXPORTS + ("kicksamule", "cloudlessr", "demo-example", "echo-test")
 # A SID-Wizard 1.0 player, whose routines are proven in the oracle job.
@@ -210,7 +326,7 @@ def _prove_group(view: bytes, group: str) -> int:
     found = playspec.binding(view)
     proven = 0
     for label, routine, pc, stop, cases in routines(found, view):
-        if label.split()[0] not in {**GROUPS, **LONG_GROUPS}[group]:
+        if label.split()[0] not in GROUPS[group]:
             continue
         for assume in cases:
             result = _prove(view, found, routine, pc, stop=stop, assume=assume)
@@ -282,16 +398,33 @@ def test_entries_are_the_players_play_and_multispeed_calls():
     assert playspec.entries(view) == {_word(view, table + 4), _word(view, table + 7)}
 
 
-@pytest.mark.oracle
-@pytest.mark.parametrize("group", LONG_GROUPS)
-@pytest.mark.parametrize("name", TABLE_EXPORTS)
-def test_table_routines_are_proven_against_the_6502(name, group):
-    """The table and sound-start routines from their labels, on every build of the set."""
-    assert _prove_group(_view(_export(name)), group)
+def _long_cases(names):
+    return [
+        pytest.param(name, label, k, n, id=f"{name}-{label}-{k}/{n}")
+        for name in names
+        for label, n in LONG_ROUTINES.items()
+        for k in range(n)
+        if not (name == V10_TUNE and label == "WFARPTB")
+    ]
 
 
 @pytest.mark.oracle
-@pytest.mark.parametrize("group", {**GROUPS, **LONG_GROUPS})
+@pytest.mark.parametrize("name,label,shard,shards", _long_cases(TABLE_EXPORTS + (V10_TUNE,)))
+def test_table_routines_are_proven_against_the_6502(name, label, shard, shards):
+    """The table and sound-start routines from their labels, on every build of the set
+    and a 1.0 player (WFARPTB, proven on builds without chords, aside)."""
+    out = subprocess.run(
+        [sys.executable, str(CENSUS), name, "--only", label, "--shard", f"{shard}/{shards}"]
+        + ["--jobs", "1"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert out.returncode == 0, out.stdout[-4000:] + out.stderr[-4000:]
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize("group", GROUPS)
 def test_every_routine_of_a_v10_player_is_proven_against_the_6502(group):
     """SID-Wizard 1.0's routines, their release differences included, from their labels."""
     assert _prove_group(_tune_view(V10_TUNE), group)
