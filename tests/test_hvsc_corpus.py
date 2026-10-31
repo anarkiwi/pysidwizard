@@ -109,7 +109,7 @@ def test_sample_is_representative():
             rsid += 1
         if data.find(b"SWP1", parse_psid_header(data).data_start) >= 0:
             swp += 1
-        if parse_sid(data).subtune_count > 1:
+        if parse_psid_header(data).songs > 1:
             multisubtune += 1
     assert rsid >= 1, "sample lost its RSID coverage"
     assert swp >= 1, "sample lost its packed (SWP) coverage"

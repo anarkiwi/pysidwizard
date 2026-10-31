@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import os
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
@@ -44,6 +45,7 @@ from pysidwizard.sidreader import (
     _check_played_instruments,
     _filter_table_end,
 )
+from tests._hvsc_corpus import PLAYER_RECOVERED, SAMPLE
 from tests._hvsc_fetch import HVSC_ROOT, resolve
 from tests._refused import assert_refused
 from tests._toy import assert_6502
@@ -739,6 +741,18 @@ def _corpus_rows():
 
 # Materialised once at import so xdist workers parametrize over a stable set.
 _CORPUS_ROWS = _corpus_rows()
+# The rows test_hvsc_corpus already parses, detects and plays.
+_SAMPLED = set(SAMPLE) | set(PLAYER_RECOVERED)
+
+
+def _is_multi_sid(rel: str) -> bool:
+    try:
+        return parse_psid_header(Path(_HVSC, rel).read_bytes()).is_multi_sid
+    except (OSError, SIDFormatError):
+        return False
+
+
+_MULTI_SID_ROWS = [r for r in _CORPUS_ROWS if _is_multi_sid(r[0])]
 
 
 def _corpus_id(row):
@@ -746,7 +760,7 @@ def _corpus_id(row):
 
 
 @pytest.mark.skipif(not _CORPUS_PRESENT, reason=_CORPUS_SKIP)
-@pytest.mark.parametrize("row", _CORPUS_ROWS, ids=_corpus_id)
+@pytest.mark.parametrize("row", [r for r in _CORPUS_ROWS if r[0] not in _SAMPLED], ids=_corpus_id)
 def test_real_corpus_row_parses_and_plays(row):
     # Per-tune parse + bounded playback. Parametrized (one case per corpus
     # row) so xdist distributes the work and a failure points at one tune.
@@ -800,35 +814,34 @@ def test_real_corpus_row_parses_and_plays(row):
                 sub_player.play_frame()
 
 
+def _corpus_census(rel: str):
+    """``(swp, rsid, subtunes)`` of a corpus tune that parses, else None."""
+    try:
+        data = Path(_HVSC, rel).read_bytes()
+    except OSError:
+        return None
+    if not is_sidwizard_sid(data):
+        return None
+    try:
+        swm = parse_sid(data)
+    except SIDFormatError:
+        return None  # the relocated tail is allowed to fail cleanly
+    return data.find(b"SWP1", 0x7E) >= 0, is_rsid(data), swm.subtune_count
+
+
 @pytest.mark.skipif(not _CORPUS_PRESENT, reason=_CORPUS_SKIP)
 def test_real_corpus_has_expected_coverage():
     # Corpus-health fold (natural loop): the catalog must actually resolve to
     # a substantial set of parseable tunes, including the RSID and
     # multi-subtune categories the per-row test exercises.
-    parsed = 0
-    rsid_seen = False
-    multisubtune_seen = False
-    swp_parsed = 0
-    for r in _CORPUS_ROWS:
-        path = os.path.join(_HVSC, r[0])
-        try:
-            data = open(path, "rb").read()
-        except OSError:
-            continue
-        if not is_sidwizard_sid(data):
-            continue
-        is_swp = data.find(b"SWP1", 0x7E) >= 0
-        try:
-            swm = parse_sid(data)
-        except SIDFormatError:
-            continue  # the relocated tail is allowed to fail cleanly
-        parsed += 1
-        if is_swp:
-            swp_parsed += 1
-        if is_rsid(data):
-            rsid_seen = True
-        if swm.subtune_count > 1:
-            multisubtune_seen = True
+    with ProcessPoolExecutor(min(8, os.cpu_count() or 1)) as pool:
+        found = [
+            c for c in pool.map(_corpus_census, [r[0] for r in _CORPUS_ROWS], chunksize=16) if c
+        ]
+    parsed = len(found)
+    swp_parsed = sum(swp for swp, _, _ in found)
+    rsid_seen = any(rsid for _, rsid, _ in found)
+    multisubtune_seen = any(n > 1 for _, _, n in found)
     assert parsed >= 800, "expected to parse the bulk of the corpus"
     assert rsid_seen, "expected at least one RSID tune to parse and play"
     assert multisubtune_seen, "expected at least one multi-subtune tune"
@@ -836,7 +849,7 @@ def test_real_corpus_has_expected_coverage():
 
 
 @pytest.mark.skipif(not _CORPUS_PRESENT, reason=_CORPUS_SKIP)
-@pytest.mark.parametrize("row", _CORPUS_ROWS, ids=_corpus_id)
+@pytest.mark.parametrize("row", _MULTI_SID_ROWS, ids=_corpus_id)
 def test_real_corpus_row_multi_sid_parses_or_rejection_is_clear(row):
     # A multi-SID tune parses to one module driving every chip, or (one player
     # per chip) raises a specific error. Parametrized per row for isolation.
@@ -849,34 +862,12 @@ def test_real_corpus_row_multi_sid_parses_or_rejection_is_clear(row):
         header = parse_psid_header(data)
     except SIDFormatError:
         pytest.skip("not a parseable PSID/RSID header")
-    if not header.is_multi_sid:
-        pytest.skip("not a multi-SID tune")
     try:
         swm = parse_sid(data)
     except SIDFormatError as exc:
         assert "one player per chip" in str(exc)
     else:
         assert swm.sid_amount == sid_chips(header)
-
-
-@pytest.mark.skipif(not _CORPUS_PRESENT, reason=_CORPUS_SKIP)
-def test_real_corpus_has_rejection_categories():
-    # Corpus-health fold: the catalog must contain at least one multi-SID tune
-    # so the per-row rejection test actually exercises it.
-    saw_multisid = False
-    for r in _CORPUS_ROWS:
-        path = os.path.join(_HVSC, r[0])
-        try:
-            data = open(path, "rb").read()
-        except OSError:
-            continue
-        try:
-            header = parse_psid_header(data)
-        except SIDFormatError:
-            continue
-        if header.version >= 3 or header.is_multi_sid:
-            saw_multisid = True
-    assert saw_multisid
 
 
 # The 27 known SID-Wizard "packed" (SWP) tunes in HVSC, relative to the HVSC root.

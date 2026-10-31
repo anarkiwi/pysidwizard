@@ -16,10 +16,13 @@ from pysidwizard import (
     SWMPlayer,
     Transpose,
     build_swm,
+    parse_sid,
     parse_swm,
+    playspec,
     sidmaker,
 )
 from pysidwizard.formats import FORMAT
+from tests._hvsc_fetch import resolve
 from tests._swm_cache import TUNE_NAMES, swm_path
 from tests._toy import assert_6502, note_word, toy_swm
 
@@ -116,3 +119,16 @@ def test_standard_mode_answers_reads_past_the_note_table():
     native = SWMPlayer(swm).render_grid(24)[1:]
     assert {row[0] | row[1] << 8 for row in standard} <= {0, 1}
     assert max(row[0] | row[1] << 8 for row in native) > 1
+
+
+@pytest.mark.xfail(strict=True, reason="the trap is armed only once init returns: pysidtracker#184")
+def test_a_play_address_0_tune_whose_init_never_returns_runs_the_spec():
+    """An RSID that installs its own interrupt and loops in its init still plays as the spec:
+    the interrupt's call to PLAYER is a modelled entry."""
+    path = resolve("MUSICIANS/G/Gregfeel/Holiday_Train_credits.sid")
+    if path is None:
+        pytest.skip("HVSC tune unreachable")
+    player = SWMPlayer(parse_sid(path.read_bytes()))
+    for _ in range(4):
+        player.play_frame()
+    assert player.entry in playspec.entries(player.view())

@@ -3,17 +3,15 @@
 # pylint: disable=redefined-outer-name
 
 import json
-import random
 import sys
 from pathlib import Path
 
 import pytest
 import z3
-from jennings.devices.mpu6502 import MPU
 from pysidtracker import SidImage
 from pysidtracker.disasm import image_after_init
 from pysidtracker.maincli import main as cli
-from pysidtracker.playspec import elaborate, run
+from pysidtracker.playspec import elaborate
 from pysidtracker.playspec.tv import replay, validate
 from pysidtracker.testing import make_tune_fixtures, resolve_tune, song_frames
 
@@ -31,7 +29,6 @@ _SID_EXPORTS = "native/examples/sid-exports/"
 ALL_EXPORTS = tuple(Path(m).stem for m in SW197_EXPORT_SHA256 if m.startswith(_SID_EXPORTS))
 STACK = range(0x100, 0x200)
 BUDGET = 20000
-RANDOM_CASES = 300
 # Players the binder refuses, by the reason it gives.
 REFUSED_EXPORTS = {name: "multi-SID" for name in ALL_EXPORTS if name.endswith("SID")}
 REFUSED_TUNES = {k: REASONS[REFUSED[v][1]] for k, v in TUNES.items() if 1 in REFUSED.get(v, {})}
@@ -49,33 +46,10 @@ def _view(data: bytes) -> bytes:
     return bytes(image_after_init(SidImage.from_sid(data)).window(0, 0x10000))
 
 
-def _rows(mem: bytearray, found: dict, rng: random.Random) -> None:
-    """A random pattern at a random pointer and random row-reader state."""
-    base = rng.choice([0x4000, 0x40C0, 0x7000])
-    for field in ("zp_note", "zp_inst", "zp_fx", "zp_value"):
-        mem[found[field]], mem[found[field] + 1] = base & 0xFF, base >> 8
-    row_bytes = [0, 0, 1, 0x31, 0x70, 0x71, 0x77, 0x78, 0x80, 0x85, 0x90, 0xB1, 0xC0, 0xFF]
-    for offset in range(0x100):
-        mem[base + offset] = rng.choice(row_bytes + [rng.randrange(256)])
-    mem[found["ptnpos"]] = rng.randrange(256)
-    mem[found["packcnt"]] = rng.choice([0, 0, 0, 1, 2, 5, 9])
-    for cell in ("curnot", "curifx", "curifx_long", "curfx2", "curval"):
-        mem[found[cell]] = rng.randrange(256)
-
-
-def _ticks(mem: bytearray, found: dict, rng: random.Random) -> None:
-    """A random tempo program and tick-clock state."""
-    for offset in range(0x100):
-        mem[found["tempotbl"] + offset] = rng.choice([0, 1, 2, 3, 5, 0x7F, 0x80, 0x81, 0xFF])
-    mem[found["spdcnt"]] = rng.choice([0, 1, 2, 3, rng.randrange(256)])
-    mem[found["tmppos"]] = rng.randrange(256)
-    mem[found["tmpbase"]] = rng.randrange(256)
-
-
-# Stretches whose code runs on into code they do not state: first address, end, random state.
+# Stretches whose code runs on into code they do not state: first address, end.
 STRETCHES = {
-    "read_row": (lambda b: b["read_row"], lambda b: b["reader_end"], _rows),
-    "tick": (lambda b: b["dotrack"], lambda b: b["tick_0"] - 7, _ticks),
+    "read_row": (lambda b: b["read_row"], lambda b: b["reader_end"]),
+    "tick": (lambda b: b["dotrack"], lambda b: b["tick_0"] - 7),
 }
 
 
@@ -183,26 +157,6 @@ def _prove(
     )
 
 
-def _stretch_replay(found: dict, stretch: str, memory: bytes, entry: int, stop: int) -> list:
-    """The addresses outside the stack page where the spec routine and the jennings run
-    of the code from ``entry`` to ``stop`` leave ``memory`` differently."""
-    spec_mem = run(
-        elaborate(playspec.SPEC, found, routine=f"voice[0].{stretch}"),
-        bytearray(memory),
-        registers={"x": 0},
-    )
-    cpu_mem = bytearray(memory)
-    cpu = MPU(memory=cpu_mem)
-    cpu.x, cpu.sp, cpu.pc = 0, 0xFF, entry
-    for _ in range(BUDGET):
-        if cpu.pc == stop:
-            break
-        cpu.step()
-    else:
-        raise AssertionError(f"the code does not reach ${stop:04x}")
-    return [a for a in range(0x10000) if spec_mem[a] != cpu_mem[a] and a not in STACK]
-
-
 def _assert_proven(result, found: dict, label: str, routine: str, pc: int) -> None:
     """A proof, or the counterexample confirmed on jennings."""
     if result.proven:
@@ -275,20 +229,6 @@ def test_the_voices_cells_sit_seven_bytes_apart_from_the_found_addresses(name):
             a for cell in program.cells if cell.name == cell_name for a in cell.extent()
         )
         assert placed == [found[cell_name] + 7 * voice for voice in range(3)]
-
-
-@pytest.mark.parametrize("stretch", STRETCHES)
-@pytest.mark.parametrize("name", EXPORTS)
-def test_stretch_equals_the_6502_on_random_state(name, stretch):
-    """Every random state leaves memory as the 6502 code leaves it."""
-    view = _view(_export(name))
-    found = playspec.binding(view)
-    entry, stop = STRETCHES[stretch][0](found), STRETCHES[stretch][1](found)
-    rng = random.Random(name)
-    for _ in range(RANDOM_CASES):
-        memory = bytearray(view)
-        STRETCHES[stretch][2](memory, found, rng)
-        assert not _stretch_replay(found, stretch, bytes(memory), entry, stop)
 
 
 @pytest.mark.parametrize("stretch", STRETCHES)

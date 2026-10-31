@@ -48,6 +48,7 @@ dev = [
     "pytest>=7.4",
     "pytest-cov>=4.0",
     "pytest-xdist>=3.0",
+    "pytest-timeout>=2.1",
     "ruff>=0.4",
     "black>=24.0",
     "zstandard>=0.21",
@@ -76,6 +77,9 @@ testpaths = ["tests"]
 # sidtrace oracle comparison (``-m oracle``) needs Docker + network, so it is
 # excluded from the default run and driven by its own CI job.
 addopts = "-ra -n auto -m 'not oracle'"
+# Every test, the oracle job's proofs included, finishes well inside this; one that does
+# not fails rather than hangs, its worker (and its coverage) kept.
+timeout = 120
 markers = [
     "oracle: byte-exact comparison against the sidtrace Docker oracle (opt-in via ``-m oracle``)",
 ]
