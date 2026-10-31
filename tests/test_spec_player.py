@@ -14,9 +14,9 @@ from pysidwizard import (
     SWMFile,
     SWMFormatError,
     SWMPlayer,
+    Transpose,
     build_swm,
     parse_swm,
-    Transpose,
     sidmaker,
 )
 from pysidwizard.formats import FORMAT

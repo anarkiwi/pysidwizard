@@ -18,6 +18,7 @@ from pysidtracker.playspec.tv import replay, validate
 from pysidtracker.testing import make_tune_fixtures, resolve_tune, song_frames
 
 from pysidwizard import playspec
+from tests._refused import REASONS, REFUSED
 from tests._swm_cache import SW197_EXPORT_SHA256, sw197_export_path
 from tests.test_oracle import TUNES
 
@@ -33,18 +34,7 @@ BUDGET = 20000
 RANDOM_CASES = 300
 # Players the binder refuses, by the reason it gives.
 REFUSED_EXPORTS = {name: "multi-SID" for name in ALL_EXPORTS if name.endswith("SID")}
-REFUSED_TUNES = {
-    name: "partly relocated"
-    for name in (
-        "moofistication",
-        "easyriff",
-        "mega_run",
-        "mid_of_ages",
-        "memory_invaders",
-        "club64",
-        "too_long_on_disk",
-    )
-}
+REFUSED_TUNES = {k: REASONS[REFUSED[v][1]] for k, v in TUNES.items() if 1 in REFUSED.get(v, {})}
 STATED_TUNES = {k: v for k, v in TUNES.items() if k not in REFUSED_TUNES}
 
 tune_id, tune_path = make_tune_fixtures(STATED_TUNES)

@@ -41,6 +41,7 @@ from tests._hvsc_corpus import (
     SAMPLE,
 )
 from tests._hvsc_fetch import resolve
+from tests._refused import assert_refused
 
 
 def _path(rel: str):
@@ -85,6 +86,8 @@ def test_sample_parses_detects_direct_and_plays(rel):
         for row in pat.rows:
             assert row.note is None or row.note <= 0x7F
 
+    if assert_refused(rel, swm):
+        return
     player = SWMPlayer(swm)
     for _ in range(300):
         player.play_frame()
@@ -166,6 +169,8 @@ def test_player_recovered_parses_and_plays(rel):
         for row in pat.rows:
             assert row.note is None or row.note <= 0x7F
 
+    if assert_refused(rel, swm):
+        return
     for n in range(swm.subtune_count):
         player = SWMPlayer(swm.subtune(n))
         for _ in range(200):

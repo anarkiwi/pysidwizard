@@ -45,6 +45,7 @@ from pysidwizard.sidreader import (
     _filter_table_end,
 )
 from tests._hvsc_fetch import HVSC_ROOT, resolve
+from tests._refused import assert_refused
 from tests._toy import assert_6502
 
 LOAD = 0x1000
@@ -785,6 +786,8 @@ def test_real_corpus_row_parses_and_plays(row):
             assert len(swm.sequences) == header[0x0C]
     if swm.sid_amount > 1:
         return  # SWMPlayer renders one chip (test_multi_sid_parses_every_chip)
+    if assert_refused(row[0], swm):
+        return
     # Drive the player for a bounded sample.
     player = SWMPlayer(swm)
     for _ in range(300):
@@ -935,6 +938,8 @@ def test_known_swp_file_parses_and_plays(rel):
         default=0,
     )
     assert max_ref <= len(swm.patterns)
+    if assert_refused(rel, swm):
+        return
     for n in range(swm.subtune_count):
         player = SWMPlayer(swm.subtune(n))
         for _ in range(500):

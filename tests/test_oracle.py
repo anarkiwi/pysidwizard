@@ -28,6 +28,7 @@ from pysidtracker.testing import (
 )
 
 from pysidwizard import SWMPlayer, parse_sid_song
+from tests._refused import REFUSED
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -137,8 +138,11 @@ def _player(data):
 
 
 # A mismatch fails with pysidtracker's whydiff report, also saved under ``build/why/``.
+# The tunes whose first song the binder plays (tests/_refused.py names the others' issues).
+STATED_TUNES = {k: v for k, v in TUNES.items() if 1 not in REFUSED.get(v, {})}
+
 tune_id, oracle_match = make_oracle_fixtures(
-    TUNES,
+    STATED_TUNES,
     player=_player,
     max_lead=0,
     report_dir=_WHY,

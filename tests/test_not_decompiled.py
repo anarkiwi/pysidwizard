@@ -6,6 +6,7 @@ Each single-SID case is checked the way ``pysidtracker.survey`` checks it: the
 
 # pylint: disable=missing-function-docstring
 
+import re
 import sys
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from pysidtracker.survey import compare_file
 
 from pysidwizard import SIDFormatError, parse_sid, parse_sid_song, parse_swm
 from tests._hvsc_fetch import resolve
+from tests._refused import REASONS
 from tests._swm_cache import multi_sid_path, sw197_export_path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -52,14 +54,12 @@ def _compare(rel: str, song: int) -> dict:
     return compare_file(_path(rel), oracle_hvsc.render, frames=FRAMES, song=song)
 
 
-@pytest.mark.parametrize("rel, song", PARTIAL_RELOCATION)
-def test_partially_relocated_module_song_is_exact(rel, song):
-    assert _compare(rel, song)["verdict"] == "exact"
-
-
-@pytest.mark.parametrize("rel, song", WRAPPER_JUMP_TABLE)
-def test_wrapper_dispatched_module_song_is_exact(rel, song):
-    assert _compare(rel, song)["verdict"] == "exact"
+@pytest.mark.parametrize("rel, song", PARTIAL_RELOCATION + WRAPPER_JUMP_TABLE)
+def test_partially_relocated_module_song_is_refused(rel, song):
+    """These songs' players split a variable within a routine (#121): the binder refuses."""
+    result = _compare(rel, song)
+    assert result["verdict"] == "library_error"
+    assert re.search(REASONS[121], result["error"])
 
 
 @pytest.mark.parametrize("song", [1, 2])
