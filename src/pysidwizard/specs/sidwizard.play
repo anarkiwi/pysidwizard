@@ -34,7 +34,8 @@ layout {
   kbtrack_fswitch, wfctrl_fx_stores, mulply, play_gate, gate_minus, swp, sfx, hr_ad_first,
   adsr_ad_first, seq_tempo_capped, table_fx_resets, subtune_restarts, sound_tables_first,
   sound_resets_flshift, vibamfx_amp_only, bigfx_v10, echo_support, hrender_inline,
-  restart_trdelay, bigfx0d_falls, bigfx_delay_16: flag;
+  restart_trdelay, bigfx0d_falls, bigfx_delay_16, bigfx1f_toggle,
+  hrgtoff_or8: flag;
   order, chain: list;
 }
 
@@ -619,6 +620,16 @@ machine voice[x in 0..L.chn] {
         return;
       }
       c := y >= LEGATO;
+    }
+    if L.hrender_inline && L.hrgtoff_or8 {
+      if mem[zp] & 4 != 0 {
+        ptngate := 0xFE;
+        wfghost := wfghost & 0xFE | 0x08;
+      }
+      sidg_ad := mem[zp + 1];
+      sidg_sr := mem[zp + 2];
+      sidg_wave := wfghost;
+      return;
     }
     if L.hrender_inline {
       if mem[zp] & 4 != 0 {
@@ -1733,6 +1744,9 @@ machine voice[x in 0..L.chn] {
       if L.filt_ctrl_fx {
         fswitch := a & 0x0F;
         resonib := a & 0xF0;
+      }
+      if L.bigfx1f_toggle {
+        fswitch ^= 0x08;
       }
     }
   }

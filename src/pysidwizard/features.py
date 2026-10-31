@@ -255,12 +255,14 @@ _FLAGS = (
         "29 30 9D ?? ?? ( A9 ?? | AD ?? ?? ) ( on: 29 08 F0 | off: A9 09 9D )",
     ),
     _flag("tempoprgsupp", (1, 1, 0, 1, 0, 1)),  # tempo programs + funktempo pattern-FX
-    # CHKTMP1 (1497): ``and #$7F ; cmp #2 ; bpl + ; jmp PTN_SEQ`` before HARDRST's ``ldy CURNOT,x``.
+    # CHKTMP1 (1497): ``and #$7F ; cmp #2 ; bpl + ; jmp PTN_SEQ`` (an older release: ``bmi PTN_SEQ``)
+    # before HARDRST's ``ldy CURNOT,x``.
     # Collapses TICK_0..2 at tempo 1-2 (1496-1514, 1704-1723).
     _flag(
         "fastspeedbind",
         (0, 0, 0, 1, 0, 0),
-        "( on: 29 7F C9 02 10 03 4C ?? ?? | off: ??{0} ) [ A9 02 ] BC ?? ?? F0 ?? C0 60 90",
+        "( on: 29 7F C9 02 10 03 4C ?? ?? | on: 29 7F C9 02 30 ?? | off: ??{0} ) [ A9 02 ] "
+        "BC ?? ?? F0 ?? C0 60 90",
     ),
     # PLAYER's channel loop (835): ``lda #$FF ; sta TRDELAY,x`` before ``txa ; sec ; sbc #7``.
     # Track/note delay $1D/$1E (3730-3753).
