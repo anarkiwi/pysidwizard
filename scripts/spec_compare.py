@@ -11,28 +11,25 @@ frame of each spec, and the first difference. Exit status is the number of diffe
 
 import argparse
 import csv
-import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-os.environ.setdefault("OMP_NUM_THREADS", "2")
-
-from pysidtracker import SidImage  # noqa: E402
-from pysidtracker.errors import SidError  # noqa: E402
-from pysidtracker.header import parse_sid_header  # noqa: E402
-from pysidtracker.oracle import EmuPlayer  # noqa: E402
-from pysidtracker.playspec import SpecPlayer, load  # noqa: E402
-from pysidtracker.testing import song_frames  # noqa: E402
-from tqdm import tqdm  # noqa: E402
+from pysidtracker import SidImage
+from pysidtracker.errors import SidError
+from pysidtracker.header import parse_sid_header
+from pysidtracker.oracle import EmuPlayer
+from pysidtracker.playspec import SpecPlayer, load
+from pysidtracker.testing import song_frames
+from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from sw_spec_diff import STACK, play_entry  # noqa: E402  # pylint: disable=wrong-import-position
+from sw_spec_diff import STACK, play_entry  # pylint: disable=wrong-import-position
 
-from pysidwizard import playspec  # noqa: E402  # pylint: disable=wrong-import-position
+from pysidwizard import playspec  # pylint: disable=wrong-import-position
 
 
 def make(spec, data: bytes, song: int, native: bool):
