@@ -812,7 +812,7 @@ machine voice[x in 0..L.chn] {
           wfghost := 0x09;
         } else {
           if L.first_frame_freq_by_track {
-            sidg_freqhi := freqtbh[x * 7];
+            sidg_freqhi := freqtbh[u8(x * 7)];
           } else {
             sidg_freqhi := freqtbh[dpitch];
           }

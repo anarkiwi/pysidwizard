@@ -121,6 +121,17 @@ def test_standard_mode_answers_reads_past_the_note_table():
     assert max(row[0] | row[1] << 8 for row in native) > 1
 
 
+@pytest.mark.parametrize(("version", "driver"), BUILDS)
+def test_standard_mode_plays_every_sid_maker_build(version, driver):
+    """No build's table reads outgrow the note table: the first frame's frequency byte is read
+    by voice offset in some, by note in others."""
+    swm = _scale()
+    swm.driver_type = driver
+    swm.player_version = version
+    grid = FORMAT.spec_player(swm, notes=PAL_CLOCK_HZ).render_grid(FRAMES)
+    assert any(row[0] | row[1] << 8 for row in grid)
+
+
 def test_a_play_address_0_tune_whose_init_never_returns_runs_the_spec():
     """An RSID that installs its own interrupt and loops in its init still plays as the spec:
     the interrupt's call to PLAYER is a modelled entry."""
