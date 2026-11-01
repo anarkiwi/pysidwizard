@@ -292,7 +292,6 @@ machine voice[x in 0..L.chn] {
   // the clock leaves for DOTRACK, and whether the voice has played this call (a second
   // step is the subtune restart).
   signal c: bool = false;
-  signal ticks: u8 = 0;
   signal played: bool = false;
 
   step {
@@ -335,48 +334,45 @@ machine voice[x in 0..L.chn] {
     sfxtimer -= 1;
   }
 
-  // DOTRACK: the tick clock picks the voice's work for this tick.
+  // The voice's tick counter against the tempo program: SPDCNT counts up from one and starts
+  // over when it equals the tempo byte TMPPOS selects, which then moves on. A signed overflow
+  // in the compare (a counter far past a tempo byte with bit 7 set) sends TMPPOS back to the
+  // program's start, TMPBASE. A build without tempo programs compares against one byte.
+  signal due: bool = false;
+
+  handler tempo_program on frame {
+    let tempo = ite(L.tempoprgsupp, tempotbl[tmppos + 1], tempo_byte);
+    let diff = spdcnt - tempo;
+    due := diff == 0 || neg((spdcnt ^ tempo) & (spdcnt ^ diff));
+    if L.tempoprgsupp {
+      if diff == 0 {
+        tmppos += 1;
+      } elif due {
+        tmppos := tmpbase;
+      }
+    }
+  }
+
+  counter beat: spdcnt { on frame += 1; reload 1; wrap when due || spdcnt == 0 -> row; }
+
+  handler row_tick on row {
+    tick_0();
+  }
+
+  // DOTRACK: the counter's tick (the count before its step) picks the voice's work.
   proc dotrack() {
-    tick();
-    let count = ticks;
+    fire frame;
+    let count = spdcnt - 1;
     if count == 0 {
-      tick_0();
-    } elif neg(count - 2) {
+      return;
+    }
+    if neg(count - 2) {
       tick_1();
     } elif count == 2 {
       tick_2();
     } else {
       cntplay();
     }
-  }
-
-  // The voice's tick counter against the tempo program: SPDCNT counts up from zero
-  // and starts over when it equals the tempo byte TMPPOS selects, which then moves
-  // on. A signed overflow in the compare (a counter far past a tempo byte with
-  // bit 7 set) sends TMPPOS back to the program's start, TMPBASE. A build without
-  // tempo programs compares against one byte. The count before the increment is
-  // the tick number.
-  proc tick() {
-    let count = spdcnt;
-    if L.tempoprgsupp {
-      let next_pos = tmppos + 1;
-      let tempo = tempotbl[next_pos];
-      let diff = count - tempo;
-      if diff == 0 {
-        spdcnt := 0;
-        tmppos := next_pos;
-      } elif neg((count ^ tempo) & (count ^ diff)) {
-        spdcnt := 0;
-        tmppos := tmpbase;
-      }
-    } else {
-      let diff = count - tempo_byte;
-      if diff == 0 || neg((count ^ tempo_byte) & (count ^ diff)) {
-        spdcnt := 0;
-      }
-    }
-    ticks := spdcnt;
-    spdcnt += 1;
   }
 
   // TICK_0: the row tick. The pattern's pointer, the one-shot columns cleared, the
