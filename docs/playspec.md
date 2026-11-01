@@ -9,14 +9,14 @@
 | `player.asm` | Spec |
 |---|---|
 | PLAYER: DOTRACK per voice, the last voice first | `schedule`, `voice[x]` (`x` 0..2, X = 7·x) |
-| DOTRACK's tick clock and the TICK_0 / TICK_1 / TICK_2 / CNTPLAY dispatch | `dotrack`, `tick` |
-| TICK_0: pattern pointer, delayed volume and track tempo, the row | `tick_0`, `read_row` |
+| DOTRACK's tick clock and the TICK_0 / TICK_1 / TICK_2 / CNTPLAY dispatch | `dotrack`, the `beat` counter and the `tempo_program` handler |
+| TICK_0: pattern pointer, delayed volume and track tempo, the row | the `row` handlers `row_prep`, `row_tail`, the `row_reader` cursor |
 | HARDRST / NEWNOTE / HRGTOFF / HRENDER | `hardrst`, `hrender` |
 | TICK_1 / PTN_SEQ / SEQSUB / SEQ_FX / SETSEQA | `tick_1`, `ptn_seq`, `seq_step`, `seq_fx`, `setseqa` |
 | TICK_2 / SEL_INS / CHKNOTE / STRTINS / CLEGATO / LEGATOO | `tick_2`, `clegato`, `legatoo` |
 | STRTSND / SETFLTP / SETADSR | `strtsnd`, `startsound`, `setfltp` |
 | CNTPLAY / VIBSLIDE (vibrato, slides, portamento) | `cntplay`, `cntply1`, `vibslide`, `portame`, `dovibra` |
-| FilterProgram, SETPWID, WFARPTB (chords) to WRWFGHO | `filtprg`, `setpwid`, `wfarptb`, `wftable` |
+| FilterProgram, SETPWID, WFARPTB (chords) to WRWFGHO | the `filter_table` and `pw_table` walkers with the `filter_owner`, `setpwid`, `wfarptb`, `wftable` |
 | SETVIB0 / SETVIB1 / SETVIBR / SETFMOD / FORCVIB | same names |
 | NOTE_FX, INSPTFX, SMALPFX, BIGPTFX and every effect | `note_fx`, `insptfx`, `smalpfx`, `bigfx`, ... |
 | COMMONREGS, RETPLAY | `commonregs`, `retplay` |

@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from sw_spec_diff import STACK, play_entry  # noqa: E402  # pylint: disable=wrong-import-position
+
 from pysidwizard import playspec  # noqa: E402  # pylint: disable=wrong-import-position
 
 
@@ -53,7 +54,7 @@ def make(spec, data: bytes, song: int, native: bool):
     )
 
 
-def compare(job):
+def compare(job):  # pylint: disable=too-many-locals
     """``(path, frames, per-frame microseconds by player, difference or None)`` of one tune."""
     path, old, new, frames, native, oracle = job
     data = Path(path).read_bytes()
