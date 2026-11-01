@@ -61,6 +61,11 @@ const SLIDE_DOWN = 0x82;
 const TONE_PORTA = 0x83;
 const NOTE_PORTA = 0xFF;
 
+event pulse: tick;
+event filter: tick;
+event advance: tick;
+event pattern_end: tick;
+
 // The zero-page pointer the player reads instruments and patterns through, and an SWP
 // export's base its song tables' offsets are from.
 cell zp: u16 @ L.zp per_proc;
@@ -72,9 +77,26 @@ cell zp_hi: u8 @ L.zp_hi per_proc;
 // The pattern pointer the voice's pattern id selects. Each column's read names it
 // separately: an export relocated only in part addresses it differently.
 cell zp_note: u16 @ L.zp_note per_proc;
-cell zp_inst: u16 @ L.zp_inst per_proc;
-cell zp_fx: u16 @ L.zp_fx per_proc;
-cell zp_value: u16 @ L.zp_value per_proc;
+
+// The instrument the zero-page pointer selects, by field.
+view instrument @ zp {
+  control @ 0x00;
+  hr_ad @ 0x01;
+  hr_sr @ 0x02;
+  ad @ 0x03;
+  sr @ 0x04;
+  vibrato @ 0x05;
+  vibrato_delay @ 0x06;
+  arp_speed @ 0x07;
+  chord @ 0x08;
+  octave @ 0x09;
+  pw_start @ 0x0a;
+  filter_start @ 0x0b;
+  gateoff_wf @ 0x0c;
+  gateoff_pw @ 0x0d;
+  gateoff_filter @ 0x0e;
+  first_wave @ 0x0f;
+}
 
 // Song data, read through each instruction's own operand.
 cell ptnl1: u8[256] @ L.p_ptnl1 ro;
@@ -162,6 +184,32 @@ cell sid_fmvol: u8 @ L.sid + 0x18 out;
 cell sid_fcut_lo: u8 @ L.sid + 0x15 out;
 cell sid_fcut_hi: u8 @ L.sid + 0x16 out;
 
+// The filter's cutoff as the word FILTPRG sweeps, its fraction below the high byte.
+cell cutoff: u16 @ (L.ctflgho, L.ctfhgho) operand per_proc;
+
+// The voice whose instrument's filter table the filter follows: its offset in the bunch.
+owner filter_owner: fltctrl { id x * 7; none 0xFF; on note claim; }
+
+// The filter table of the voice that owns the filter, three bytes a row: a sweep (count,
+// signed step) moves the cutoff, with fine sweep three bits below the high byte; $80..$FD sets
+// band, resonance and cutoff; $FE jumps (a target sweep row waits for the next frame, any
+// other is read as a set); $FF stops. The third byte is the keyboard track.
+walker filter_table {
+  table @ zp width 3;
+  pos fltposi; count cwepcnt; values cutoff, ctfhgho, fltband, resonib, ckbdtrk, fswitch;
+  on filter step;
+  row 0..0x7f if L.finefiltsweep: sweep(into=cutoff, count=c0, step=c1, frac=3)
+    then fswitch = c2 & 0x0f if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80, ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80, ckbdtrk = c2 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) != 0x80, ckbdtrk = c2 if L.filtkbtrack && !L.kbtrack_fswitch;
+  row 0..0x7f if !L.finefiltsweep: sweep(into=ctfhgho, count=c0, step=c1)
+    then fswitch = c2 & 0x0f if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80, ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80, ckbdtrk = c2 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) != 0x80, ckbdtrk = c2 if L.filtkbtrack && !L.kbtrack_fswitch;
+  row 0x80..0xfd if L.finefiltsweep: set(fltband = c0 & 0x70, resonib = c0 << 4, cutoff.hi = c1, cutoff.lo = 0)
+    then cwepcnt = 0, fswitch = c2 & 0x0f if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80, ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80, ckbdtrk = c2 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) != 0x80, ckbdtrk = c2 if L.filtkbtrack && !L.kbtrack_fswitch;
+  row 0x80..0xfd if !L.finefiltsweep: set(fltband = c0 & 0x70, resonib = c0 << 4, ctfhgho = c1)
+    then cwepcnt = 0, fswitch = c2 & 0x0f if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80, ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80, ckbdtrk = c2 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) != 0x80, ckbdtrk = c2 if L.filtkbtrack && !L.kbtrack_fswitch;
+  row 0xfe: jump(c1) hold 0..0x7f as 0x80;
+  row 0xff: stop;
+}
+
 // A hand-edited PLAYER entry toggles its own immediate and returns on alternate calls.
 cell gate: u8 @ L.gate operand per_proc;
 
@@ -193,6 +241,7 @@ machine voice[x in 0..L.chn] {
   cell freqhi: u8 @ L.freqhi + x * 7 per_proc;
   cell pwlogho: u8 @ L.pwlogho + x * 7 per_proc;
   cell pwhigho: u8 @ L.pwhigho + x * 7 per_proc;
+  cell pw: u16 @ (L.pwlogho + x * 7, L.pwhigho + x * 7) per_proc;
   cell wfghost: u8 @ L.wfghost + x * 7 per_proc;
   cell ptngate: u8 @ L.ptngate + x * 7 per_proc;
   cell pweepcnt: u8 @ L.pweepcnt + x * 7 per_proc;
@@ -244,11 +293,24 @@ machine voice[x in 0..L.chn] {
   // The orderlist read: ``lda SEQUENCES,y`` whose operand the subtune setter rewrites.
   cell seqt: u16 @ L.p_seqt1 + x * 4 operand;
 
+  // The PW table, three bytes a row: a sweep (count, signed step) adds the step to the pulse
+  // width for that many frames, $80..$FD sets it, $FE jumps (a target sweep row waits for the
+  // next frame, any other is read as a set) and $FF stops. The third byte is the PW keyboard
+  // track. Every row leaves the carry its 6502 code does.
+  walker pw_table {
+    table @ zp width 3;
+    pos pwtpos; count pweepcnt; values pw, pkbdtrk;
+    on pulse step;
+    row 0..0x7f: sweep(into=pw, count=c0, step=c1) then pkbdtrk = c2 if L.pwkeybtrack;
+    row 0x80..0xfd: set(pw.hi = c0 & 0x7f, pw.lo = c1) then pkbdtrk = c2 if L.pwkeybtrack, pweepcnt = 0;
+    row 0xfe: jump(c1) hold 0..0x7f as 0x80;
+    row 0xff: stop;
+  }
+
   // The carry the voice's multispeed call leaves for the next voice's, the tick number
   // the clock leaves for DOTRACK, and whether the voice has played this call (a second
   // step is the subtune restart).
   signal c: bool = false;
-  signal ticks: u8 = 0;
   signal played: bool = false;
 
   step {
@@ -291,13 +353,37 @@ machine voice[x in 0..L.chn] {
     sfxtimer -= 1;
   }
 
-  // DOTRACK: the tick clock picks the voice's work for this tick.
+  // The voice's tick counter against the tempo program: SPDCNT counts up from one and starts
+  // over when it equals the tempo byte TMPPOS selects, which then moves on. A signed overflow
+  // in the compare (a counter far past a tempo byte with bit 7 set) sends TMPPOS back to the
+  // program's start, TMPBASE. A build without tempo programs compares against one byte.
+  signal due: bool = false;
+  signal ticks: u8 = 0;
+
+  handler tempo_program on frame {
+    let tempo = ite(L.tempoprgsupp, tempotbl[tmppos + 1], tempo_byte);
+    let diff = spdcnt - tempo;
+    due := diff == 0 || neg((spdcnt ^ tempo) & (spdcnt ^ diff));
+    ticks := ite(due || spdcnt == 0, 0, spdcnt);
+    if L.tempoprgsupp {
+      if diff == 0 {
+        tmppos += 1;
+      } elif due {
+        tmppos := tmpbase;
+      }
+    }
+  }
+
+  counter beat: spdcnt { on frame += 1; reload 1; wrap when due || spdcnt == 0 -> row; }
+
+  // DOTRACK: the counter's tick (the count before its step) picks the voice's work.
   proc dotrack() {
-    tick();
+    fire frame;
     let count = ticks;
     if count == 0 {
-      tick_0();
-    } elif neg(count - 2) {
+      return;
+    }
+    if neg(count - 2) {
       tick_1();
     } elif count == 2 {
       tick_2();
@@ -306,40 +392,9 @@ machine voice[x in 0..L.chn] {
     }
   }
 
-  // The voice's tick counter against the tempo program: SPDCNT counts up from zero
-  // and starts over when it equals the tempo byte TMPPOS selects, which then moves
-  // on. A signed overflow in the compare (a counter far past a tempo byte with
-  // bit 7 set) sends TMPPOS back to the program's start, TMPBASE. A build without
-  // tempo programs compares against one byte. The count before the increment is
-  // the tick number.
-  proc tick() {
-    let count = spdcnt;
-    if L.tempoprgsupp {
-      let next_pos = tmppos + 1;
-      let tempo = tempotbl[next_pos];
-      let diff = count - tempo;
-      if diff == 0 {
-        spdcnt := 0;
-        tmppos := next_pos;
-      } elif neg((count ^ tempo) & (count ^ diff)) {
-        spdcnt := 0;
-        tmppos := tmpbase;
-      }
-    } else {
-      let diff = count - tempo_byte;
-      if diff == 0 || neg((count ^ tempo_byte) & (count ^ diff)) {
-        spdcnt := 0;
-      }
-    }
-    ticks := spdcnt;
-    spdcnt += 1;
-  }
-
-  // TICK_0: the row tick. The pattern's pointer, the one-shot columns cleared, the
-  // delayed main volume and track tempo of the orderlist effects, then the row; the
-  // hard restart of the coming note follows (two ticks ahead, as the instrument's
-  // control byte bit 1 asks), or at a tempo below 2 the orderlist step.
-  proc tick_0() {
+  // The row tick: the pattern's pointer, the one-shot columns cleared and the delayed main
+  // volume and track tempo of the orderlist effects, then the row is read.
+  handler row_prep on row {
     let p = curptn;
     let carry_lo = point_lo(ptnl1[p]);
     let ptr = point_hi(ptnh1[p], carry_lo);
@@ -355,7 +410,30 @@ machine voice[x in 0..L.chn] {
         seqtempo := 0;
       }
     }
-    read_row();
+  }
+
+  // One row of the NOP-packed pattern stream: a note byte, then an instrument byte if the
+  // note's bit 7 is set, then an effect byte if the instrument's bit 7 is set, then a value
+  // byte if the effect is below $20. A note byte of $70..$77 starts a run of 2..9 empty rows,
+  // whose rest PACKCNT counts down. PTNPOS keeps the offset of the last byte read.
+  cursor row_reader @ zp_note pos ptnpos last {
+    on row next;
+    on pattern_end reset;
+    on advance settle;
+    run RUN_MIN..RUN_MAX - 1 base RUN_BASE -> packcnt;
+    field note -> curnot = note & 0x7F;
+    field inst when neg(note) -> curifx = inst & 0x7F when !neg(inst), curifx_long = inst & 0x7F when neg(inst);
+    field fx when neg(inst) -> curfx2 = fx;
+    field value when (fx & FX_VALUE_MASK) == 0 -> curval = value;
+  }
+
+  // Then the hard restart of the coming note (two ticks ahead, as the instrument's control
+  // byte bit 1 asks), or at a tempo below 2 the orderlist step.
+  handler row_tail on row {
+    tick_0();
+  }
+
+  proc tick_0() {
     if L.sfx && x == 2 && !neg(sfxtimer) {
       curfx2 := 0;
       curnot := 0;
@@ -378,49 +456,6 @@ machine voice[x in 0..L.chn] {
     hardrst(2);
   }
 
-  // One row of the NOP-packed pattern stream: a note byte, then an instrument byte
-  // if the note's bit 7 is set, then an effect byte if the instrument's bit 7 is set,
-  // then a value byte if the effect is below $20. A note byte of $70..$77 starts a run
-  // of 2..9 empty rows, whose rest PACKCNT counts down. PTNPOS keeps the offset of the
-  // last byte read.
-  proc read_row() {
-    stream note_col = zp_note @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
-    stream inst_col = zp_inst @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
-    stream fx_col = zp_fx @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
-    stream value_col = zp_value @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
-    let row = 0;
-    let y = 0;
-    if packcnt != 0 {
-      packcnt -= 1;
-    } else {
-      row := note_col[0];
-      if row >= RUN_MIN && row < RUN_MAX {
-        packcnt := row - RUN_BASE;
-        row := 0;
-      }
-    }
-    if !neg(row) {
-      curnot := row;
-    } else {
-      curnot := row & 0x7F;
-      y += 1;
-      let ins = inst_col[y];
-      if !neg(ins) {
-        curifx := ins;
-      } else {
-        curifx_long := ins & 0x7F;
-        y += 1;
-        let fx = fx_col[y];
-        curfx2 := fx;
-        if fx & FX_VALUE_MASK == 0 {
-          y += 1;
-          curval := value_col[y];
-        }
-      }
-    }
-    ptnpos += y;
-  }
-
   // TICK_1: the pattern's pointer again, then the pattern and orderlist step.
   proc tick_1() {
     let p = curptn;
@@ -435,21 +470,20 @@ machine voice[x in 0..L.chn] {
   // the rest are orderlist effects. The hard restart one tick ahead follows, or at a
   // tempo below 3 the row's columns.
   proc ptn_seq() {
-    let y = ptnpos;
     if L.transposesupp {
       transp := transp2;
     }
-    if packcnt == 0 {
-      y += 1;
-      if mem[zp + u16(y)] == PTN_END {
+    if row_reader.idle {
+      if row_reader.ahead == PTN_END {
         let playing = seq_step();
         if !playing {
           return;
         }
-        y := 0;
+        fire pattern_end;
+      } else {
+        fire advance;
       }
     }
-    ptnpos := y;
     if L.fastspeedbind {
       if neg((tmpt3[tmppos] & 0x7F) - 3) {
         tick_2();
@@ -610,7 +644,7 @@ machine voice[x in 0..L.chn] {
       }
       let carry_lo = point_lo(insl2[y]);
       let ptr = point_hi(insh2[y], carry_lo);
-      if mem[zp] & timer == 0 {
+      if instrument.control & timer == 0 {
         hrender(c);
         return;
       }
@@ -622,21 +656,21 @@ machine voice[x in 0..L.chn] {
       c := y >= LEGATO;
     }
     if L.hrender_inline && L.hrgtoff_or8 {
-      if mem[zp] & 4 != 0 {
+      if instrument.control & 4 != 0 {
         ptngate := 0xFE;
         wfghost := wfghost & 0xFE | 0x08;
       }
-      sidg_ad := mem[zp + 1];
-      sidg_sr := mem[zp + 2];
+      sidg_ad := instrument.hr_ad;
+      sidg_sr := instrument.hr_sr;
       sidg_wave := wfghost;
       return;
     }
     if L.hrender_inline {
-      if mem[zp] & 4 != 0 {
+      if instrument.control & 4 != 0 {
         wfghost := 0x18;
       }
-      sidg_ad := mem[zp + 1];
-      sidg_sr := mem[zp + 2];
+      sidg_ad := instrument.hr_ad;
+      sidg_sr := instrument.hr_sr;
       ptngate := 0xFE;
       wfghost &= 0xFE;
       sidg_wave := wfghost;
@@ -646,13 +680,13 @@ machine voice[x in 0..L.chn] {
     wfghost &= 0xFE;
     if L.hardrestypes {
       if L.hr_ad_first {
-        sidg_ad := mem[zp + 1];
-        sidg_sr := mem[zp + 2];
+        sidg_ad := instrument.hr_ad;
+        sidg_sr := instrument.hr_sr;
       } else {
-        sidg_sr := mem[zp + 2];
-        sidg_ad := mem[zp + 1];
+        sidg_sr := instrument.hr_sr;
+        sidg_ad := instrument.hr_ad;
       }
-      if mem[zp] & 4 != 0 {
+      if instrument.control & 4 != 0 {
         wfghost := 0x18;
         sidg_wave := 0x18;
         return;
@@ -752,7 +786,7 @@ machine voice[x in 0..L.chn] {
   proc clegato(note: u8) {
     let a = note;
     if L.octaveshift {
-      a += mem[zp + 9];
+      a += instrument.octave;
     }
     if L.transposesupp {
       a += transp;
@@ -797,7 +831,7 @@ machine voice[x in 0..L.chn] {
     if L.sound_resets_flshift {
       flshift := 0;
     }
-    let ctrl = mem[zp];
+    let ctrl = instrument.control;
     if L.pwresetsw || L.filtresetsw {
       ctrl &= tablrst;
     }
@@ -816,7 +850,7 @@ machine voice[x in 0..L.chn] {
           } else {
             sidg_freqhi := freqtbh[dpitch];
           }
-          wfghost := mem[zp + 0x0F];
+          wfghost := instrument.first_wave;
         }
       }
     } else {
@@ -828,7 +862,7 @@ machine voice[x in 0..L.chn] {
       arpscnt := 0xFF;
     }
     if L.arpspeedsupp {
-      arpsped := mem[zp + 7];
+      arpsped := instrument.arp_speed;
     }
     if L.sound_tables_first {
       startchord();
@@ -842,7 +876,7 @@ machine voice[x in 0..L.chn] {
 
   proc startchord() {
     if L.chordsupport {
-      let chord = mem[zp + 8];
+      let chord = instrument.chord;
       curchord := chord;
       chordpos := chdp1[chord];
     }
@@ -851,17 +885,17 @@ machine voice[x in 0..L.chn] {
   // The instrument's PW and filter tables (each unless its reset-off bit is set) and ADSR.
   proc sound_tables() {
     if !L.pwresetsw || insctrl & 0x40 == 0 {
-      pwtpos := mem[zp + 0x0A];
+      pwtpos := instrument.pw_start;
     }
     if !L.filtresetsw || !neg(insctrl) {
       setfltp();
     }
     if L.adsr_ad_first {
-      sidg_ad := mem[zp + 3];
-      sidg_sr := mem[zp + 4];
+      sidg_ad := instrument.ad;
+      sidg_sr := instrument.sr;
     } else {
-      sidg_sr := mem[zp + 4];
-      sidg_ad := mem[zp + 3];
+      sidg_sr := instrument.sr;
+      sidg_ad := instrument.ad;
     }
   }
 
@@ -870,11 +904,12 @@ machine voice[x in 0..L.chn] {
   // stops the filter program it controls), and any other row makes the voice the
   // filter's controller from that row.
   proc setfltp() {
-    let y = mem[zp + 0x0B];
+    let y = instrument.filter_start;
     let row = mem[zp + u16(y)];
     if row != 0xFF {
-      if row != 0 {
-        fltctrl := x * 7;
+      let claims = row != 0;
+      react filter_owner on note(x * 7, 0xFF, claims);
+      if claims {
         fltposi := y;
       }
       let on = flswtbl | fswitch;
@@ -883,7 +918,7 @@ machine voice[x in 0..L.chn] {
         return;
       }
     }
-    if L.filter_stop_rewinds && x * 7 == fltctrl {
+    if L.filter_stop_rewinds && filter_owner.mine {
       fltposi := y;
     }
     fswitch := flswtb2 & fswitch;
@@ -1019,83 +1054,11 @@ machine voice[x in 0..L.chn] {
     freqhi := freqhi + freqmodh + u8(c1);
   }
 
-  // FILTPRG: the filter table of the voice that controls the filter. A row below
-  // $80 sweeps the cutoff by its signed second column for that many frames (with
-  // fine sweep, three bits below the high byte); $80..$FD sets band, resonance and
-  // cutoff; $FE jumps; $FF stops. The third column is the keyboard track.
+  // FILTPRG: the filter table, for the voice that owns the filter.
   proc filtprg() {
-    if x * 7 != fltctrl {
-      return;
+    if filter_owner.mine {
+      fire filter;
     }
-    let y = fltposi;
-    let a = mem[zp + u16(y)];
-    if !neg(a) {
-      y += 1;
-      if a == cwepcnt {
-        fladvan(y);
-        return;
-      }
-      cwepcnt += 1;
-      let step = mem[zp + u16(y)];
-      let c = false;
-      let hi_step = step;
-      if L.finefiltsweep {
-        if !neg(step) {
-          let fine = (step & 7) + ctflgho;
-          c := fine >= 8;
-          ctflgho := fine & 7;
-          hi_step := mem[zp + u16(y)] >> 3;
-        } else {
-          let low = ctflgho;
-          c := carry(step | 0xF8, low);
-          ctflgho := ((step | 0xF8) + low) & 7;
-          hi_step := ((mem[zp + u16(y)] ^ 0xFF) >> 3) ^ 0xFF;
-        }
-      }
-      ctfhgho := hi_step + ctfhgho + u8(c);
-      return;
-    }
-    if a == TABLE_JUMP {
-      y += 1;
-      let target = mem[zp + u16(y)];
-      if target == fltposi {
-        return;
-      }
-      y := target;
-      a := mem[zp + u16(y)];
-      if !neg(a) {
-        setfpos(y);
-        return;
-      }
-    } elif a > TABLE_JUMP {
-      return;
-    }
-    fltband := a & 0x70;
-    resonib := a << 4;
-    y += 1;
-    ctfhgho := mem[zp + u16(y)];
-    if L.finefiltsweep {
-      ctflgho := 0;
-    }
-    fladvan(y);
-  }
-
-  proc fladvan(at: u8) {
-    let y = at + 1;
-    if L.filtkbtrack {
-      let a = mem[zp + u16(y)];
-      if L.kbtrack_fswitch && neg(a) && a < 0x90 {
-        fswitch := a & 0x0F;
-        a := 0;
-      }
-      ckbdtrk := a;
-    }
-    setfpos(y + 1);
-  }
-
-  proc setfpos(y: u8) {
-    fltposi := y;
-    cwepcnt := 0;
   }
 
   // SETPWID then WFARPTB, with the accumulator and carry the PW table leaves.
@@ -1104,73 +1067,13 @@ machine voice[x in 0..L.chn] {
     let out = wfarptb(pwlogho, c);
   }
 
-  // SETPWID: the PW table. A row below $80 sweeps the pulse width by its signed
-  // second column for that many frames; $80..$FD sets it; $FE jumps; $FF stops. The
-  // third column is the PW keyboard track, which scales the high nibble by the
-  // note. Returns the carry the code leaves.
+  // SETPWID: the PW table's row, then the keyboard track and the PW registers. Returns the
+  // carry the code leaves.
   proc setpwid() -> bool {
-    let c = pw_rows();
+    let c = false;
+    react pw_table on pulse() -> c;
     let out = endpwtb(c);
     return out;
-  }
-
-  // SETPWID up to ENDPWTB: the table row. Returns the carry the code leaves there.
-  proc pw_rows() -> bool {
-    let y = pwtpos;
-    let a = mem[zp + u16(y)];
-    let c = false;
-    let advance = false;
-    let set = false;
-    if !neg(a) {
-      y += 1;
-      if a == pweepcnt {
-        c := true;
-        advance := true;
-      } else {
-        pweepcnt += 1;
-        let step = mem[zp + u16(y)];
-        if neg(step) {
-          pwhigho -= 1;
-        }
-        let lo = pwlogho;
-        c := carry(step, lo);
-        pwlogho := step + lo;
-        if c {
-          pwhigho += 1;
-        }
-      }
-    } elif a == TABLE_JUMP {
-      y += 1;
-      let target = mem[zp + u16(y)];
-      c := target >= pwtpos;
-      if target != pwtpos {
-        y := target;
-        a := mem[zp + u16(y)];
-        if !neg(a) {
-          sepwpos(y);
-        } else {
-          set := true;
-        }
-      }
-    } elif a < TABLE_JUMP {
-      set := true;
-    } else {
-      c := true;
-    }
-    if set {
-      pwhigho := a & 0x7F;
-      y += 1;
-      pwlogho := mem[zp + u16(y)];
-      advance := true;
-    }
-    if advance {
-      y += 1;
-      if L.pwkeybtrack {
-        pkbdtrk := mem[zp + u16(y)];
-      }
-      sepwpos(y + 1);
-    }
-    return c;
   }
 
   // ENDPWTB: the PW keyboard track (the note scales the high nibble), then the PW
@@ -1199,19 +1102,6 @@ machine voice[x in 0..L.chn] {
     return c;
   }
 
-  // SETPWID up to WFARPTB.
-  proc at_pw_rows() {
-    let c = pw_rows();
-  }
-
-  proc at_endpwtb() {
-    let c = endpwtb(cpu.c);
-  }
-
-  proc sepwpos(y: u8) {
-    pwtpos := y;
-    pweepcnt := 0;
-  }
 
   // WFARPTB: the waveform/arpeggio table every ARPSPED+1 frames, then the pitch
   // and waveform registers. Returns the carry the code leaves.
@@ -1348,7 +1238,7 @@ machine voice[x in 0..L.chn] {
     let y = curins;
     let c1 = point_lo(insl1[y]);
     let ptr = point_hi(insh1[y], c1);
-    let speed = mem[zp + 7];
+    let speed = instrument.arp_speed;
     if neg(speed) {
       filtprg();
     } elif speed & 0x40 == 0 {
@@ -1363,12 +1253,12 @@ machine voice[x in 0..L.chn] {
   // SETVIB0 / SETVIB1 / SETVIBR: the instrument's vibrato delay, then its vibrato
   // frequency (low nibble, doubled) and amplitude (high nibble) as SETVAMP's.
   proc setvib0() {
-    videlcnt := mem[zp + 6];
+    videlcnt := instrument.vibrato_delay;
     setvib1();
   }
 
   proc setvib1() {
-    setvibr(mem[zp + 5]);
+    setvibr(instrument.vibrato);
   }
 
   proc setvibr(a: u8) {
@@ -1414,7 +1304,7 @@ machine voice[x in 0..L.chn] {
 
   // FORCVIB: the vibrato type of the instrument's control byte.
   proc forcvib() {
-    slidevib := mem[zp] & 0x30;
+    slidevib := instrument.control & 0x30;
   }
 
   // NOTE_FX: a note-column effect. $60..$77 sets the vibrato amplitude; $78..$7F
@@ -1468,7 +1358,7 @@ machine voice[x in 0..L.chn] {
   proc ngateof() {
     let pos = 0;
     if L.gateoffptr {
-      pos := mem[zp + 0x0C];
+      pos := instrument.gateoff_wf;
     }
     if pos != 0 {
       wftpos := pos;
@@ -1477,12 +1367,12 @@ machine voice[x in 0..L.chn] {
       wfghost := 0xFE & wfghost;
     }
     if L.gateoffptr {
-      let pw = mem[zp + 0x0D];
+      let pw = instrument.gateoff_pw;
       if pw != 0 {
         pwtpos := pw;
       }
-      if x * 7 == fltctrl {
-        let flt = mem[zp + 0x0E];
+      if filter_owner.mine {
+        let flt = instrument.gateoff_filter;
         if flt != 0 {
           fltposi := flt;
         }
@@ -1539,7 +1429,7 @@ machine voice[x in 0..L.chn] {
       if L.allghostregs {
         sidg_ad := setnibl(sidg_ad);
       } else {
-        sidg_ad := setnibl(mem[zp + 3]);
+        sidg_ad := setnibl(instrument.ad);
       }
     } elif n == 4 {
       wfghost := setnibh(wfghost);
@@ -1553,7 +1443,7 @@ machine voice[x in 0..L.chn] {
       if L.allghostregs {
         sidg_sr := setnibl(sidg_sr);
       } else {
-        sidg_sr := setnibl(mem[zp + 4]);
+        sidg_sr := setnibl(instrument.sr);
       }
     } elif n == 7 {
       smalfx7(v);
@@ -1686,13 +1576,13 @@ machine voice[x in 0..L.chn] {
       }
     } elif n == 0x0A {
       let m = multi3c(a);
-      pwtpos := lo(m) + mem[zp + 0x0A] + hi(m);
+      pwtpos := lo(m) + instrument.pw_start + hi(m);
       if L.table_fx_resets {
         pweepcnt := 0;
       }
     } elif n == 0x0B {
       let m = multi3c(a);
-      fltposi := lo(m) + mem[zp + 0x0B] + hi(m);
+      fltposi := lo(m) + instrument.filter_start + hi(m);
       if L.table_fx_resets {
         cwepcnt := 0;
       }
@@ -1817,68 +1707,20 @@ machine voice[x in 0..L.chn] {
     trdelay -= 1;
   }
 
-  // Entry points at the code's labels, with the inputs the code reads from the
-  // registers: the routine as a caller with those registers enters it. A dispatched
-  // effect is the one its column (CURNOT, CURFX2) names.
-  proc at_wfarptb() {
-    let out = wfarptb(cpu.a, cpu.c);
-  }
 
-  proc at_mulcntp() {
-    let out = mulcntp(cpu.c);
-  }
 
-  proc at_hardrst() {
-    hardrst(cpu.a);
-  }
 
-  proc at_setfmod() {
-    setfmod(cpu.a, cpu.z);
-  }
 
-  proc at_setvibr() {
-    setvibr(cpu.a);
-  }
 
-  proc at_seq_fx() {
-    seq_fx(cpu.a);
-  }
 
-  proc at_setseqa() {
-    setseqa(cpu.a);
-  }
 
-  proc at_traktmp() {
-    traktmp(cpu.a);
-  }
 
-  proc at_selntfx() {
-    selntfx(cpu.a);
-  }
 
-  proc at_note_effect() {
-    note_fx_at(curnot, cpu.a);
-  }
 
-  proc at_smalsel() {
-    smalsel(cpu.a);
-  }
 
-  proc at_small_effect() {
-    smallfx(curfx2 >> 4, cpu.a);
-  }
 
-  proc at_bigptfx() {
-    bigptfx(cpu.a);
-  }
 
-  proc at_big_effect() {
-    bigfx(curfx2, cpu.a, cpu.z);
-  }
 
-  proc at_cntply1() {
-    cntply1(cpu.y);
-  }
 }
 
 // COMMONREGS: the voices' ghost registers copied to the chip (a build with them),
@@ -1944,9 +1786,6 @@ machine subtune {
     }
   }
 
-  proc at_setstune() {
-    setstune(cpu.a);
-  }
 
   // SETSTUNE: each voice's orderlist read and the two main tempos from SUBTUNES.
   proc setstune(a: u8) {

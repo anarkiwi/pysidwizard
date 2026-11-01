@@ -22,28 +22,32 @@ from .playspec_effects import _effects, _sfx
 _SPEC_TEXT = resources.files(__package__).joinpath("specs/sidwizard.play").read_text()
 SPEC = parse_spec(_SPEC_TEXT)
 # The spec's per_proc cells, each placed at the layout field of its own name.
-_PER_PROC = frozenset(re.findall(r"cell (\w+):[^@;]+@\s*L\.\1\b[^;]*per_proc", _SPEC_TEXT))
+_PER_PROC = frozenset(
+    name
+    for decl in re.findall(r"cell \w+:[^;]*per_proc[^;]*;", _SPEC_TEXT)
+    for name in re.findall(r"L\.(\w+)", decl)
+)
 # Per_proc cells placed at a layout field derived from another one, with the offset.
 _DERIVED = {"zp": (("zp_lo", 0), ("zp_hi", 1))}
 # The spec procs that state each routine's accesses, for a routine's own variable address.
 _ROUTINE_PROCS: Dict[str, Tuple[str, ...]] = {
-    "TICK_0": ("tick_0",),
+    "TICK_0": ("tick_0", "row_prep", "row_tail"),
     "TICK_1": ("tick_1",),
     "TICK_2": ("tick_2", "chknote", "clegato", "legatoo"),
-    "the row reader": ("read_row",),
-    "PTN_SEQ": ("ptn_seq", "seq_step"),
-    "SEQ_FX": ("seq_fx", "at_seq_fx"),
-    "HARDRST": ("hardrst", "hrender", "at_hardrst"),
+    "the row reader": ("row_reader",),
+    "PTN_SEQ": ("ptn_seq", "seq_step", "row_reader"),
+    "SEQ_FX": ("seq_fx",),
+    "HARDRST": ("hardrst", "hrender"),
     "STRTSND": ("strtsnd", "startsound", "startchord", "sound_tables", "setfltp"),
     "VIBSLIDE": ("vibslide", "portame", "portend", "targetn", "dovibra", "subfreq", "addfreq"),
     "FILTPRG": ("filtprg", "fladvan", "setfpos"),
-    "SETPWID": ("setpwid", "sepwpos", "pw_table"),
-    "WFARPTB": ("wfarptb", "wftable", "relptch", "absptch", "at_wfarptb"),
-    "WRPITCH": ("wfarptb", "wftable", "relptch", "absptch", "at_wfarptb"),
-    "SETFMOD": ("setfmod", "at_setfmod"),
+    "SETPWID": ("setpwid", "endpwtb", "pw_table"),
+    "WFARPTB": ("wfarptb", "wftable", "relptch", "absptch"),
+    "WRPITCH": ("wfarptb", "wftable", "relptch", "absptch"),
+    "SETFMOD": ("setfmod",),
     "SETINBL": ("setnibl", "setinbh", "setnibh", "multi3c"),
-    "NOTE_FX": ("note_fx", "note_fx_at", "ngateof", "at_note_effect"),
-    "big effect $0e": ("bigfx", "at_big_effect"),
+    "NOTE_FX": ("note_fx", "note_fx_at", "ngateof"),
+    "big effect $0e": ("bigfx",),
     "PLAYER": ("sfx",),
 }
 
@@ -864,6 +868,9 @@ def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) 
     flags["play_gate"] = play_entry != player and entry in (None, play_entry)
     _hrender_exit(found, flags)
     _vars(found, flags)
+    columns = {found[n] for n in ("zp_note", "zp_inst", "zp_fx", "zp_value")}
+    if len(columns) > 1:
+        raise ValueError("SID-Wizard reads the pattern's columns through different pointers")
     if flags["sfx"]:
         _sfx(found)
     found["sid"] = found["sid_resfc"] - 0x17
