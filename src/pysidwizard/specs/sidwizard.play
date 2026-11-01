@@ -358,11 +358,13 @@ machine voice[x in 0..L.chn] {
   // in the compare (a counter far past a tempo byte with bit 7 set) sends TMPPOS back to the
   // program's start, TMPBASE. A build without tempo programs compares against one byte.
   signal due: bool = false;
+  signal ticks: u8 = 0;
 
   handler tempo_program on frame {
     let tempo = ite(L.tempoprgsupp, tempotbl[tmppos + 1], tempo_byte);
     let diff = spdcnt - tempo;
     due := diff == 0 || neg((spdcnt ^ tempo) & (spdcnt ^ diff));
+    ticks := ite(due || spdcnt == 0, 0, spdcnt);
     if L.tempoprgsupp {
       if diff == 0 {
         tmppos += 1;
@@ -377,7 +379,7 @@ machine voice[x in 0..L.chn] {
   // DOTRACK: the counter's tick (the count before its step) picks the voice's work.
   proc dotrack() {
     fire frame;
-    let count = spdcnt - 1;
+    let count = ticks;
     if count == 0 {
       return;
     }
