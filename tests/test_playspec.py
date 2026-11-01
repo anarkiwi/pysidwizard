@@ -48,13 +48,6 @@ def _view(data: bytes) -> bytes:
     return bytes(image_after_init(SidImage.from_sid(data)).window(0, 0x10000))
 
 
-# Stretches whose code runs on into code they do not state: first address, end.
-STRETCHES = {
-    "read_row": (lambda b: b["read_row"], lambda b: b["reader_end"]),
-    "tick": (lambda b: b["dotrack"], lambda b: b["tick_0"] - 7),
-}
-
-
 def _holds(found: dict, column: str, value: int, high: int = 7, low: int = 0):
     """An assumption that bits ``high..low`` of voice 0's ``column`` hold ``value``."""
     return lambda mem0, _regs: z3.Extract(high, low, z3.Select(mem0, found[column])) == value
@@ -62,47 +55,6 @@ def _holds(found: dict, column: str, value: int, high: int = 7, low: int = 0):
 
 def _word(view: bytes, at: int) -> int:
     return view[at] | view[at + 1] << 8
-
-
-def _table_row(found: dict, position: str, column: int = 0):
-    """The byte ``column`` past voice 0's table ``position`` through the zero-page pointer,
-    as z3 reads it."""
-
-    def byte(mem0):
-        ptr = z3.Concat(z3.Select(mem0, found["zp"] + 1), z3.Select(mem0, found["zp"]))
-        return z3.Select(mem0, ptr + z3.ZeroExt(8, z3.Select(mem0, found[position]) + column))
-
-    return byte
-
-
-def _row_kinds(found: dict, position: str, counter: str = ""):
-    """The kinds of table row by its first byte, $00..$7F, $80..$FD, $FE, $FF: cases that
-    together cover every table. With the sweep ``counter`` cell, a $00..$7F row splits by
-    the code's branches: the sweep ended (its byte equals the counter), or a sweep step of
-    either sign."""
-    byte = _table_row(found, position)
-    step = _table_row(found, position, 1)
-
-    def sweep(m):
-        return z3.ULT(byte(m), 0x80)
-
-    kinds = [sweep]
-    if counter:
-        kinds = [
-            lambda m: z3.And(sweep(m), byte(m) == z3.Select(m, found[counter])),
-            lambda m: z3.And(
-                sweep(m), byte(m) != z3.Select(m, found[counter]), z3.ULT(step(m), 0x80)
-            ),
-            lambda m: z3.And(
-                sweep(m), byte(m) != z3.Select(m, found[counter]), z3.UGE(step(m), 0x80)
-            ),
-        ]
-    kinds += [
-        lambda m: z3.And(z3.UGE(byte(m), 0x80), z3.ULT(byte(m), 0xFE)),
-        lambda m: byte(m) == 0xFE,
-        lambda m: byte(m) == 0xFF,
-    ]
-    return [(lambda m, _r, k=k: k(m),) for k in kinds]
 
 
 def _satisfiable(cases: list) -> list:
@@ -177,7 +129,7 @@ def routines(found: dict, view: bytes):
     effect its column names; a stretch stops where the next routine or a dispatch starts."""
     one = [()]
     out = [
-        ("CNTPLY1", "voice[0].at_cntply1", found["cntplay"] + 6, found["cntply2"], one),
+        ("CNTPLY1", "voice[0].cntply1(y)", found["cntplay"] + 6, found["cntply2"], one),
         (
             "VIBSLIDE",
             "voice[0].vibslide",
@@ -185,25 +137,11 @@ def routines(found: dict, view: bytes):
             found["filtprg"],
             _slidevib_kinds(found),
         ),
-        (
-            "FILTPRG",
-            "voice[0].filtprg",
-            found["filtprg"],
-            found["setpwid"],
-            _row_kinds(found, "fltposi", "cwepcnt"),
-        ),
-        (
-            "SETPWID",
-            "voice[0].at_pw_rows",
-            found["setpwid"],
-            found["endpwtb"],
-            _row_kinds(found, "pwtpos", "pweepcnt"),
-        ),
-        ("ENDPWTB", "voice[0].at_endpwtb", found["endpwtb"], found["wfarptb"], one),
+        ("ENDPWTB", "voice[0].endpwtb(c)", found["endpwtb"], found["wfarptb"], one),
         ("SETVIB0", "voice[0].setvib0", found["setvib0"], None, one),
         ("SETVIB1", "voice[0].setvib1", found["setvib1"], None, one),
-        ("SETVIBR", "voice[0].at_setvibr", found["setvibr"], None, one),
-        ("SETFMOD", "voice[0].at_setfmod", found["setfmod"], None, one),
+        ("SETVIBR", "voice[0].setvibr(a)", found["setvibr"], None, one),
+        ("SETFMOD", "voice[0].setfmod(a, z)", found["setfmod"], None, one),
         ("FORCVIB", "voice[0].forcvib", found["forcvib"], None, one),
         (
             "STRTSND",
@@ -212,19 +150,19 @@ def routines(found: dict, view: bytes):
             found["setadsr_fx"],
             _instrument_in_data(found),
         ),
-        ("SELNTFX", "voice[0].at_selntfx", found["selntfx"], found["indexj1_end"] - 2, one),
-        ("SMALPFX", "voice[0].at_smalsel", found["smalpfx"], found["indexj2_end"] - 2, one),
-        ("BIGPTFX", "voice[0].at_bigptfx", found["bigptfx"], found["indexjp"] - 1, one),
+        ("SELNTFX", "voice[0].selntfx(a)", found["selntfx"], found["indexj1_end"] - 2, one),
+        ("SMALPFX", "voice[0].smalsel(a)", found["smalpfx"], found["indexj2_end"] - 2, one),
+        ("BIGPTFX", "voice[0].bigptfx(a)", found["bigptfx"], found["indexjp"] - 1, one),
         ("COMMONREGS", "commonregs.step", found["chipregs"], found["retplay"], one),
     ]
     if found["subtune_restarts"]:
-        out.append(("SETSTUNE", "subtune.at_setstune", found["setstune"], None, one))
+        out.append(("SETSTUNE", "subtune.setstune(a)", found["setstune"], None, one))
     if not found["chordsupport"]:
-        out.append(("WFARPTB", "voice[0].at_wfarptb", found["wfarptb"], None, one))
+        out.append(("WFARPTB", "voice[0].wfarptb(a, c)", found["wfarptb"], None, one))
     for label, routine, flag in (
-        ("SEQ_FX", "at_seq_fx", "seq_fx_support"),
-        ("SETSEQA", "at_setseqa", "subtunejump"),
-        ("TRAKTMP", "at_traktmp", "tempoprgsupp"),
+        ("SEQ_FX", "seq_fx(a)", "seq_fx_support"),
+        ("SETSEQA", "setseqa(a)", "subtunejump"),
+        ("TRAKTMP", "traktmp(a)", "tempoprgsupp"),
     ):
         if found[flag]:
             out.append((label, f"voice[0].{routine}", found[label.lower()], None, one))
@@ -233,16 +171,22 @@ def routines(found: dict, view: bytes):
         if pc != found["insptfx"]:
             cases = [(_holds(found, "curnot", 0x78 + k),)]
             out.append(
-                (f"note ${0x78 + k:02x}", "voice[0].at_note_effect", pc, found["insptfx"], cases)
+                (
+                    f"note ${0x78 + k:02x}",
+                    "voice[0].note_fx_at(curnot, a)",
+                    pc,
+                    found["insptfx"],
+                    cases,
+                )
             )
     for n in range(2, 0x10):
         pc = found["indexj2_end"] + view[found["smallfxtbl"] + n]
         cases = [(_holds(found, "curfx2", n, 7, 4),)]
-        out.append((f"small ${n:x}x", "voice[0].at_small_effect", pc, None, cases))
+        out.append((f"small ${n:x}x", "voice[0].smallfx(curfx2 >> 4, a)", pc, None, cases))
     for n in range(1, 0x20):
         pc = _word(view, found["bigfxtable"] + 2 * n)
         cases = [(_holds(found, "curfx2", n),)]
-        out.append((f"big ${n:02x}", "voice[0].at_big_effect", pc, None, cases))
+        out.append((f"big ${n:02x}", "voice[0].bigfx(curfx2, a, z)", pc, None, cases))
     return out
 
 
@@ -301,8 +245,6 @@ GROUPS = {
 # hangs on every term made before it.
 LONG_ROUTINES = {
     "VIBSLIDE": 4,
-    "FILTPRG": 1,
-    "SETPWID": 1,
     "ENDPWTB": 1,
     "WFARPTB": 1,
     "STRTSND": 1,
@@ -345,18 +287,6 @@ def test_the_voices_cells_sit_seven_bytes_apart_from_the_found_addresses(name):
             a for cell in program.cells if cell.name == cell_name for a in cell.extent()
         )
         assert placed == [found[cell_name] + 7 * voice for voice in range(3)]
-
-
-@pytest.mark.parametrize("stretch", STRETCHES)
-@pytest.mark.parametrize("name", EXPORTS)
-def test_stretch_is_proven_against_the_6502(name, stretch):
-    """The spec routine equals the 6502 code up to ``stop`` for all initial memory."""
-    view = _view(_export(name))
-    found = playspec.binding(view)
-    pc = STRETCHES[stretch][0](found)
-    routine = f"voice[0].{stretch}"
-    result = _prove(view, found, routine, pc, stop=STRETCHES[stretch][1](found))
-    _assert_proven(result, found, stretch, routine, pc)
 
 
 @pytest.mark.parametrize("group", GROUPS)

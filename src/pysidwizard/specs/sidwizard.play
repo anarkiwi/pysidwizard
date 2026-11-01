@@ -1102,9 +1102,6 @@ machine voice[x in 0..L.chn] {
     return c;
   }
 
-  proc at_endpwtb() {
-    let c = endpwtb(cpu.c);
-  }
 
   // WFARPTB: the waveform/arpeggio table every ARPSPED+1 frames, then the pitch
   // and waveform registers. Returns the carry the code leaves.
@@ -1710,68 +1707,20 @@ machine voice[x in 0..L.chn] {
     trdelay -= 1;
   }
 
-  // Entry points at the code's labels, with the inputs the code reads from the
-  // registers: the routine as a caller with those registers enters it. A dispatched
-  // effect is the one its column (CURNOT, CURFX2) names.
-  proc at_wfarptb() {
-    let out = wfarptb(cpu.a, cpu.c);
-  }
 
-  proc at_mulcntp() {
-    let out = mulcntp(cpu.c);
-  }
 
-  proc at_hardrst() {
-    hardrst(cpu.a);
-  }
 
-  proc at_setfmod() {
-    setfmod(cpu.a, cpu.z);
-  }
 
-  proc at_setvibr() {
-    setvibr(cpu.a);
-  }
 
-  proc at_seq_fx() {
-    seq_fx(cpu.a);
-  }
 
-  proc at_setseqa() {
-    setseqa(cpu.a);
-  }
 
-  proc at_traktmp() {
-    traktmp(cpu.a);
-  }
 
-  proc at_selntfx() {
-    selntfx(cpu.a);
-  }
 
-  proc at_note_effect() {
-    note_fx_at(curnot, cpu.a);
-  }
 
-  proc at_smalsel() {
-    smalsel(cpu.a);
-  }
 
-  proc at_small_effect() {
-    smallfx(curfx2 >> 4, cpu.a);
-  }
 
-  proc at_bigptfx() {
-    bigptfx(cpu.a);
-  }
 
-  proc at_big_effect() {
-    bigfx(curfx2, cpu.a, cpu.z);
-  }
 
-  proc at_cntply1() {
-    cntply1(cpu.y);
-  }
 }
 
 // COMMONREGS: the voices' ghost registers copied to the chip (a build with them),
@@ -1837,9 +1786,6 @@ machine subtune {
     }
   }
 
-  proc at_setstune() {
-    setstune(cpu.a);
-  }
 
   // SETSTUNE: each voice's orderlist read and the two main tempos from SUBTUNES.
   proc setstune(a: u8) {
