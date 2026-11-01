@@ -78,6 +78,26 @@ cell zp_hi: u8 @ L.zp_hi per_proc;
 // separately: an export relocated only in part addresses it differently.
 cell zp_note: u16 @ L.zp_note per_proc;
 
+// The instrument the zero-page pointer selects, by field.
+view instrument @ zp {
+  control @ 0x00;
+  hr_ad @ 0x01;
+  hr_sr @ 0x02;
+  ad @ 0x03;
+  sr @ 0x04;
+  vibrato @ 0x05;
+  vibrato_delay @ 0x06;
+  arp_speed @ 0x07;
+  chord @ 0x08;
+  octave @ 0x09;
+  pw_start @ 0x0a;
+  filter_start @ 0x0b;
+  gateoff_wf @ 0x0c;
+  gateoff_pw @ 0x0d;
+  gateoff_filter @ 0x0e;
+  first_wave @ 0x0f;
+}
+
 // Song data, read through each instruction's own operand.
 cell ptnl1: u8[256] @ L.p_ptnl1 ro;
 cell ptnh1: u8[256] @ L.p_ptnh1 ro;
@@ -622,7 +642,7 @@ machine voice[x in 0..L.chn] {
       }
       let carry_lo = point_lo(insl2[y]);
       let ptr = point_hi(insh2[y], carry_lo);
-      if mem[zp] & timer == 0 {
+      if instrument.control & timer == 0 {
         hrender(c);
         return;
       }
@@ -634,21 +654,21 @@ machine voice[x in 0..L.chn] {
       c := y >= LEGATO;
     }
     if L.hrender_inline && L.hrgtoff_or8 {
-      if mem[zp] & 4 != 0 {
+      if instrument.control & 4 != 0 {
         ptngate := 0xFE;
         wfghost := wfghost & 0xFE | 0x08;
       }
-      sidg_ad := mem[zp + 1];
-      sidg_sr := mem[zp + 2];
+      sidg_ad := instrument.hr_ad;
+      sidg_sr := instrument.hr_sr;
       sidg_wave := wfghost;
       return;
     }
     if L.hrender_inline {
-      if mem[zp] & 4 != 0 {
+      if instrument.control & 4 != 0 {
         wfghost := 0x18;
       }
-      sidg_ad := mem[zp + 1];
-      sidg_sr := mem[zp + 2];
+      sidg_ad := instrument.hr_ad;
+      sidg_sr := instrument.hr_sr;
       ptngate := 0xFE;
       wfghost &= 0xFE;
       sidg_wave := wfghost;
@@ -658,13 +678,13 @@ machine voice[x in 0..L.chn] {
     wfghost &= 0xFE;
     if L.hardrestypes {
       if L.hr_ad_first {
-        sidg_ad := mem[zp + 1];
-        sidg_sr := mem[zp + 2];
+        sidg_ad := instrument.hr_ad;
+        sidg_sr := instrument.hr_sr;
       } else {
-        sidg_sr := mem[zp + 2];
-        sidg_ad := mem[zp + 1];
+        sidg_sr := instrument.hr_sr;
+        sidg_ad := instrument.hr_ad;
       }
-      if mem[zp] & 4 != 0 {
+      if instrument.control & 4 != 0 {
         wfghost := 0x18;
         sidg_wave := 0x18;
         return;
@@ -764,7 +784,7 @@ machine voice[x in 0..L.chn] {
   proc clegato(note: u8) {
     let a = note;
     if L.octaveshift {
-      a += mem[zp + 9];
+      a += instrument.octave;
     }
     if L.transposesupp {
       a += transp;
@@ -809,7 +829,7 @@ machine voice[x in 0..L.chn] {
     if L.sound_resets_flshift {
       flshift := 0;
     }
-    let ctrl = mem[zp];
+    let ctrl = instrument.control;
     if L.pwresetsw || L.filtresetsw {
       ctrl &= tablrst;
     }
@@ -828,7 +848,7 @@ machine voice[x in 0..L.chn] {
           } else {
             sidg_freqhi := freqtbh[dpitch];
           }
-          wfghost := mem[zp + 0x0F];
+          wfghost := instrument.first_wave;
         }
       }
     } else {
@@ -840,7 +860,7 @@ machine voice[x in 0..L.chn] {
       arpscnt := 0xFF;
     }
     if L.arpspeedsupp {
-      arpsped := mem[zp + 7];
+      arpsped := instrument.arp_speed;
     }
     if L.sound_tables_first {
       startchord();
@@ -854,7 +874,7 @@ machine voice[x in 0..L.chn] {
 
   proc startchord() {
     if L.chordsupport {
-      let chord = mem[zp + 8];
+      let chord = instrument.chord;
       curchord := chord;
       chordpos := chdp1[chord];
     }
@@ -863,17 +883,17 @@ machine voice[x in 0..L.chn] {
   // The instrument's PW and filter tables (each unless its reset-off bit is set) and ADSR.
   proc sound_tables() {
     if !L.pwresetsw || insctrl & 0x40 == 0 {
-      pwtpos := mem[zp + 0x0A];
+      pwtpos := instrument.pw_start;
     }
     if !L.filtresetsw || !neg(insctrl) {
       setfltp();
     }
     if L.adsr_ad_first {
-      sidg_ad := mem[zp + 3];
-      sidg_sr := mem[zp + 4];
+      sidg_ad := instrument.ad;
+      sidg_sr := instrument.sr;
     } else {
-      sidg_sr := mem[zp + 4];
-      sidg_ad := mem[zp + 3];
+      sidg_sr := instrument.sr;
+      sidg_ad := instrument.ad;
     }
   }
 
@@ -882,7 +902,7 @@ machine voice[x in 0..L.chn] {
   // stops the filter program it controls), and any other row makes the voice the
   // filter's controller from that row.
   proc setfltp() {
-    let y = mem[zp + 0x0B];
+    let y = instrument.filter_start;
     let row = mem[zp + u16(y)];
     if row != 0xFF {
       let claims = row != 0;
@@ -1219,7 +1239,7 @@ machine voice[x in 0..L.chn] {
     let y = curins;
     let c1 = point_lo(insl1[y]);
     let ptr = point_hi(insh1[y], c1);
-    let speed = mem[zp + 7];
+    let speed = instrument.arp_speed;
     if neg(speed) {
       filtprg();
     } elif speed & 0x40 == 0 {
@@ -1234,12 +1254,12 @@ machine voice[x in 0..L.chn] {
   // SETVIB0 / SETVIB1 / SETVIBR: the instrument's vibrato delay, then its vibrato
   // frequency (low nibble, doubled) and amplitude (high nibble) as SETVAMP's.
   proc setvib0() {
-    videlcnt := mem[zp + 6];
+    videlcnt := instrument.vibrato_delay;
     setvib1();
   }
 
   proc setvib1() {
-    setvibr(mem[zp + 5]);
+    setvibr(instrument.vibrato);
   }
 
   proc setvibr(a: u8) {
@@ -1285,7 +1305,7 @@ machine voice[x in 0..L.chn] {
 
   // FORCVIB: the vibrato type of the instrument's control byte.
   proc forcvib() {
-    slidevib := mem[zp] & 0x30;
+    slidevib := instrument.control & 0x30;
   }
 
   // NOTE_FX: a note-column effect. $60..$77 sets the vibrato amplitude; $78..$7F
@@ -1339,7 +1359,7 @@ machine voice[x in 0..L.chn] {
   proc ngateof() {
     let pos = 0;
     if L.gateoffptr {
-      pos := mem[zp + 0x0C];
+      pos := instrument.gateoff_wf;
     }
     if pos != 0 {
       wftpos := pos;
@@ -1348,12 +1368,12 @@ machine voice[x in 0..L.chn] {
       wfghost := 0xFE & wfghost;
     }
     if L.gateoffptr {
-      let pw = mem[zp + 0x0D];
+      let pw = instrument.gateoff_pw;
       if pw != 0 {
         pwtpos := pw;
       }
       if filter_owner.mine {
-        let flt = mem[zp + 0x0E];
+        let flt = instrument.gateoff_filter;
         if flt != 0 {
           fltposi := flt;
         }
@@ -1410,7 +1430,7 @@ machine voice[x in 0..L.chn] {
       if L.allghostregs {
         sidg_ad := setnibl(sidg_ad);
       } else {
-        sidg_ad := setnibl(mem[zp + 3]);
+        sidg_ad := setnibl(instrument.ad);
       }
     } elif n == 4 {
       wfghost := setnibh(wfghost);
@@ -1424,7 +1444,7 @@ machine voice[x in 0..L.chn] {
       if L.allghostregs {
         sidg_sr := setnibl(sidg_sr);
       } else {
-        sidg_sr := setnibl(mem[zp + 4]);
+        sidg_sr := setnibl(instrument.sr);
       }
     } elif n == 7 {
       smalfx7(v);
@@ -1557,13 +1577,13 @@ machine voice[x in 0..L.chn] {
       }
     } elif n == 0x0A {
       let m = multi3c(a);
-      pwtpos := lo(m) + mem[zp + 0x0A] + hi(m);
+      pwtpos := lo(m) + instrument.pw_start + hi(m);
       if L.table_fx_resets {
         pweepcnt := 0;
       }
     } elif n == 0x0B {
       let m = multi3c(a);
-      fltposi := lo(m) + mem[zp + 0x0B] + hi(m);
+      fltposi := lo(m) + instrument.filter_start + hi(m);
       if L.table_fx_resets {
         cwepcnt := 0;
       }
