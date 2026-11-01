@@ -22,7 +22,11 @@ from .playspec_effects import _effects, _sfx
 _SPEC_TEXT = resources.files(__package__).joinpath("specs/sidwizard.play").read_text()
 SPEC = parse_spec(_SPEC_TEXT)
 # The spec's per_proc cells, each placed at the layout field of its own name.
-_PER_PROC = frozenset(re.findall(r"cell (\w+):[^@;]+@\s*L\.\1\b[^;]*per_proc", _SPEC_TEXT))
+_PER_PROC = frozenset(
+    name
+    for decl in re.findall(r"cell \w+:[^;]*per_proc[^;]*;", _SPEC_TEXT)
+    for name in re.findall(r"L\.(\w+)", decl)
+)
 # Per_proc cells placed at a layout field derived from another one, with the offset.
 _DERIVED = {"zp": (("zp_lo", 0), ("zp_hi", 1))}
 # The spec procs that state each routine's accesses, for a routine's own variable address.
@@ -37,7 +41,7 @@ _ROUTINE_PROCS: Dict[str, Tuple[str, ...]] = {
     "STRTSND": ("strtsnd", "startsound", "startchord", "sound_tables", "setfltp"),
     "VIBSLIDE": ("vibslide", "portame", "portend", "targetn", "dovibra", "subfreq", "addfreq"),
     "FILTPRG": ("filtprg", "fladvan", "setfpos"),
-    "SETPWID": ("setpwid", "sepwpos", "pw_table"),
+    "SETPWID": ("setpwid", "endpwtb", "at_endpwtb", "pw_table"),
     "WFARPTB": ("wfarptb", "wftable", "relptch", "absptch", "at_wfarptb"),
     "WRPITCH": ("wfarptb", "wftable", "relptch", "absptch", "at_wfarptb"),
     "SETFMOD": ("setfmod", "at_setfmod"),
