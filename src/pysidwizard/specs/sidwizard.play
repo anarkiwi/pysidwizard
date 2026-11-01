@@ -63,6 +63,8 @@ const NOTE_PORTA = 0xFF;
 
 event pulse: tick;
 event filter: tick;
+event advance: tick;
+event pattern_end: tick;
 
 // The zero-page pointer the player reads instruments and patterns through, and an SWP
 // export's base its song tables' offsets are from.
@@ -75,9 +77,6 @@ cell zp_hi: u8 @ L.zp_hi per_proc;
 // The pattern pointer the voice's pattern id selects. Each column's read names it
 // separately: an export relocated only in part addresses it differently.
 cell zp_note: u16 @ L.zp_note per_proc;
-cell zp_inst: u16 @ L.zp_inst per_proc;
-cell zp_fx: u16 @ L.zp_fx per_proc;
-cell zp_value: u16 @ L.zp_value per_proc;
 
 // Song data, read through each instruction's own operand.
 cell ptnl1: u8[256] @ L.p_ptnl1 ro;
@@ -355,10 +354,6 @@ machine voice[x in 0..L.chn] {
 
   counter beat: spdcnt { on frame += 1; reload 1; wrap when due || spdcnt == 0 -> row; }
 
-  handler row_tick on row {
-    tick_0();
-  }
-
   // DOTRACK: the counter's tick (the count before its step) picks the voice's work.
   proc dotrack() {
     fire frame;
@@ -375,11 +370,9 @@ machine voice[x in 0..L.chn] {
     }
   }
 
-  // TICK_0: the row tick. The pattern's pointer, the one-shot columns cleared, the
-  // delayed main volume and track tempo of the orderlist effects, then the row; the
-  // hard restart of the coming note follows (two ticks ahead, as the instrument's
-  // control byte bit 1 asks), or at a tempo below 2 the orderlist step.
-  proc tick_0() {
+  // The row tick: the pattern's pointer, the one-shot columns cleared and the delayed main
+  // volume and track tempo of the orderlist effects, then the row is read.
+  handler row_prep on row {
     let p = curptn;
     let carry_lo = point_lo(ptnl1[p]);
     let ptr = point_hi(ptnh1[p], carry_lo);
@@ -395,7 +388,30 @@ machine voice[x in 0..L.chn] {
         seqtempo := 0;
       }
     }
-    read_row();
+  }
+
+  // One row of the NOP-packed pattern stream: a note byte, then an instrument byte if the
+  // note's bit 7 is set, then an effect byte if the instrument's bit 7 is set, then a value
+  // byte if the effect is below $20. A note byte of $70..$77 starts a run of 2..9 empty rows,
+  // whose rest PACKCNT counts down. PTNPOS keeps the offset of the last byte read.
+  cursor row_reader @ zp_note pos ptnpos last {
+    on row next;
+    on pattern_end reset;
+    on advance settle;
+    run RUN_MIN..RUN_MAX - 1 base RUN_BASE -> packcnt;
+    field note -> curnot = note & 0x7F;
+    field inst when neg(note) -> curifx = inst & 0x7F when !neg(inst), curifx_long = inst & 0x7F when neg(inst);
+    field fx when neg(inst) -> curfx2 = fx;
+    field value when (fx & FX_VALUE_MASK) == 0 -> curval = value;
+  }
+
+  // Then the hard restart of the coming note (two ticks ahead, as the instrument's control
+  // byte bit 1 asks), or at a tempo below 2 the orderlist step.
+  handler row_tail on row {
+    tick_0();
+  }
+
+  proc tick_0() {
     if L.sfx && x == 2 && !neg(sfxtimer) {
       curfx2 := 0;
       curnot := 0;
@@ -418,49 +434,6 @@ machine voice[x in 0..L.chn] {
     hardrst(2);
   }
 
-  // One row of the NOP-packed pattern stream: a note byte, then an instrument byte
-  // if the note's bit 7 is set, then an effect byte if the instrument's bit 7 is set,
-  // then a value byte if the effect is below $20. A note byte of $70..$77 starts a run
-  // of 2..9 empty rows, whose rest PACKCNT counts down. PTNPOS keeps the offset of the
-  // last byte read.
-  proc read_row() {
-    stream note_col = zp_note @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
-    stream inst_col = zp_inst @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
-    stream fx_col = zp_fx @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
-    stream value_col = zp_value @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
-    let row = 0;
-    let y = 0;
-    if packcnt != 0 {
-      packcnt -= 1;
-    } else {
-      row := note_col[0];
-      if row >= RUN_MIN && row < RUN_MAX {
-        packcnt := row - RUN_BASE;
-        row := 0;
-      }
-    }
-    if !neg(row) {
-      curnot := row;
-    } else {
-      curnot := row & 0x7F;
-      y += 1;
-      let ins = inst_col[y];
-      if !neg(ins) {
-        curifx := ins;
-      } else {
-        curifx_long := ins & 0x7F;
-        y += 1;
-        let fx = fx_col[y];
-        curfx2 := fx;
-        if fx & FX_VALUE_MASK == 0 {
-          y += 1;
-          curval := value_col[y];
-        }
-      }
-    }
-    ptnpos += y;
-  }
-
   // TICK_1: the pattern's pointer again, then the pattern and orderlist step.
   proc tick_1() {
     let p = curptn;
@@ -475,21 +448,20 @@ machine voice[x in 0..L.chn] {
   // the rest are orderlist effects. The hard restart one tick ahead follows, or at a
   // tempo below 3 the row's columns.
   proc ptn_seq() {
-    let y = ptnpos;
     if L.transposesupp {
       transp := transp2;
     }
-    if packcnt == 0 {
-      y += 1;
-      if mem[zp + u16(y)] == PTN_END {
+    if row_reader.idle {
+      if row_reader.ahead == PTN_END {
         let playing = seq_step();
         if !playing {
           return;
         }
-        y := 0;
+        fire pattern_end;
+      } else {
+        fire advance;
       }
     }
-    ptnpos := y;
     if L.fastspeedbind {
       if neg((tmpt3[tmppos] & 0x7F) - 3) {
         tick_2();
