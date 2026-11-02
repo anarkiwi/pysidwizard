@@ -5,16 +5,18 @@
 spec sidwizard;
 
 layout {
-  swp_base, exptabh_m1, sid, sidg, freqlo, pwlogho, wfghost, ptngate, pweepcnt, packcnt,
-  spdcnt, seqpos, ptnpos, wftpos, pwtpos, arpscnt, curptn, curnot, dpitch, curifx,
-  curifx_long, curins, curfx2, curval, slidevib, freqmodl, videlcnt, vibfrequ, vibracnt,
-  transp, tmpbase, tmppos, arpsped, pkbdtrk, curchord, chordpos, flswtbl, flswtb2, trktmpos,
-  seqtempo, transp2, detuner, p_ptnl1, p_ptnh1, p_insl3, p_insh3, tempotbl, p_tmpp1, p_chdt1,
-  p_chdp1, p_subt1, p_subt2, p_seqt1, freqtbl, freqtbh, exptabh, exptbase, vib_lo, vib_hi,
-  tablrst, insctrl, fltctrl, fltposi, cwepcnt, fswitch, resonib, mainvol, fltband, ckbdtrk,
-  ctfhgho, flshift, ctflgho, seqvolu, valstor, subtpos: addr;
-  sel_ins_limit, exp_end, exp_threshold, chn: byte;
-  order: list;
+  swp_base, exptabh_m1, sid, p_ptnl1, p_ptnh1, p_insl3, p_insh3, tempotbl, p_tmpp1, p_chdt1,
+  p_chdp1, p_subt1, p_subt2, freqtbl, freqtbh, exptabh, exptbase, vib_lo, vib_hi: addr;
+  init_tablrst, init_insctrl, init_fltctrl, init_fltposi, init_cwepcnt, init_fswitch,
+  init_resonib, init_mainvol, init_fltband, init_ckbdtrk, init_flshift, init_seqvolu,
+  init_valstor, init_subtpos, init_cutoff, sel_ins_limit, exp_end, exp_threshold, chn: byte;
+  init_freq, init_pw, init_wfghost, init_ptngate, init_pweepcnt, init_packcnt, init_spdcnt,
+  init_seqpos, init_ptnpos, init_wftpos, init_pwtpos, init_arpscnt, init_curptn, init_curnot,
+  init_dpitch, init_curifx, init_curins, init_curfx2, init_curval,
+  init_slidevib, init_freqmod, init_videlcnt, init_vibfrequ, init_vibracnt, init_transp,
+  init_tmpbase, init_tmppos, init_arpsped, init_pkbdtrk, init_curchord, init_chordpos,
+  init_flswtbl, init_flswtb2, init_trktmpos, init_seqtempo, init_transp2, init_detuner,
+  init_seqt, order: list;
 }
 
 const LEGATO = 0x3F;
@@ -60,23 +62,21 @@ cell vib_lo: u8[256] @ L.vib_lo ro;
 cell vib_hi: u8[256] @ L.vib_hi ro;
 
 // Shared state: the filter, volume, the tables' reset mask, the small-effect value.
-cell tablrst: u8 @ L.tablrst operand;
-cell insctrl: u8 @ L.insctrl operand;
-cell fltctrl: u8 @ L.fltctrl operand;
-cell fltposi: u8 @ L.fltposi operand;
-cell cwepcnt: u8 @ L.cwepcnt operand;
-cell fswitch: u8 @ L.fswitch operand;
-cell resonib: u8 @ L.resonib operand;
-cell mainvol: u8 @ L.mainvol operand;
-cell fltband: u8 @ L.fltband operand;
-cell ckbdtrk: u8 @ L.ckbdtrk operand;
-cell ctfhgho: u8 @ L.ctfhgho operand;
-cell ctflgho: u8 @ L.ctflgho operand;
-cell cutoff: u16 @ (L.ctflgho, L.ctfhgho) operand;
-cell flshift: u8 @ L.flshift operand;
-cell seqvolu: u8 @ L.seqvolu operand;
-cell valstor: u8 @ L.valstor operand;
-cell subtpos: u8 @ L.subtpos operand;
+state tablrst: u8 = L.init_tablrst;
+state insctrl: u8 = L.init_insctrl;
+state fltctrl: u8 = L.init_fltctrl;
+state fltposi: u8 = L.init_fltposi;
+state cwepcnt: u8 = L.init_cwepcnt;
+state fswitch: u8 = L.init_fswitch;
+state resonib: u8 = L.init_resonib;
+state mainvol: u8 = L.init_mainvol;
+state fltband: u8 = L.init_fltband;
+state ckbdtrk: u8 = L.init_ckbdtrk;
+state cutoff: u16 = L.init_cutoff;
+state flshift: u8 = L.init_flshift;
+state seqvolu: u8 = L.init_seqvolu;
+state valstor: u8 = L.init_valstor;
+state subtpos: u8 = L.init_subtpos;
 cell sid_resfc: u8 @ L.sid + 0x17 out;
 cell sid_fmvol: u8 @ L.sid + 0x18 out;
 cell sid_fcut: u11 @ (L.sid + 0x15 : 3, L.sid + 0x16) out;
@@ -87,7 +87,7 @@ owner filter_owner: fltctrl { id x * 7; none 0xFF; on note claim; }
 // jump, stop; the third byte is the keyboard track or a filter switch.
 cursor filter_table {
   table @ insptr[last_ins] + L.swp_base width 3;
-  pos fltposi; count cwepcnt; values cutoff, ctfhgho, fltband, resonib, ckbdtrk, fswitch;
+  pos fltposi; count cwepcnt; values cutoff, fltband, resonib, ckbdtrk, fswitch;
   on filter step;
   match c0 {
     0..0x7f => sweep(into=cutoff, count=c0, step=c1, frac=3)
@@ -100,24 +100,48 @@ cursor filter_table {
 }
 
 machine voice[x in 0..L.chn] {
+  state freq: u16 = L.init_freq[x];
+  state pw: u16 = L.init_pw[x];
+  state wfghost: u8 = L.init_wfghost[x];
+  state ptngate: u8 = L.init_ptngate[x];
+  state pweepcnt: u8 = L.init_pweepcnt[x];
+  state packcnt: u8 = L.init_packcnt[x];
+  state spdcnt: u8 = L.init_spdcnt[x];
+  state seqpos: u8 = L.init_seqpos[x];
+  state ptnpos: u8 = L.init_ptnpos[x];
+  state wftpos: u8 = L.init_wftpos[x];
+  state pwtpos: u8 = L.init_pwtpos[x];
+  state arpscnt: u8 = L.init_arpscnt[x];
+  state curptn: u8 = L.init_curptn[x];
+  state curnot: u8 = L.init_curnot[x];
+  state dpitch: u8 = L.init_dpitch[x];
+  state curifx: u8 = L.init_curifx[x];
+  state curins: u8 = L.init_curins[x];
+  state curfx2: u8 = L.init_curfx2[x];
+  state curval: u8 = L.init_curval[x];
+  state slidevib: u8 = L.init_slidevib[x];
+  state freqmod: u16 = L.init_freqmod[x];
+  state videlcnt: u8 = L.init_videlcnt[x];
+  state vibfrequ: u8 = L.init_vibfrequ[x];
+  state vibracnt: u8 = L.init_vibracnt[x];
+  state transp: u8 = L.init_transp[x];
+  state tmpbase: u8 = L.init_tmpbase[x];
+  state tmppos: u8 = L.init_tmppos[x];
+  state arpsped: u8 = L.init_arpsped[x];
+  state pkbdtrk: u8 = L.init_pkbdtrk[x];
+  state curchord: u8 = L.init_curchord[x];
+  state chordpos: u8 = L.init_chordpos[x];
+  state flswtbl: u8 = L.init_flswtbl[x];
+  state flswtb2: u8 = L.init_flswtb2[x];
+  state trktmpos: u8 = L.init_trktmpos[x];
+  state seqtempo: u8 = L.init_seqtempo[x];
+  state transp2: u8 = L.init_transp2[x];
+  state detuner: u8 = L.init_detuner[x];
   record voice_vars @ 0 stride 7 {
-    freq: u16 @ L.freqlo; pw: u16 @ L.pwlogho; wfghost: u8 @ L.wfghost;
-    ptngate: u8 @ L.ptngate; pweepcnt: u8 @ L.pweepcnt; packcnt: u8 @ L.packcnt;
-    spdcnt: u8 @ L.spdcnt; seqpos: u8 @ L.seqpos; ptnpos: u8 @ L.ptnpos; wftpos: u8 @ L.wftpos;
-    pwtpos: u8 @ L.pwtpos; arpscnt: u8 @ L.arpscnt; curptn: u8 @ L.curptn;
-    curnot: u8 @ L.curnot; dpitch: u8 @ L.dpitch; curifx: u8 @ L.curifx;
-    curifx_long: u8 @ L.curifx_long; curins: u8 @ L.curins; curfx2: u8 @ L.curfx2;
-    curval: u8 @ L.curval; slidevib: u8 @ L.slidevib; freqmod: u16 @ L.freqmodl;
-    videlcnt: u8 @ L.videlcnt; vibfrequ: u8 @ L.vibfrequ; vibracnt: u8 @ L.vibracnt;
-    transp: u8 @ L.transp; tmpbase: u8 @ L.tmpbase; tmppos: u8 @ L.tmppos;
-    arpsped: u8 @ L.arpsped; pkbdtrk: u8 @ L.pkbdtrk; curchord: u8 @ L.curchord;
-    chordpos: u8 @ L.chordpos; flswtbl: u8 @ L.flswtbl; flswtb2: u8 @ L.flswtb2;
-    trktmpos: u8 @ L.trktmpos; seqtempo: u8 @ L.seqtempo; transp2: u8 @ L.transp2;
-    detuner: u8 @ L.detuner;
     out_freq: u16 @ L.sid; out_pw: u12 @ L.sid + 2; out_wave: u8 @ L.sid + 4;
     out_ad: u8 @ L.sid + 5; out_sr: u8 @ L.sid + 6;
   }
-  cell seqt: u16 @ L.p_seqt1 + x * 4 operand;
+  state seqt: u16 = L.init_seqt[x];
 
   // The pulse table: sweep, set, jump, stop; the third byte is the keyboard track.
   cursor pw_table {
@@ -160,7 +184,7 @@ machine voice[x in 0..L.chn] {
     on advance settle;
     run 0x70..0x77 base 0x6F -> packcnt;
     field note -> curnot = note & 0x7F;
-    field inst when neg(note) -> curifx = inst & 0x7F when !neg(inst), curifx_long = inst & 0x7F when neg(inst);
+    field inst when neg(note) -> curifx = inst & 0x7F;
     field fx when neg(inst) -> curfx2 = fx;
     field value when (fx & 0xE0) == 0 -> curval = value;
   }
@@ -679,7 +703,7 @@ machine voice[x in 0..L.chn] {
       0x0C => set_arp_speed(a);
       0x0D => detuner := a;
       0x0E => pw := word(lo(pw), a.lo);
-      0x0F => ctfhgho := a;
+      0x0F => cutoff := word(lo(cutoff), a);
       0x10 => {
         tempotbl[1] := a | 0x80;
         all_tempo(0);
@@ -754,9 +778,9 @@ machine commonregs {
       c := carry(ckbdtrk, p);
       k := exptabh[ckbdtrk + p];
     }
-    let top = k + ctfhgho + u8(c);
-    c := carry(k, ctfhgho, c);
-    sid_fcut := u16(top + flshift + u8(c)) << 3 | u16(ctflgho & 7);
+    let top = k + hi(cutoff) + u8(c);
+    c := carry(k, hi(cutoff), c);
+    sid_fcut := u16(top + flshift + u8(c)) << 3 | u16(lo(cutoff) & 7);
   }
 }
 

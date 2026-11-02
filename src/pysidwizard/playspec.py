@@ -791,6 +791,37 @@ def _scan(scan: _Scan, player: int, commonregs: int, mulply: Optional[int]) -> d
     return dict(scan.found)
 
 
+_VOICE_WORDS = {"freq": "freqlo", "pw": "pwlogho", "freqmod": "freqmodl"}
+_VOICE_BYTES = (
+    "wfghost ptngate pweepcnt packcnt spdcnt seqpos ptnpos wftpos pwtpos arpscnt curptn curnot"
+    " dpitch curifx curins curfx2 curval slidevib videlcnt vibfrequ vibracnt transp"
+    " tmpbase tmppos arpsped pkbdtrk curchord chordpos flswtbl flswtb2 trktmpos seqtempo transp2"
+    " detuner"
+).split()
+_SHARED_BYTES = (
+    "tablrst insctrl fltctrl fltposi cwepcnt fswitch resonib mainvol fltband ckbdtrk flshift"
+    " seqvolu valstor subtpos"
+).split()
+
+
+def _initial(view: bytes, found: dict) -> Dict[str, object]:
+    """``init_<variable>``: what the init left in each player variable, a list over the voices
+    for a voice's own; the spec keeps them as state from there."""
+
+    def word(addr: int) -> int:
+        return view[addr] | view[(addr + 1) & 0xFFFF] << 8
+
+    voices = range(CHANNELS)
+    out: Dict[str, object] = {
+        f"init_{n}": [word(found[a] + 7 * x) for x in voices] for n, a in _VOICE_WORDS.items()
+    }
+    out.update({f"init_{n}": [view[found[n] + 7 * x] for x in voices] for n in _VOICE_BYTES})
+    out.update({f"init_{n}": view[found[n]] for n in _SHARED_BYTES})
+    out["init_seqt"] = [word(found["p_seqt1"] + 4 * x) for x in voices]
+    out["init_cutoff"] = view[found["ctflgho"]] | view[found["ctfhgho"]] << 8
+    return out
+
+
 def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) -> dict:
     """The playspec layout of the player whose PLAYER or MULPLY is ``entry`` (default: the
     first PLAYER) in the memory ``view``, for ``variant`` ``(features, quirks)`` (default:
@@ -828,6 +859,7 @@ def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) 
     )
     found.update(chn=CHANNELS, mulply=entry is not None and entry == mulply, order=list(_ORDER))
     found["chain"] = [a * 16 + b for a, b in zip(_ORDER, _ORDER[1:], strict=False)]
+    found.update(_initial(view, found))
     return found
 
 
