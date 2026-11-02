@@ -69,8 +69,7 @@ event pattern_end: tick;
 // The zero-page pointer the player reads instruments and patterns through, and an SWP
 // export's base its song tables' offsets are from.
 cell zp: u16 @ L.zp;
-cell swp_lo: u8 @ L.swp_offset;
-cell swp_hi: u8 @ L.swp_offset + 1;
+cell swp: u16 @ (L.swp_offset, L.swp_offset + 1);
 cell zp_lo: u8 @ L.zp_lo;
 cell zp_hi: u8 @ L.zp_hi;
 
@@ -385,8 +384,7 @@ machine voice[x in 0..L.chn] {
   // volume and track tempo of the orderlist effects, then the row is read.
   handler row_prep on row {
     let p = curptn;
-    let carry_lo = point_lo(ptnl[p]);
-    let ptr = point_hi(ptnh[p], carry_lo);
+    zp := word(ptnl[p], ptnh[p]) + ite(L.swp, swp, 0);
     curifx := 0;
     curfx2 := 0;
     if L.seq_fx_support {
@@ -448,8 +446,7 @@ machine voice[x in 0..L.chn] {
   // TICK_1: the pattern's pointer again, then the pattern and orderlist step.
   proc tick_1() {
     let p = curptn;
-    let carry_lo = point_lo(ptnl[p]);
-    let ptr = point_hi(ptnh[p], carry_lo);
+    zp := word(ptnl[p], ptnh[p]) + ite(L.swp, swp, 0);
     ptn_seq();
   }
 
@@ -550,18 +547,9 @@ machine voice[x in 0..L.chn] {
     let doubled = t << 1;
     let track = doubled - 3 + u8(neg(t));
     let y = (track >> 1) + subtpos;
-    let lo = subt1[y];
-    let c = false;
-    if L.swp {
-      c := carry(lo, swp_lo);
-      lo := lo + swp_lo;
-    }
-    mem[L.p_seqt1 - 1 + u16(track)] := lo;
-    let hi = subt2[y + 1];
-    if L.swp {
-      hi := hi + swp_hi + u8(c);
-    }
-    mem[L.p_seqt1 + u16(track)] := hi;
+    let w = word(subt1[y], subt2[y + 1]) + ite(L.swp, swp, 0);
+    mem[L.p_seqt1 - 1 + u16(track)] := lo(w);
+    mem[L.p_seqt1 + u16(track)] := hi(w);
   }
 
   // SID-Wizard 1.0's INIT for the voice: the delayed values cleared, then the orderlist
@@ -631,8 +619,7 @@ machine voice[x in 0..L.chn] {
       } else {
         y := curins;
       }
-      let carry_lo = point_lo(insl[y]);
-      let ptr = point_hi(insh[y], carry_lo);
+      zp := word(insl[y], insh[y]) + ite(L.swp, swp, 0);
       if instrument.control & timer == 0 {
         hrender(c);
         return;
@@ -691,8 +678,7 @@ machine voice[x in 0..L.chn] {
   // stage (the waveform table, unless the build runs more on a hard-restart tick).
   proc hrender(c: bool) {
     let y = curins;
-    let c3 = point_lo(insl[y]);
-    let ptr = point_hi(insh[y], c3);
+    zp := word(insl[y], insh[y]) + ite(L.swp, swp, 0);
     if L.vibslidealways {
       cntply2();
     } elif L.filteralways {
@@ -700,33 +686,8 @@ machine voice[x in 0..L.chn] {
     } elif L.pulsealways {
       setpwid_chain();
     } else {
-      let out = wfarptb(lo(ptr), ite(L.swp, hi(ptr) != 0, c));
+      let out = wfarptb(lo(zp), ite(L.swp, false, c));
     }
-  }
-
-  // The zero-page pointer from a song table's low and high bytes; an SWP export's
-  // tables hold offsets from SWP_OFFSET. Each half returns the carry the code leaves,
-  // the high half also the byte it stores (low byte of the result).
-  proc point_lo(lo: u8) -> bool {
-    if L.swp {
-      let o = swp_lo;
-      zp_lo := lo + o;
-      return carry(lo, o);
-    }
-    zp_lo := lo;
-    return false;
-  }
-
-  proc point_hi(hi: u8, c: bool) -> u16 {
-    let a = hi;
-    let cout = false;
-    if L.swp {
-      let o = swp_hi;
-      a := hi + o + u8(c);
-      cout := carry(hi, o, c);
-    }
-    zp_hi := a;
-    return word(a, u8(cout));
   }
 
   // TICK_2: the row's instrument column selects an instrument below SEL_INS's limit
@@ -755,8 +716,7 @@ machine voice[x in 0..L.chn] {
       }
       return;
     }
-    let carry_lo = point_lo(insl[ins]);
-    let ptr = point_hi(insh[ins], carry_lo);
+    zp := word(insl[ins], insh[ins]) + ite(L.swp, swp, 0);
     let note = curnot;
     if note == 0 {
       insptfx();
@@ -923,8 +883,7 @@ machine voice[x in 0..L.chn] {
   }
 
   proc cntply1(y: u8) {
-    let c = point_lo(insl[y]);
-    let ptr = point_hi(insh[y], c);
+    zp := word(insl[y], insh[y]) + ite(L.swp, swp, 0);
   }
 
   // CNTPLY2: vibrato and slides, then the filter, PW and waveform tables.
@@ -1225,13 +1184,12 @@ machine voice[x in 0..L.chn] {
       return cin;
     }
     let y = curins;
-    let c1 = point_lo(insl[y]);
-    let ptr = point_hi(insh[y], c1);
+    zp := word(insl[y], insh[y]) + ite(L.swp, swp, 0);
     let speed = instrument.arp_speed;
     if neg(speed) {
       filtprg();
     } elif speed & 0x40 == 0 {
-      let out = wfarptb(0, ite(L.swp, hi(ptr) != 0, cin));
+      let out = wfarptb(0, ite(L.swp, false, cin));
       return out;
     }
     let c = setpwid();
