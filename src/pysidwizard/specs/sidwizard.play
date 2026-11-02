@@ -65,6 +65,7 @@ event pulse: tick;
 event filter: tick;
 event advance: tick;
 event pattern_end: tick;
+event wave: tick;
 
 // The zero-page pointer the player reads instruments and patterns through, and an SWP
 // export's base its song tables' offsets are from.
@@ -1076,6 +1077,14 @@ machine voice[x in 0..L.chn] {
   // pitch: below $80 relative up, $80 none (WFARP_NOP_SUPP), $81..$DF absolute,
   // $E0..$FF relative down, $7F the chord. The third is the detune ($FF none). A
   // chord walks CHORDS from CHORDPOS; $7E returns to the table's next row, $7F loops.
+  cursor wave_table {
+    table @ zp width 3;
+    pos wftpos;
+    on wave step;
+    match c0 {
+      _ => value();
+    }
+  }
   proc wftable(a: u8, c: bool) -> bool {
     if L.arpspeedsupp {
       arpscnt -= 1;
@@ -1089,50 +1098,44 @@ machine voice[x in 0..L.chn] {
     let cw = c;
     while rows bound 256 {
       rows := false;
-      let y = wftpos;
-      let wave = mem[zp + u16(y)];
+      let wave = wave_table.c0;
       let setwave = true;
-      cw := wave >= TABLE_JUMP;
       if wave == TABLE_JUMP {
-        y += 1;
-        let target = mem[zp + u16(y)];
-        if neg(target) {
+        if neg(wave_table.c1) {
           return true;
         }
-        wftpos := target;
-        y := target;
-        wave := mem[zp + u16(y)];
+        wftpos := wave_table.c1;
+        wave := wave_table.c0;
       } elif wave > TABLE_JUMP {
         return true;
-      } elif L.arpspeedsupp {
-        cw := wave >= 0x10;
-        if wave < 0x10 {
-          arpscnt := wave;
-          setwave := false;
-        }
+      } elif L.arpspeedsupp && wave < 0x10 {
+        arpscnt := wave;
+        setwave := false;
       }
       if setwave {
         wfghost := wave & ptngate;
       }
-      y += 1;
-      let pitch = mem[zp + u16(y)];
-      y += 1;
-      if L.chordsupport {
-        cw := pitch >= CHORD_LOOP;
-      }
-      let chord = L.chordsupport && pitch == CHORD_LOOP;
-      if !chord {
-        astorez := pitch;
-        if L.detunesupport {
-          let d = mem[zp + u16(y)];
-          cw := d == 0xFF;
-          if d != 0xFF {
-            detuner := d;
+      let pitch = wave_table.c1;
+      if L.chordsupport && pitch == CHORD_LOOP {
+        detuner := wave_table.c2;
+        let note = chdt[chordpos];
+        if note == CHORD_RETURN {
+          chordpos := chdp[curchord];
+          react wave_table on wave();
+          rows := true;
+        } else {
+          if note == CHORD_LOOP {
+            chordpos := chdp[curchord];
+            note := chdt[chordpos];
           }
+          chordpos += 1;
+          cw := relptch(note);
         }
-        y += 1;
-        wftpos := y;
-        pitch := astorez;
+      } else {
+        if L.detunesupport && wave_table.c2 != 0xFF {
+          detuner := wave_table.c2;
+        }
+        react wave_table on wave();
         if !neg(pitch) {
           cw := relptch(pitch);
         } elif L.wfarp_nop_supp && pitch == 0x80 {
@@ -1143,27 +1146,10 @@ machine voice[x in 0..L.chn] {
         } else {
           cw := relptch(pitch);
         }
-      } else {
-        detuner := mem[zp + u16(y)];
-        let note = chdt[chordpos];
-        if note == CHORD_RETURN {
-          chordpos := chdp[curchord];
-          wftpos += 3;
-          rows := true;
-        } else {
-          if note == CHORD_LOOP {
-            let start = chdp[curchord];
-            chordpos := start;
-            note := chdt[start];
-          }
-          chordpos += 1;
-          cw := relptch(note);
-        }
       }
     }
     return cw;
   }
-
   proc relptch(a: u8) -> bool {
     let p = dpitch;
     absptch(a + p);
