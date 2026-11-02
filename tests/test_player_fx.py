@@ -20,7 +20,7 @@ from pysidwizard import (
     straight_tempo,
 )
 from pysidwizard.constants import INST_WF_TABLE_POS
-from tests._toy import SETUP_FRAMES, assert_6502, grid, labels, note_word, toy_swm
+from tests._toy import SETUP_FRAMES, assert_6502, grid, labels, note_word, toy_swm, variable
 
 # Row 0's TICK_2 runs on call SETUP_FRAMES; its table walk reaches the SID on the next call.
 NOTE = SETUP_FRAMES + 1
@@ -56,7 +56,7 @@ def _run(swm: SWMFile, calls: int = NOTE) -> SWMPlayer:
 
 def _cell(p: SWMPlayer, name: str, voice: int = 0) -> int:
     """Voice ``voice``'s byte of the per-voice variable ``name``."""
-    return p.memory[labels(p)[name] + voice * playspec.VOICE_STRIDE]
+    return variable(p, name, voice)
 
 
 def _regs(swm: SWMFile, call: int = NOTE) -> list:

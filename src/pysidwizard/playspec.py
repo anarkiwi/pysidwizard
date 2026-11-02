@@ -21,8 +21,6 @@ from .playspec_effects import _effects, _sfx
 
 _SPEC_TEXT = resources.files(__package__).joinpath("specs/sidwizard.play").read_text()
 SPEC = parse_spec(_SPEC_TEXT)
-# Layout fields derived from another one, with the offset.
-_DERIVED = {"zp": (("zp_lo", 0), ("zp_hi", 1))}
 
 VOICE_STRIDE = 7
 CHANNELS = 3
@@ -783,9 +781,6 @@ def _scan(scan: _Scan, player: int, commonregs: int, mulply: Optional[int]) -> d
     _cntplay(scan)
     _subroutines(scan)
     _effects(scan)
-    for name, derived in _DERIVED.items():
-        for field, offset in derived:
-            scan.found[field] = scan.found[name] + offset
     swp = scan.flags.get("swp") and "swp_offset" in scan.found
     scan.found["swp_base"] = scan.word(scan.found["swp_offset"]) if swp else 0
     return dict(scan.found)
@@ -796,34 +791,47 @@ _VOICE_BYTES = (
     "wfghost ptngate pweepcnt packcnt spdcnt seqpos ptnpos wftpos pwtpos arpscnt curptn curnot"
     " dpitch curifx curins curfx2 curval slidevib videlcnt vibfrequ vibracnt transp"
     " tmpbase tmppos arpsped pkbdtrk curchord chordpos flswtbl flswtb2 trktmpos seqtempo transp2"
-    " detuner"
+    " detuner trdelay"
 ).split()
+_GHOSTS = (("freq", 0, 2), ("pw", 2, 2), ("wave", 4, 1), ("ad", 5, 1), ("sr", 6, 1))
 _SHARED_BYTES = (
     "tablrst insctrl fltctrl fltposi cwepcnt fswitch resonib mainvol fltband ckbdtrk flshift"
-    " seqvolu valstor subtpos"
+    " seqvolu valstor subtpos subtjmp gate curinstemp"
 ).split()
 
 
 def _initial(view: bytes, found: dict) -> Dict[str, object]:
     """``init_<variable>``: what the init left in each player variable, a list over the voices
-    for a voice's own; the spec keeps them as state from there."""
+    for a voice's own, zero for one the build lacks; the spec keeps them as state from there."""
+
+    def byte(addr: int) -> int:
+        return view[addr] if addr else 0
 
     def word(addr: int) -> int:
-        return view[addr] | view[(addr + 1) & 0xFFFF] << 8
+        return byte(addr) | byte(addr + 1 if addr else 0) << 8
 
     voices = range(CHANNELS)
     out: Dict[str, object] = {
-        f"init_{n}": [word(found[a] + 7 * x) for x in voices] for n, a in _VOICE_WORDS.items()
+        f"init_{n}": [word(found[a] and found[a] + 7 * x) for x in voices]
+        for n, a in _VOICE_WORDS.items()
     }
-    out.update({f"init_{n}": [view[found[n] + 7 * x] for x in voices] for n in _VOICE_BYTES})
-    out.update({f"init_{n}": view[found[n]] for n in _SHARED_BYTES})
+    out.update(
+        {f"init_{n}": [byte(found[n] and found[n] + 7 * x) for x in voices] for n in _VOICE_BYTES}
+    )
+    out.update({f"init_{n}": byte(found[n]) for n in _SHARED_BYTES})
+    for name, offset, width in _GHOSTS:
+        out[f"init_g_{name}"] = [
+            int.from_bytes(view[found["sidg"] + 7 * x + offset :][:width], "little") for x in voices
+        ]
     out["init_seqt"] = [word(found["p_seqt1"] + 4 * x) for x in voices]
-    out["init_cutoff"] = view[found["ctflgho"]] | view[found["ctfhgho"]] << 8
+    out["init_cutoff"] = byte(found["ctflgho"]) | byte(found["ctfhgho"]) << 8
+    out["init_main_tempo"] = byte(found["tempo"])
+    out["init_zp"] = word(found["zp"])
     return out
 
 
-def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) -> dict:
-    """The playspec layout of the player whose PLAYER or MULPLY is ``entry`` (default: the
+def _found(view, entry: Optional[int] = None, variant: Optional[tuple] = None) -> dict:
+    """Everything the binder reads from the player whose PLAYER or MULPLY is ``entry`` (default: the
     first PLAYER) in the memory ``view``, for ``variant`` ``(features, quirks)`` (default:
     :func:`detect`'s). Raises :class:`ValueError` for a build the spec does not state.
     """
@@ -858,14 +866,23 @@ def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) 
         {k: bool(getattr(features, k, False)) if v is None else v for k, v in flags.items()}
     )
     found.update(chn=CHANNELS, mulply=entry is not None and entry == mulply, order=list(_ORDER))
-    found["chain"] = [a * 16 + b for a, b in zip(_ORDER, _ORDER[1:], strict=False)]
     found.update(_initial(view, found))
     return found
 
 
+def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) -> dict:
+    """The playspec layout of the player whose PLAYER or MULPLY is ``entry`` (default: the
+    first PLAYER) in the memory ``view``, for ``variant`` ``(features, quirks)`` (default:
+    :func:`detect`'s): the facts the spec names, read from the image. Raises
+    :class:`ValueError` for a build the spec does not state.
+    """
+    found = _found(view, entry, variant)
+    return {k: v for k, v in found.items() if k in SPEC.layout}
+
+
 def labels(view, entry: Optional[int] = None) -> Dict[str, int]:
-    """The addresses :func:`binding` finds, by name."""
-    found = binding(view, entry)
+    """Every address the binder finds in the player, by name."""
+    found = _found(view, entry)
     return {k: v for k, v in found.items() if isinstance(v, int) and not isinstance(v, bool)}
 
 
@@ -881,19 +898,19 @@ def binder(variant: Optional[tuple] = None) -> Callable[[bytes, int], dict]:
 
 def row_reader(view) -> int:
     """The address of the row reader: its ``LDY PTNPOS,X``."""
-    return binding(view)["read_row"]
+    return _found(view)["read_row"]
 
 
 def reader_end(view) -> int:
     """The address after the row reader's last instruction (``STA PTNPOS,X``)."""
-    return binding(view)["reader_end"]
+    return _found(view)["reader_end"]
 
 
 def clock(view) -> int:
     """The address of the tick clock: its first instruction."""
-    return binding(view)["dotrack"]
+    return _found(view)["dotrack"]
 
 
 def clock_stop(view) -> int:
     """The clock's ``CMP #0``: where both its exits have written all they write."""
-    return binding(view)["tick_0"] - 7
+    return _found(view)["tick_0"] - 7

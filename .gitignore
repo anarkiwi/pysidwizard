@@ -231,3 +231,6 @@ core.[0-9]*
 
 # Local git worktree checkouts.
 .worktrees/
+
+# Local untracked gate recordings and traces.
+.scratch/

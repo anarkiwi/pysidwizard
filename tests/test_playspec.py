@@ -11,7 +11,7 @@ from pysidtracker import SidImage
 from pysidtracker.disasm import image_after_init
 from pysidtracker.header import parse_sid_header
 from pysidtracker.maincli import main as cli
-from pysidtracker.playspec import SpecPlayer, elaborate
+from pysidtracker.playspec import SpecPlayer
 from pysidtracker.testing import make_tune_fixtures, resolve_tune, song_frames
 
 from pysidwizard import playspec
@@ -52,21 +52,19 @@ def _word(view: bytes, at: int) -> int:
 
 
 @pytest.mark.parametrize("name", EXPORTS)
-def test_the_voices_cells_sit_seven_bytes_apart_from_the_found_addresses(name):
-    """Each voice's private cells are the found address plus seven bytes per voice."""
-    found = playspec.binding(_view(_export(name)))
-    program = elaborate(playspec.SPEC, found)
-    for cell_name in ("curval", "spdcnt", "transp"):
-        placed = sorted(
-            a for cell in program.cells if cell.name == cell_name for a in cell.extent()
-        )
-        assert placed == [found[cell_name] + 7 * voice for voice in range(3)]
+def test_the_voices_initial_state_is_read_seven_bytes_apart(name):
+    """Each voice's variable starts as the byte the init left at the found address plus seven
+    bytes per voice."""
+    view = _view(_export(name))
+    found, at = playspec.binding(view), playspec.labels(view)
+    for var in ("curval", "spdcnt", "transp", "dpitch"):
+        assert found[f"init_{var}"] == [view[at[var] + 7 * voice] for voice in range(3)]
 
 
 @pytest.mark.parametrize("name", ALL_EXPORTS)
-def test_spec_memory_equals_the_6502_over_the_whole_song(name):
-    """SpecPlayer over the spec and the tune's own play routine leave the SID registers
-    and the whole memory outside the stack page equal after every call of the song."""
+def test_spec_sounds_as_the_6502_over_the_whole_song(name):
+    """SpecPlayer over the spec and the tune's own play routine leave the SID registers, and
+    the gate and test edges, equal after every call of the song."""
     data = _export(name)
     if name in REFUSED_EXPORTS:
         with pytest.raises(ValueError, match=REFUSED_EXPORTS[name]):
@@ -125,7 +123,7 @@ def test_entries_are_the_players_play_and_multispeed_calls():
 
 
 @pytest.mark.oracle
-def test_spec_memory_equals_the_6502_for_every_oracle_tune(tune_path):  # noqa: F811
+def test_spec_sounds_as_the_6502_for_every_oracle_tune(tune_path):  # noqa: F811
     """Every call of every stated oracle tune's whole song leaves both players equal."""
     data = tune_path.read_bytes()
     assert sw_spec_diff.first_difference(data, song_frames(data, None), progress=False) is None
