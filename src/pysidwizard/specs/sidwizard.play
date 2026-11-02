@@ -108,6 +108,8 @@ cell chdt: u8[256] @ L.p_chdt1 ro;
 cell chdp: u8[256] @ L.p_chdp1 ro;
 cell subt1: u8[256] @ L.p_subt1 ro;
 cell subt2: u8[256] @ L.p_subt2 ro;
+// The voice's orderlist, through the pointer its SEQUENCES read holds.
+table orderlist via seqt stride 1 { b: u8; }
 
 // The tempo program the voices' clocks step through: one byte per tick count, the
 // last of a program having bit 7 set. Its first two bytes are the main tempo and
@@ -476,7 +478,7 @@ machine voice[x in 0..L.chn] {
     let y = seqpos + 1;
     let walking = true;
     while walking bound 512 {
-      let a = mem[seqt + y];
+      let a = orderlist[y].b;
       if !neg(a) {
         curptn := a;
         seqpos := y;
@@ -489,7 +491,7 @@ machine voice[x in 0..L.chn] {
         if L.seq_fx_support {
           seq_fx(a);
           y += 1;
-          if mem[seqt + y] == SEQ_LOOP {
+          if orderlist[y].b == SEQ_LOOP {
             walking := false;
           }
         } else {
@@ -497,7 +499,7 @@ machine voice[x in 0..L.chn] {
         }
       } else {
         y += 1;
-        let target = mem[seqt + y];
+        let target = orderlist[y].b;
         if neg(target) {
           if L.subtunejump {
             setseqa(target);
@@ -533,13 +535,7 @@ machine voice[x in 0..L.chn] {
   // copied into the track's orderlist read; X survives through XSTORE.
   proc setseqa(a: u8) {
     subtpos := a << 3;
-    let t = trktmpos;
-    let doubled = t << 1;
-    let track = doubled - 3 + u8(neg(t));
-    let y = (track >> 1) + subtpos;
-    let w = word(subt1[y], subt2[y + 1]) + ite(L.swp, swp, 0);
-    mem[L.p_seqt1 - 1 + u16(track)] := lo(w);
-    mem[L.p_seqt1 + u16(track)] := hi(w);
+    seqt := word(subt1[x * 2 + subtpos], subt2[x * 2 + subtpos + 1]) + ite(L.swp, swp, 0);
   }
 
   // SID-Wizard 1.0's INIT for the voice: the delayed values cleared, then the orderlist
@@ -555,7 +551,7 @@ machine voice[x in 0..L.chn] {
     let y = 0;
     let walking = true;
     while walking bound 256 {
-      let a = mem[seqt + y];
+      let a = orderlist[y].b;
       if !neg(a) {
         curptn := a;
         walking := false;
@@ -1591,8 +1587,7 @@ machine subtune {
   proc setstune(a: u8) {
     let y = a << 3;
     for v in 0..L.chn {
-      mem[L.p_seqt1 + v * 4] := subt1[y + v * 2];
-      mem[L.p_seqt1 + v * 4 + 1] := subt1[y + v * 2 + 1];
+      voice[v].seqt := word(subt1[y + v * 2], subt1[y + v * 2 + 1]);
     }
     tempotbl[1] := subt1[y + L.chn * 2];
     tempotbl[2] := subt2[y + L.chn * 2];
