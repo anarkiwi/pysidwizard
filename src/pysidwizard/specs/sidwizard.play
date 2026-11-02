@@ -153,13 +153,6 @@ cell flshift: u8 @ L.flshift operand;
 cell ctflgho: u8 @ L.ctflgho operand;
 cell seqvolu: u8 @ L.seqvolu operand;
 cell valstor: u8 @ L.valstor operand;
-cell mergest: u8 @ L.mergest operand;
-cell mul3tmp: u8 @ L.mul3tmp operand;
-cell astorez: u8 @ L.astorez operand;
-cell indexj1: u8 @ L.indexj1 operand;
-cell indexj2: u8 @ L.indexj2 operand;
-cell indexjp: u16 @ L.indexjp operand;
-cell xstore: u8 @ L.xstore operand;
 cell subtpos: u8 @ L.subtpos operand;
 cell subtjmp: u8 @ L.subtjmp operand;
 
@@ -542,7 +535,6 @@ machine voice[x in 0..L.chn] {
   // SETSEQA: a subtune jump. The subtune's orderlist pointer for this track is
   // copied into the track's orderlist read; X survives through XSTORE.
   proc setseqa(a: u8) {
-    xstore := x * 7;
     subtpos := a << 3;
     let t = trktmpos;
     let doubled = t << 1;
@@ -816,9 +808,11 @@ machine voice[x in 0..L.chn] {
     }
     if L.sound_tables_first {
       startchord();
-      setvib0();
+      videlcnt := instrument.vibrato_delay;
+      setvibr(instrument.vibrato);
     } else {
-      setvib0();
+      videlcnt := instrument.vibrato_delay;
+      setvibr(instrument.vibrato);
       startchord();
       sound_tables();
     }
@@ -960,8 +954,8 @@ machine voice[x in 0..L.chn] {
 
   proc portend() {
     if L.portavibra {
-      forcvib();
-      setvib1();
+      slidevib := instrument.control & 0x30;
+      setvibr(instrument.vibrato);
     }
     targetn();
   }
@@ -1183,16 +1177,9 @@ machine voice[x in 0..L.chn] {
     return out;
   }
 
-  // SETVIB0 / SETVIB1 / SETVIBR: the instrument's vibrato delay, then its vibrato
-  // frequency (low nibble, doubled) and amplitude (high nibble) as SETVAMP's.
-  proc setvib0() {
-    videlcnt := instrument.vibrato_delay;
-    setvib1();
-  }
 
-  proc setvib1() {
-    setvibr(instrument.vibrato);
-  }
+
+
 
   proc setvibr(a: u8) {
     vibfrequ := a.lo << 1;
@@ -1235,10 +1222,7 @@ machine voice[x in 0..L.chn] {
     freqmodh := vib_hi[y];
   }
 
-  // FORCVIB: the vibrato type of the instrument's control byte.
-  proc forcvib() {
-    slidevib := instrument.control & 0x30;
-  }
+
 
   // NOTE_FX: a note-column effect. $60..$77 sets the vibrato amplitude; $78..$7F
   // dispatch through NOTEFXTBL: note portamento, sync on/off, ring on/off, gate on,
@@ -1251,16 +1235,12 @@ machine voice[x in 0..L.chn] {
       }
       vibamfx(a);
     } else {
-      selntfx(a);
       note_fx_at(a, wfghost);
     }
     insptfx();
   }
 
-  // SELNTFX: the note effect's offset into the code after INDEXJ1.
-  proc selntfx(a: u8) {
-    indexj1 := notefxtbl[a];
-  }
+
 
   // The note effect $78 + k with the waveform register preloaded.
   proc note_fx_at(n: u8, wave: u8) {
@@ -1326,111 +1306,64 @@ machine voice[x in 0..L.chn] {
       smalpfx(fx);
       return;
     }
-    bigptfx(fx);
     let v = curval;
     bigfx(fx, v, v == 0);
   }
 
-  // BIGPTFX: the big effect's address from BIGFXTABLE into INDEXJP's JMP.
-  proc bigptfx(fx: u8) {
-    let y = fx << 1;
-    indexjp := word(bigfxtable[y], bigfxtable[y + 1]);
-  }
+
 
   // SMALPFX: the high nibble picks the small effect through SMALLFXTBL; the low
   // nibble, kept in VALSTOR, is its value.
   proc smalpfx(a: u8) {
-    smalsel(a);
+    valstor := a.lo;
     smallfx(a.hi, a.lo);
   }
 
-  proc smalsel(a: u8) {
-    indexj2 := smallfxtbl[a.hi];
-    valstor := a.lo;
-  }
+
 
   proc smallfx(n: u8, v: u8) {
     match n {
       2 => {
-        if L.allghostregs {
-          mergest := sidg_ad.lo;
-          sidg_ad.hi := valstor;
-        } else {
-          let b = instrument.ad;
-          mergest := b.lo;
-          b.hi := valstor;
-          sidg_ad := b;
-        }
+        let b = ite(L.allghostregs, sidg_ad, instrument.ad);
+        b.hi := valstor;
+        sidg_ad := b;
       }
       3 => {
-        if L.allghostregs {
-          sidg_ad.lo := valstor;
-        } else {
-          let b = instrument.ad;
-          b.lo := valstor;
-          sidg_ad := b;
-        }
+        let b = ite(L.allghostregs, sidg_ad, instrument.ad);
+        b.lo := valstor;
+        sidg_ad := b;
       }
-      4 => {
-        mergest := wfghost.lo;
-        wfghost.hi := valstor;
-      }
+      4 => wfghost.hi := valstor;
       5 => {
-        if L.allghostregs {
-          mergest := sidg_sr.lo;
-          sidg_sr.hi := valstor;
-        } else {
-          let b = instrument.sr;
-          mergest := b.lo;
-          b.hi := valstor;
-          sidg_sr := b;
-        }
+        let b = ite(L.allghostregs, sidg_sr, instrument.sr);
+        b.hi := valstor;
+        sidg_sr := b;
       }
       6 => {
-        if L.allghostregs {
-          sidg_sr.lo := valstor;
-        } else {
-          let b = instrument.sr;
-          b.lo := valstor;
-          sidg_sr := b;
-        }
+        let b = ite(L.allghostregs, sidg_sr, instrument.sr);
+        b.lo := valstor;
+        sidg_sr := b;
       }
       7 => smalfx7(v);
       8 => vibamfx(v);
-      9 => {
-        if L.vibfreqfx_supp {
-          vibfrequ := v << 1;
-        }
-      }
+      9 if L.vibfreqfx_supp => vibfrequ := v << 1;
       0x0A => {
         mainvol := v;
         if L.seq_fx_support {
           seqvolu := v;
         }
       }
-      0x0B => {
-        if L.filter_smallfx {
-          fltband := v << 4;
-        }
-      }
+      0x0B if L.filter_smallfx => fltband := v << 4;
       0x0C => smalfxc(v);
       0x0D if L.detune_smallfx => detuner := v << 3;
-      0x0D, 0x0E => {
-        if L.wfctrl_smallfx && L.wfctrl_fx_stores {
-          wfghost.lo := valstor;
-        }
-      }
-      0x0F => {
-        if L.filter_smallfx {
-          resonib := v << 4;
-        }
-      }
+      0x0D, 0x0E if L.wfctrl_smallfx && L.wfctrl_fx_stores => wfghost.lo := valstor;
+      0x0F if L.filter_smallfx => resonib := v << 4;
     }
   }
 
+
   // The value times three folded into a byte, MUL3TMP keeping the value.
   proc mul3(a: u8) -> u8 {
-    mul3tmp := a;
     let t = u16(a) * 3;
     return lo(t) + hi(t);
   }
@@ -1455,19 +1388,16 @@ machine voice[x in 0..L.chn] {
     if L.vibamfx_amp_only {
       let amp = a.lo << 3;
       setfmod(amp, amp == 0);
-      forcvib();
+      slidevib := instrument.control & 0x30;
     } else {
       let b = instrument.vibrato;
-      mergest := b.lo;
       b.hi := valstor;
-      bigfx08(b);
+      slidevib := instrument.control & 0x30;
+      setvibr(b);
     }
   }
 
-  proc bigfx08(a: u8) {
-    forcvib();
-    setvibr(a);
-  }
+
 
   // A big effect with its value: slides, portamento, register values, vibrato,
   // table positions, chord, arp speed, detune, pulse width, cutoff, tempos, vibrato
@@ -1477,16 +1407,8 @@ machine voice[x in 0..L.chn] {
   // shift, and $16..$1E are none.
   proc bigfx(n: u8, a: u8, z: bool) {
     match n {
-      1 => {
-        slidevib := SLIDE_UP;
-        setfmod(a, a == 0);
-      }
-      2 => {
-        slidevib := SLIDE_DOWN;
-        setfmod(a, a == 0);
-      }
-      3 => {
-        slidevib := TONE_PORTA;
+      1..3 => {
+        slidevib := 0x80 + n;
         setfmod(a, a == 0);
       }
       4 => {
@@ -1500,7 +1422,10 @@ machine voice[x in 0..L.chn] {
       5 => sidg_ad := a;
       6 => sidg_sr := a;
       7 => smalfx7(a);
-      8 => bigfx08(a);
+      8 => {
+        slidevib := instrument.control & 0x30;
+        setvibr(a);
+      }
       9 => {
         if L.bigfx_v10 {
           slidevib := a & 0x30;
