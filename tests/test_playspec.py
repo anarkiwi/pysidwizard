@@ -149,6 +149,18 @@ def test_a_pulse_width_effect_stored_outside_the_player_is_a_memory_write():
 
 
 @pytest.mark.oracle
+@pytest.mark.parametrize("name", ("performers_demo_2018", "arkanoid_remake"))
+def test_an_swp_exports_orderlists_are_read_from_their_relocated_pointers(name):
+    """An SWP export's orderlist pointers are relative to its base; the spec adds the base
+    where it reads the orderlist, so the state starts as the pointer less the base."""
+    view = _tune_view(name)
+    found, at = playspec.binding(view), playspec.labels(view)
+    assert found["swp"] and found["swp_base"]
+    for voice, start in enumerate(found["init_seqt"]):
+        assert (start + found["swp_base"]) & 0xFFFF == _word(view, at["p_seqt1"] + 4 * voice)
+
+
+@pytest.mark.oracle
 def test_spec_sounds_as_the_6502_for_every_oracle_tune(tune_path):  # noqa: F811
     """Every call of every stated oracle tune's whole song leaves both players equal."""
     data = tune_path.read_bytes()

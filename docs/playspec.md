@@ -28,15 +28,24 @@ Every player variable is a `state`, at no address, that starts from what the ini
 differences of the 1.0..1.9 players are flags (`L.<flag>`; the features are those of
 `pysidwizard.features.FACETS`) that guard branches, match arms and `ite`. The instrument any voice
 last selected is the pointer state `ins`, which a call that keeps the zero page resets to the
-init's. The carry one table leaves for the next (WFARPTB's detune add, the multispeed call's
-chain from voice to voice) is a per-voice signal; the accumulator and zero flag a routine passes
+init's. The carry WFARPTB's detune add takes in (left by the hard restart, the pulse width or the
+waveform row) is the per-voice signal `detune_carry`; the multispeed call's chain from voice to
+voice is the `mulcarry` state; the accumulator and zero flag a routine passes
 on are parameters. A build with ghost registers writes the chip from the voices' registers once
 all have played.
 
-FREQTBL and FREQTBH are `notes(lo, -1)` / `notes(hi, -1)`: table index `i` is standard
-note `i - 1` (index 0 is B-1). `FORMAT.spec_player(swm, notes=clock)` answers every read of
+FREQTBL and FREQTBH are one `u16` table, `notefreq @ (L.freqtbl, L.freqtbh)`, declared
+`notes(word, -1)`: table index `i` is standard note `i - 1` (index 0 is B-1). The slide and
+vibrato steps (VIB_LO, VIB_HI) are the word table `slidestep`, and a subtune's orderlist
+pointers the word tables `subtune_order` and `subtune_orders`. `FORMAT.spec_player(swm, notes=clock)` answers every read of
 them, past note 95 too, with `pysidtracker.notes.frequency(i - 1, clock)`; native mode
 reads the image.
+
+Song data stays addressed by pointer where the language reads it only from memory: `ins` is
+the address of the instrument last selected (its three table cursors take a memory base, and an
+array table has no base to add to a cursor's offsets), the pattern reader's stream base is
+`ptnptr[curptn] + L.swp_base` (a stream cannot read an array), and `seqt` is the orderlist
+pointer relative to `L.swp_base`, which the orderlist table's `offset` adds.
 
 ## Binding
 

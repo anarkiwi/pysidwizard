@@ -37,8 +37,9 @@ dependencies = [
     # runs ``run_editor`` entries as ``(start, stop)`` pairs (``pysidwizard.sidmaker``'s echo save); 0.50.1 banks SID access by ``$01``; 0.53.1
     # refuses a hosted tune whose interrupts reach no modelled entry. 0.58 has events and the
     # counter, walker, cursor and owner objects; 0.59 adds the carries, holds, guards, last-read
-    # cursors and views the SID-Wizard spec states its tables and streams with.
-    "pysidtracker>=0.59.0",
+    # cursors and views the SID-Wizard spec states its tables and streams with; 0.60 is the release the
+    # spec's word tables and array states are written against.
+    "pysidtracker>=0.60.0",
 ]
 
 [project.optional-dependencies]
