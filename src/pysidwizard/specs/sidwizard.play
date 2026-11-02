@@ -257,6 +257,13 @@ machine voice[x in 0..L.chn] {
     sidg_wave: u8 @ L.sidg + 4;
     sidg_ad: u8 @ L.sidg + 5;
     sidg_sr: u8 @ L.sidg + 6;
+    chip_freqlo: u8 @ L.sid;
+    chip_freqhi: u8 @ L.sid + 1;
+    chip_pwlo: u8 @ L.sid + 2;
+    chip_pwhi: u8 @ L.sid + 3;
+    chip_wave: u8 @ L.sid + 4;
+    chip_ad: u8 @ L.sid + 5;
+    chip_sr: u8 @ L.sid + 6;
     flswtbl: u8 @ L.flswtbl;
     flswtb2: u8 @ L.flswtb2;
     trktmpos: u8 @ L.trktmpos;
@@ -1522,13 +1529,13 @@ machine commonregs {
 
     if L.allghostregs {
       for v in L.order {
-        sid[v * 7 + 6] := mem[L.sidg + v * 7 + 6];
-        sid[v * 7 + 5] := mem[L.sidg + v * 7 + 5];
-        sid[v * 7] := mem[L.sidg + v * 7];
-        sid[v * 7 + 1] := mem[L.sidg + v * 7 + 1];
-        sid[v * 7 + 2] := mem[L.sidg + v * 7 + 2];
-        sid[v * 7 + 3] := mem[L.sidg + v * 7 + 3];
-        sid[v * 7 + 4] := mem[L.sidg + v * 7 + 4];
+        voice[v].chip_sr := voice[v].sidg_sr;
+        voice[v].chip_ad := voice[v].sidg_ad;
+        voice[v].chip_freqlo := voice[v].sidg_freqlo;
+        voice[v].chip_freqhi := voice[v].sidg_freqhi;
+        voice[v].chip_pwlo := voice[v].sidg_pwlo;
+        voice[v].chip_pwhi := voice[v].sidg_pwhi;
+        voice[v].chip_wave := voice[v].sidg_wave;
       }
     }
     sid_resfc := fswitch | resonib;
@@ -1541,7 +1548,12 @@ machine commonregs {
       let track = ckbdtrk;
       let k = 0;
       if track != 0 {
-        let p = mem[L.dpitch + u16(fltctrl)];
+        let p = 0;
+        for v in 0..L.chn {
+          if fltctrl == v * 7 {
+            p := voice[v].dpitch;
+          }
+        }
         c := carry(track, p);
         k := exptabh[track + p];
       }
