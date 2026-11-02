@@ -99,10 +99,8 @@ view instrument @ zp {
 }
 
 // Song data, read through each instruction's own operand.
-cell ptnl1: u8[256] @ L.p_ptnl1 ro;
-cell ptnh1: u8[256] @ L.p_ptnh1 ro;
-cell ptnl2: u8[256] @ L.p_ptnl2 ro;
-cell ptnh2: u8[256] @ L.p_ptnh2 ro;
+cell ptnl: u8[256] @ L.p_ptnl1 ro;
+cell ptnh: u8[256] @ L.p_ptnh1 ro;
 cell insl1: u8[256] @ L.p_insl1 ro;
 cell insh1: u8[256] @ L.p_insh1 ro;
 cell insl2: u8[256] @ L.p_insl2 ro;
@@ -113,14 +111,9 @@ cell insl4: u8[256] @ L.p_insl4 ro;
 cell insh4: u8[256] @ L.p_insh4 ro;
 cell insl5: u8[256] @ L.p_insl5 ro;
 cell insh5: u8[256] @ L.p_insh5 ro;
-cell tmpp1: u8[256] @ L.p_tmpp1 ro;
-cell tmpp2: u8[256] @ L.p_tmpp2 ro;
-cell chdt1: u8[256] @ L.p_chdt1 ro;
-cell chdt2: u8[256] @ L.p_chdt2 ro;
-cell chdp1: u8[256] @ L.p_chdp1 ro;
-cell chdp2: u8[256] @ L.p_chdp2 ro;
-cell chdp3: u8[256] @ L.p_chdp3 ro;
-cell chdp4: u8[256] @ L.p_chdp4 ro;
+cell tmpp: u8[256] @ L.p_tmpp1 ro;
+cell chdt: u8[256] @ L.p_chdt1 ro;
+cell chdp: u8[256] @ L.p_chdp1 ro;
 cell subt1: u8[256] @ L.p_subt1 ro;
 cell subt2: u8[256] @ L.p_subt2 ro;
 
@@ -400,8 +393,8 @@ machine voice[x in 0..L.chn] {
   // volume and track tempo of the orderlist effects, then the row is read.
   handler row_prep on row {
     let p = curptn;
-    let carry_lo = point_lo(ptnl1[p]);
-    let ptr = point_hi(ptnh1[p], carry_lo);
+    let carry_lo = point_lo(ptnl[p]);
+    let ptr = point_hi(ptnh[p], carry_lo);
     curifx := 0;
     curfx2 := 0;
     if L.seq_fx_support {
@@ -463,8 +456,8 @@ machine voice[x in 0..L.chn] {
   // TICK_1: the pattern's pointer again, then the pattern and orderlist step.
   proc tick_1() {
     let p = curptn;
-    let carry_lo = point_lo(ptnl2[p]);
-    let ptr = point_hi(ptnh2[p], carry_lo);
+    let carry_lo = point_lo(ptnl[p]);
+    let ptr = point_hi(ptnh[p], carry_lo);
     ptn_seq();
   }
 
@@ -882,7 +875,7 @@ machine voice[x in 0..L.chn] {
     if L.chordsupport {
       let chord = instrument.chord;
       curchord := chord;
-      chordpos := chdp1[chord];
+      chordpos := chdp[chord];
     }
   }
 
@@ -1201,16 +1194,16 @@ machine voice[x in 0..L.chn] {
         }
       } else {
         detuner := mem[zp + u16(y)];
-        let note = chdt1[chordpos];
+        let note = chdt[chordpos];
         if note == CHORD_RETURN {
-          chordpos := chdp2[curchord];
+          chordpos := chdp[curchord];
           wftpos += 3;
           rows := true;
         } else {
           if note == CHORD_LOOP {
-            let start = chdp3[curchord];
+            let start = chdp[curchord];
             chordpos := start;
-            note := chdt2[start];
+            note := chdt[start];
           }
           chordpos += 1;
           cw := relptch(note);
@@ -1509,7 +1502,7 @@ machine voice[x in 0..L.chn] {
   proc smalfx7(a: u8) {
     if L.chordsupport {
       curchord := a;
-      chordpos := chdp4[a];
+      chordpos := chdp[a];
     }
   }
 
@@ -1622,7 +1615,7 @@ machine voice[x in 0..L.chn] {
       }
       0x12 => {
         if L.tempoprgsupp && !z {
-          maintm2(tmpp1[a]);
+          maintm2(tmpp[a]);
         }
       }
       0x13 => {
@@ -1638,7 +1631,7 @@ machine voice[x in 0..L.chn] {
       }
       0x15 => {
         if L.tempoprgsupp && !z {
-          trktmp3(tmpp2[a]);
+          trktmp3(tmpp[a]);
         }
       }
        0x16..0x1D if L.bigfx_delay_16 => {
