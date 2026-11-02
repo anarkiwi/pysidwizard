@@ -356,20 +356,18 @@ machine voice[x in 0..L.chn] {
   // DOTRACK: the counter's tick (the count before its step) picks the voice's work.
   proc dotrack() {
     fire frame;
-    let count = ticks;
-    if count == 0 {
-      return;
-    }
-    if neg(count - 2) {
-      let p = curptn;
-      zp := word(ptnl[p], ptnh[p]) + ite(L.swp, swp, 0);
-      ptn_seq();
-    } elif count == 2 {
-      tick_2();
-    } else {
-      cntplay();
+    match ticks {
+      0 => {}
+      2 => tick_2();
+      1, 0x80..0xFF => {
+        let p = curptn;
+        zp := word(ptnl[p], ptnh[p]) + ite(L.swp, swp, 0);
+        ptn_seq();
+      }
+      _ => cntplay();
     }
   }
+
 
   // The row tick: the pattern's pointer, the one-shot columns cleared and the delayed main
   // volume and track tempo of the orderlist effects, then the row is read.
@@ -577,44 +575,20 @@ machine voice[x in 0..L.chn] {
   // does not select, only the instrument's tables run.
   proc hardrst(timer: u8) {
     let note = curnot;
-    if note == 0 || note >= NOTE_FX_MIN {
-      cntplay();
-      return;
-    }
-    if curfx2 == PORTAMENTO {
-      cntplay();
-      return;
-    }
-    let c = curfx2 >= PORTAMENTO;
-    if L.portame_notefx && slidevib == NOTE_PORTA {
-      cntplay();
-      return;
-    }
     let y = curifx;
+    if note == 0 || note >= NOTE_FX_MIN || curfx2 == PORTAMENTO || y == LEGATO
+        || (L.portame_notefx && slidevib == NOTE_PORTA) {
+      cntplay();
+      return;
+    }
+    let c = ite(!L.hardrestypes || y != 0, y >= LEGATO, curfx2 >= PORTAMENTO);
     if L.hardrestypes {
-      if y != 0 {
-        if y == LEGATO {
-          cntplay();
-          return;
-        }
-        c := y >= LEGATO;
-        if !neg(y - LEGATO) {
-          y := curins;
-        }
-      } else {
-        y := curins;
-      }
+      y := ite(y == 0 || !neg(y - LEGATO), curins, y);
       zp := word(insl[y], insh[y]) + ite(L.swp, swp, 0);
       if instrument.control & timer == 0 {
         hrender(c);
         return;
       }
-    } else {
-      if y == LEGATO {
-        cntplay();
-        return;
-      }
-      c := y >= LEGATO;
     }
     if L.hrender_inline && L.hrgtoff_or8 {
       if instrument.control & 4 != 0 {
