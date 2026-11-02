@@ -7,13 +7,12 @@ name = "pysidwizard"
 version = "0.6.2"
 description = "Pure-Python reader, writer, and player for SID-Wizard SWM modules"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [{ name = "Josh Bailey" }]
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Sound/Audio",
@@ -96,7 +95,7 @@ fail_under = 85
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "B", "I", "UP"]
@@ -116,4 +115,4 @@ ignore = [
 
 [tool.black]
 line-length = 100
-target-version = ["py311"]
+target-version = ["py312"]
