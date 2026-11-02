@@ -272,7 +272,8 @@ machine voice[x in 0..L.chn] {
     }
   }
 
-  // The carry the voice's multispeed call leaves for the next voice's, the tick number
+  // The carry: the bit the player's tables leave for the frequency's detune add, and the
+  // multispeed call leaves for the next voice's; the tick number
   // the clock leaves for DOTRACK, and whether the voice has played this call (a second
   // step is the subtune restart).
   signal c: bool = false;
@@ -288,13 +289,13 @@ machine voice[x in 0..L.chn] {
       sfx();
     }
     if L.mulply {
-      let cin = cpu.c;
+      c := cpu.c;
       for p in L.order {
         if member(p * 16 + x, L.chain) {
-          cin := voice[p].c;
+          c := voice[p].c;
         }
       }
-      c := mulcntp(cin);
+      mulcntp();
     } else {
       dotrack();
     }
@@ -405,7 +406,8 @@ machine voice[x in 0..L.chn] {
           curinstemp := y;
         }
         curifx := 0;
-        hrender(y >= LEGATO);
+        c := y >= LEGATO;
+        hrender();
         return;
       }
     }
@@ -561,12 +563,12 @@ machine voice[x in 0..L.chn] {
       cntplay();
       return;
     }
-    let c = ite(!L.hardrestypes || y != 0, y >= LEGATO, curfx2 >= PORTAMENTO);
+    c := ite(!L.hardrestypes || y != 0, y >= LEGATO, curfx2 >= PORTAMENTO);
     if L.hardrestypes {
       y := ite(y == 0 || !neg(y - LEGATO), curins, y);
       selected := y;
       if instrument[selected].control & timer == 0 {
-        hrender(c);
+        hrender();
         return;
       }
     }
@@ -610,12 +612,12 @@ machine voice[x in 0..L.chn] {
       sidg_ad := DEFAULT_HR_AD;
       sidg_sr := DEFAULT_HR_SR;
     }
-    hrender(c);
+    hrender();
   }
 
   // HRENDER: the instrument's pointer, then its tables from the build's chosen
   // stage (the waveform table, unless the build runs more on a hard-restart tick).
-  proc hrender(c: bool) {
+  proc hrender() {
     let y = curins;
     selected := y;
     if L.vibslidealways {
@@ -625,7 +627,10 @@ machine voice[x in 0..L.chn] {
     } elif L.pulsealways {
       setpwid_chain();
     } else {
-      let out = wfarptb(lo(insptr[selected] + L.swp_base), ite(L.swp, false, c));
+      if L.swp {
+        c := false;
+      }
+      wfarptb(lo(insptr[selected] + L.swp_base));
     }
   }
 
@@ -866,10 +871,10 @@ machine voice[x in 0..L.chn] {
 
   // PORTAME: the difference to the note's frequency, then a step of FREQMOD
   // towards it, or the target itself once the step reaches it.
-  proc portame(c: bool) {
+  proc portame(round: bool) {
     let t = word(freqtbl[dpitch], freqtbh[dpitch]);
-    let d = t - freq - u16(!c);
-    if t >= freq + u16(!c) {
+    let d = t - freq - u16(!round);
+    if t >= freq + u16(!round) {
       if d >= freqmod {
         freq += freqmod + 1;
       } else {
@@ -923,23 +928,24 @@ machine voice[x in 0..L.chn] {
 
   // SETPWID then WFARPTB, with the accumulator and carry the PW table leaves.
   proc setpwid_chain() {
-    let c = setpwid();
-    let out = wfarptb(lo(pw), c);
+    setpwid();
+    wfarptb(lo(pw));
   }
+
 
   // SETPWID: the PW table's row, then the keyboard track and the PW registers. Returns the
   // carry the code leaves.
-  proc setpwid() -> bool {
-    let c = false;
-    react pw_table on pulse() -> c;
-    let out = endpwtb(c);
-    return out;
+  proc setpwid() {
+    let f = false;
+    react pw_table on pulse() -> f;
+    c := f;
+    endpwtb();
   }
+
 
   // ENDPWTB: the PW keyboard track (the note scales the high nibble), then the PW
   // registers. Returns the carry the code leaves.
-  proc endpwtb(cin: bool) -> bool {
-    let c = cin;
+  proc endpwtb() {
     if L.pwkeybtrack {
       let track = pkbdtrk;
       let k = 0;
@@ -958,22 +964,21 @@ machine voice[x in 0..L.chn] {
     } else {
       sidg_pw := pw;
     }
-    return c;
   }
 
 
   // WFARPTB: the waveform/arpeggio table every ARPSPED+1 frames, then the pitch
   // and waveform registers. Returns the carry the code leaves.
-  proc wfarptb(a: u8, c: bool) -> bool {
-    let cw = wftable(a, c);
-    let f = freq + ite(L.detunesupport, u16(detuner) + u16(cw), 0);
+  proc wfarptb(a: u8) {
+    wftable(a);
+    let f = freq + ite(L.detunesupport, u16(detuner) + u16(c), 0);
     sidg_freq := f;
     if L.detunesupport {
-      cw := f < freq;
+      c := f < freq;
     }
     sidg_wave := wfghost;
-    return cw;
   }
+
 
   // The table row: $00..$0F (with arp speed) sets the row's repeat, $10..$FD the
   // waveform (gated by PTNGATE), $FE jumps, $FF stops. The second column is the
@@ -988,29 +993,30 @@ machine voice[x in 0..L.chn] {
       _ => value();
     }
   }
-  proc wftable(a: u8, c: bool) -> bool {
+  proc wftable(a: u8) {
     if L.arpspeedsupp {
       arpscnt -= 1;
       if !neg(arpscnt) {
-        return c;
+        return;
       }
       a := arpsped;
     }
     arpscnt := a & 0x3F;
     let rows = true;
-    let cw = c;
     while rows bound 256 {
       rows := false;
       let wave = wave_table.c0;
       let setwave = true;
       if wave == TABLE_JUMP {
         if neg(wave_table.c1) {
-          return true;
+          c := true;
+          return;
         }
         wftpos := wave_table.c1;
         wave := wave_table.c0;
       } elif wave > TABLE_JUMP {
-        return true;
+        c := true;
+        return;
       } elif L.arpspeedsupp && wave < 0x10 {
         arpscnt := wave;
         setwave := false;
@@ -1032,7 +1038,7 @@ machine voice[x in 0..L.chn] {
             note := chdt[chordpos];
           }
           chordpos += 1;
-          cw := relptch(note);
+          c := relptch(note);
         }
       } else {
         if L.detunesupport && wave_table.c2 != 0xFF {
@@ -1040,18 +1046,18 @@ machine voice[x in 0..L.chn] {
         }
         react wave_table on wave();
         if !neg(pitch) {
-          cw := relptch(pitch);
+          c := relptch(pitch);
         } elif L.wfarp_nop_supp && pitch == 0x80 {
-          return true;
+          c := true;
+          return;
         } elif pitch < 0xE0 {
           absptch(pitch);
-          cw := false;
+          c := false;
         } else {
-          cw := relptch(pitch);
+          c := relptch(pitch);
         }
       }
     }
-    return cw;
   }
   proc relptch(a: u8) -> bool {
     let p = dpitch;
@@ -1067,23 +1073,25 @@ machine voice[x in 0..L.chn] {
   // MULCNTP: a multispeed call runs the instrument's tables once its first frame
   // has passed: the waveform table, with bit 6 of its arp speed the PW table too,
   // with bit 7 also the filter table. Returns the carry the code leaves.
-  proc mulcntp(cin: bool) -> bool {
+  proc mulcntp() {
     if neg(arpscnt) {
-      return cin;
+      return;
     }
-    let y = curins;
-    selected := y;
+    selected := curins;
     let speed = instrument[selected].arp_speed;
     if neg(speed) {
       filtprg();
     } elif speed & 0x40 == 0 {
-      let out = wfarptb(0, ite(L.swp, false, cin));
-      return out;
+      if L.swp {
+        c := false;
+      }
+      wfarptb(0);
+      return;
     }
-    let c = setpwid();
-    let out = wfarptb(lo(pw), c);
-    return out;
+    setpwid();
+    wfarptb(lo(pw));
   }
+
 
 
 
