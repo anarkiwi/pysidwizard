@@ -544,7 +544,7 @@ machine voice[x in 0..L.chn] {
         transp2 := a - 0x90;
       }
     } elif L.seq_tempo_capped && a < 0xB0 || !L.seq_tempo_capped && neg(a - 0xB0) {
-      seqvolu := a & 0x0F;
+      seqvolu := a.lo;
     } elif a < 0xF0 || !L.seq_tempo_capped {
       if L.tempoprgsupp {
         seqtempo := a - 0xB0 - u8(a < 0xB0);
@@ -1262,8 +1262,8 @@ machine voice[x in 0..L.chn] {
   }
 
   proc setvibr(a: u8) {
-    vibfrequ := (a & 0x0F) << 1;
-    let count = a & 0x0F;
+    vibfrequ := a.lo << 1;
+    let count = a.lo;
     let y = slidevib;
     if !L.vibratotypes || neg(y - 0x20) {
       count >>= 1;
@@ -1272,7 +1272,7 @@ machine voice[x in 0..L.chn] {
       count := 0;
     }
     vibracnt := count;
-    let amp = (a & 0xF0) >> 1;
+    let amp = a.hi << 3;
     setfmod(amp, amp == 0);
   }
 
@@ -1408,43 +1408,58 @@ machine voice[x in 0..L.chn] {
   // nibble, kept in VALSTOR, is its value.
   proc smalpfx(a: u8) {
     smalsel(a);
-    smallfx(a >> 4, a & 0x0F);
+    smallfx(a.hi, a.lo);
   }
 
   proc smalsel(a: u8) {
-    indexj2 := smallfxtbl[a >> 4];
-    valstor := a & 0x0F;
+    indexj2 := smallfxtbl[a.hi];
+    valstor := a.lo;
   }
 
   proc smallfx(n: u8, v: u8) {
     match n {
       2 => {
         if L.allghostregs {
-          sidg_ad := setnibh(sidg_ad);
+          mergest := sidg_ad.lo;
+          sidg_ad.hi := valstor;
         } else {
-          sidg_ad := setinbh(3);
+          let b = instrument.ad;
+          mergest := b.lo;
+          b.hi := valstor;
+          sidg_ad := b;
         }
       }
       3 => {
         if L.allghostregs {
-          sidg_ad := setnibl(sidg_ad);
+          sidg_ad.lo := valstor;
         } else {
-          sidg_ad := setnibl(instrument.ad);
+          let b = instrument.ad;
+          b.lo := valstor;
+          sidg_ad := b;
         }
       }
-      4 => wfghost := setnibh(wfghost);
+      4 => {
+        mergest := wfghost.lo;
+        wfghost.hi := valstor;
+      }
       5 => {
         if L.allghostregs {
-          sidg_sr := setnibh(sidg_sr);
+          mergest := sidg_sr.lo;
+          sidg_sr.hi := valstor;
         } else {
-          sidg_sr := setinbh(4);
+          let b = instrument.sr;
+          mergest := b.lo;
+          b.hi := valstor;
+          sidg_sr := b;
         }
       }
       6 => {
         if L.allghostregs {
-          sidg_sr := setnibl(sidg_sr);
+          sidg_sr.lo := valstor;
         } else {
-          sidg_sr := setnibl(instrument.sr);
+          let b = instrument.sr;
+          b.lo := valstor;
+          sidg_sr := b;
         }
       }
       7 => smalfx7(v);
@@ -1468,11 +1483,8 @@ machine voice[x in 0..L.chn] {
       0x0C => smalfxc(v);
       0x0D if L.detune_smallfx => detuner := v << 3;
       0x0D, 0x0E => {
-        if L.wfctrl_smallfx {
-          let w = setnibl(wfghost);
-          if L.wfctrl_fx_stores {
-            wfghost := w;
-          }
+        if L.wfctrl_smallfx && L.wfctrl_fx_stores {
+          wfghost.lo := valstor;
         }
       }
       0x0F => {
@@ -1483,28 +1495,11 @@ machine voice[x in 0..L.chn] {
     }
   }
 
-  // SETNIBL / SETINBH / SETNIBH: a nibble of a byte replaced by the effect's value.
-  proc setnibl(a: u8) -> u8 {
-    return (a & 0xF0) | valstor;
-  }
-
-  proc setinbh(y: u8) -> u8 {
-    let a = setnibh(mem[zp + u16(y)]);
-    return a;
-  }
-
-  proc setnibh(a: u8) -> u8 {
-    mergest := a & 0x0F;
-    return (valstor << 4) | mergest;
-  }
-
-  // MULTI3C: the value times three, and the carry the addition leaves.
-  proc multi3c(a: u8) -> u16 {
+  // The value times three folded into a byte, MUL3TMP keeping the value.
+  proc mul3(a: u8) -> u8 {
     mul3tmp := a;
-    let doubled = a << 1;
-    let c = neg(a);
-    let m = mul3tmp;
-    return word(doubled + m + u8(c), u8(carry(doubled, m, c)));
+    let t = u16(a) * 3;
+    return lo(t) + hi(t);
   }
 
   proc smalfx7(a: u8) {
@@ -1525,12 +1520,14 @@ machine voice[x in 0..L.chn] {
   // value's low nibble as the amplitude, and the instrument's vibrato type).
   proc vibamfx(a: u8) {
     if L.vibamfx_amp_only {
-      let amp = (a << 4) >> 1;
+      let amp = a.lo << 3;
       setfmod(amp, amp == 0);
       forcvib();
     } else {
-      let v = setinbh(5);
-      bigfx08(v);
+      let b = instrument.vibrato;
+      mergest := b.lo;
+      b.hi := valstor;
+      bigfx08(b);
     }
   }
 
@@ -1561,8 +1558,8 @@ machine voice[x in 0..L.chn] {
       }
       4 => {
         if L.bigfx_v10 && a >= 0xF0 {
-          let m = multi3c(a & 0x0F);
-          wftpos := lo(m) + WFTABLEPOS + hi(m);
+          let m = mul3(a.lo);
+          wftpos := m + WFTABLEPOS;
         } else {
           wfghost := a;
         }
@@ -1575,20 +1572,20 @@ machine voice[x in 0..L.chn] {
         if L.bigfx_v10 {
           slidevib := a & 0x30;
         } else {
-          let m = multi3c(a);
-          wftpos := lo(m) + WFTABLEPOS + hi(m);
+          let m = mul3(a);
+          wftpos := m + WFTABLEPOS;
         }
       }
       0x0A => {
-        let m = multi3c(a);
-        pwtpos := lo(m) + instrument.pw_start + hi(m);
+        let m = mul3(a);
+        pwtpos := m + instrument.pw_start;
         if L.table_fx_resets {
           pweepcnt := 0;
         }
       }
       0x0B => {
-        let m = multi3c(a);
-        fltposi := lo(m) + instrument.filter_start + hi(m);
+        let m = mul3(a);
+        fltposi := m + instrument.filter_start;
         if L.table_fx_resets {
           cwepcnt := 0;
         }
@@ -1597,10 +1594,10 @@ machine voice[x in 0..L.chn] {
       0x0D => {
         detuner := a;
         if L.bigfx0d_falls {
-          pwhigho := a & 0x0F;
+          pwhigho := a.lo;
         }
       }
-      0x0E => pwhigho := a & 0x0F;
+      0x0E => pwhigho := a.lo;
       0x0F => {
         if L.bigfx_v10 {
           flshift := a;
@@ -1614,8 +1611,8 @@ machine voice[x in 0..L.chn] {
       }
       0x11 => {
         if L.tempoprgsupp {
-          tmpt7 := (a & 0x0F) | 0x80;
-          tmpt6 := a >> 4;
+          tmpt7 := a.lo | 0x80;
+          tmpt6 := a.hi;
           maintm2(0);
         }
       }
@@ -1631,8 +1628,8 @@ machine voice[x in 0..L.chn] {
       }
       0x14 => {
         if L.tempoprgsupp {
-          let y = trktmp2(a >> 4);
-          tmpt9[y] := (a & 0x0F) | 0x80;
+          let y = trktmp2(a.hi);
+          tmpt9[y] := a.lo | 0x80;
         }
       }
       0x15 => {
@@ -1672,7 +1669,7 @@ machine voice[x in 0..L.chn] {
       }
       _ => {
         if L.filt_ctrl_fx {
-          fswitch := a & 0x0F;
+          fswitch := a.lo;
           resonib := a & 0xF0;
         }
         if L.bigfx1f_toggle {

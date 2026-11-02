@@ -45,7 +45,7 @@ _ROUTINE_PROCS: Dict[str, Tuple[str, ...]] = {
     "WFARPTB": ("wfarptb", "wftable", "relptch", "absptch"),
     "WRPITCH": ("wfarptb", "wftable", "relptch", "absptch"),
     "SETFMOD": ("setfmod",),
-    "SETINBL": ("setnibl", "setinbh", "setnibh", "multi3c"),
+    "SETINBL": ("smallfx", "vibamfx", "mul3"),
     "NOTE_FX": ("note_fx", "note_fx_at", "ngateof"),
     "big effect $0e": ("bigfx",),
     "PLAYER": ("sfx",),
