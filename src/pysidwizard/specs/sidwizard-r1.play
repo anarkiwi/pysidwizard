@@ -31,7 +31,9 @@ event pattern_end: tick;
 event wave: tick;
 
 // Song data: instruments and patterns through their pointer tables, the orderlists, chords,
-// tempo programs and subtunes.
+// tempo programs and subtunes. A voice reads the instrument any voice last used: its own once
+// it has one, else whichever another voice used before it.
+state last_ins: u8 = 0;
 cell insptr: u16[256] @ (L.p_insl3, L.p_insh3) ro;
 cell ptnptr: u16[256] @ (L.p_ptnl1, L.p_ptnh1) ro;
 table insdata via insptr stride 1 offset L.swp_base { b: u8; }
@@ -84,7 +86,7 @@ owner filter_owner: fltctrl { id x * 7; none 0xFF; on note claim; }
 // The filter table of the voice owning the filter: sweep, set (band, resonance, cutoff),
 // jump, stop; the third byte is the keyboard track or a filter switch.
 cursor filter_table {
-  table @ insptr[curins] + L.swp_base width 3;
+  table @ insptr[last_ins] + L.swp_base width 3;
   pos fltposi; count cwepcnt; values cutoff, ctfhgho, fltband, resonib, ckbdtrk, fswitch;
   on filter step;
   match c0 {
@@ -119,7 +121,7 @@ machine voice[x in 0..L.chn] {
 
   // The pulse table: sweep, set, jump, stop; the third byte is the keyboard track.
   cursor pw_table {
-    table @ insptr[curins] + L.swp_base width 3;
+    table @ insptr[last_ins] + L.swp_base width 3;
     pos pwtpos; count pweepcnt; values pw, pkbdtrk;
     on pulse step;
     match c0 {
@@ -132,7 +134,7 @@ machine voice[x in 0..L.chn] {
 
   // The waveform/arpeggio table, read a row at a time: waveform, pitch, detune.
   cursor wave_table {
-    table @ insptr[curins] + L.swp_base width 3;
+    table @ insptr[last_ins] + L.swp_base width 3;
     pos wftpos;
     on wave step;
     match c0 { _ => value(); }
@@ -259,19 +261,20 @@ machine voice[x in 0..L.chn] {
       return;
     }
     c := ite(y != 0, y >= LEGATO, curfx2 >= PORTAMENTO);
-    let hr = ite(y == 0 || !neg(y - LEGATO), curins, y);
-    if instrument[hr].control & timer != 0 {
+    last_ins := ite(y == 0 || !neg(y - LEGATO), curins, y);
+    if instrument[last_ins].control & timer != 0 {
       ptngate := 0xFE;
       wfghost &= 0xFE;
-      out_sr := instrument[hr].hr_sr;
-      out_ad := instrument[hr].hr_ad;
-      if instrument[hr].control & 4 != 0 {
+      out_sr := instrument[last_ins].hr_sr;
+      out_ad := instrument[last_ins].hr_ad;
+      if instrument[last_ins].control & 4 != 0 {
         wfghost := 0x18;
         out_wave := 0x18;
         return;
       }
     }
-    wave_frame(lo(insptr[curins] + L.swp_base));
+    last_ins := curins;
+    wave_frame(lo(insptr[last_ins] + L.swp_base));
   }
 
   // Tick 2: the row's instrument (below the limit, also resetting the pulse and filter tables),
@@ -287,6 +290,7 @@ machine voice[x in 0..L.chn] {
       out_wave := wfghost;
       return;
     }
+    last_ins := curins;
     let note = curnot;
     if note >= NOTE_FX {
       if note < 0x78 {
@@ -304,7 +308,7 @@ machine voice[x in 0..L.chn] {
       tables();
       return;
     }
-    dpitch := note + instrument[curins].octave + transp;
+    dpitch := note + instrument[last_ins].octave + transp;
     if curfx2 == PORTAMENTO {
     } elif carry(PORTAMENTO, slidevib, PORTAMENTO >= curfx2) {
       slidevib := TONE_PORTA;
@@ -321,35 +325,35 @@ machine voice[x in 0..L.chn] {
   // A note's sound: control byte (masked by the reset bits), first-frame waveform, tables from
   // their starts, vibrato, chord, filter table and ADSR.
   proc start_sound() {
-    insctrl := instrument[curins].control & tablrst;
+    insctrl := instrument[last_ins].control & tablrst;
     slidevib := insctrl & 0x30;
     if insctrl & 8 != 0 {
       out_freq := word(lo(out_freq), freqtbh[dpitch]);
-      wfghost := instrument[curins].first_wave;
+      wfghost := instrument[last_ins].first_wave;
     }
     wftpos := WAVE_START;
     ptngate := 0xFF;
     arpscnt := 0xFF;
-    arpsped := instrument[curins].arp_speed;
-    videlcnt := instrument[curins].vibrato_delay;
-    set_vibrato(instrument[curins].vibrato);
-    curchord := instrument[curins].chord;
+    arpsped := instrument[last_ins].arp_speed;
+    videlcnt := instrument[last_ins].vibrato_delay;
+    set_vibrato(instrument[last_ins].vibrato);
+    curchord := instrument[last_ins].chord;
     chordpos := chdp[curchord];
     if insctrl & 0x40 == 0 {
-      pwtpos := instrument[curins].pw_start;
+      pwtpos := instrument[last_ins].pw_start;
     }
     if !neg(insctrl) {
       start_filter();
     }
-    out_sr := instrument[curins].sr;
-    out_ad := instrument[curins].ad;
+    out_sr := instrument[last_ins].sr;
+    out_ad := instrument[last_ins].ad;
   }
 
   // The instrument's filter table: $00 filters the voice without taking the filter, $FF
   // unfilters it, anything else takes the filter from that row.
   proc start_filter() {
-    let y = instrument[curins].filter_start;
-    let row = insdata[curins][y].b;
+    let y = instrument[last_ins].filter_start;
+    let row = insdata[last_ins][y].b;
     if row != 0xFF {
       react filter_owner on note(x * 7, 0xFF, row != 0);
       if row != 0 {
@@ -368,6 +372,7 @@ machine voice[x in 0..L.chn] {
 
   proc instrument_frame() {
     if curins != 0 {
+      last_ins := curins;
       tables();
     }
   }
@@ -537,9 +542,9 @@ machine voice[x in 0..L.chn] {
   }
 
   proc vibrato_amplitude() {
-    let b = instrument[curins].vibrato;
+    let b = instrument[last_ins].vibrato;
     b.hi := valstor;
-    slidevib := instrument[curins].control & 0x30;
+    slidevib := instrument[last_ins].control & 0x30;
     set_vibrato(b);
   }
 
@@ -560,17 +565,17 @@ machine voice[x in 0..L.chn] {
         wfghost |= 1;
       }
       _ => {
-        if instrument[curins].gateoff_wf != 0 {
-          wftpos := instrument[curins].gateoff_wf;
+        if instrument[last_ins].gateoff_wf != 0 {
+          wftpos := instrument[last_ins].gateoff_wf;
         } else {
           ptngate := 0xFE;
           wfghost &= 0xFE;
         }
-        if instrument[curins].gateoff_pw != 0 {
-          pwtpos := instrument[curins].gateoff_pw;
+        if instrument[last_ins].gateoff_pw != 0 {
+          pwtpos := instrument[last_ins].gateoff_pw;
         }
-        if filter_owner.mine && instrument[curins].gateoff_filter != 0 {
-          fltposi := instrument[curins].gateoff_filter;
+        if filter_owner.mine && instrument[last_ins].gateoff_filter != 0 {
+          fltposi := instrument[last_ins].gateoff_filter;
         }
       }
     }
@@ -596,23 +601,23 @@ machine voice[x in 0..L.chn] {
     valstor := v;
     match a.hi {
       2 => {
-        let b = instrument[curins].ad;
+        let b = instrument[last_ins].ad;
         b.hi := v;
         out_ad := b;
       }
       3 => {
-        let b = instrument[curins].ad;
+        let b = instrument[last_ins].ad;
         b.lo := v;
         out_ad := b;
       }
       4 => wfghost.hi := v;
       5 => {
-        let b = instrument[curins].sr;
+        let b = instrument[last_ins].sr;
         b.hi := v;
         out_sr := b;
       }
       6 => {
-        let b = instrument[curins].sr;
+        let b = instrument[last_ins].sr;
         b.lo := v;
         out_sr := b;
       }
@@ -654,7 +659,7 @@ machine voice[x in 0..L.chn] {
       6 => out_sr := a;
       7 => set_chord(a);
       8 => {
-        slidevib := instrument[curins].control & 0x30;
+        slidevib := instrument[last_ins].control & 0x30;
         set_vibrato(a);
       }
       9 => {
@@ -663,12 +668,12 @@ machine voice[x in 0..L.chn] {
       }
       0x0A => {
         let m = times3(a);
-        pwtpos := m + instrument[curins].pw_start;
+        pwtpos := m + instrument[last_ins].pw_start;
         pweepcnt := 0;
       }
       0x0B => {
         let m = times3(a);
-        fltposi := m + instrument[curins].filter_start;
+        fltposi := m + instrument[last_ins].filter_start;
         cwepcnt := 0;
       }
       0x0C => set_arp_speed(a);
