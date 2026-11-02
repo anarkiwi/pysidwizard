@@ -101,16 +101,8 @@ view instrument @ zp {
 // Song data, read through each instruction's own operand.
 cell ptnl: u8[256] @ L.p_ptnl1 ro;
 cell ptnh: u8[256] @ L.p_ptnh1 ro;
-cell insl1: u8[256] @ L.p_insl1 ro;
-cell insh1: u8[256] @ L.p_insh1 ro;
-cell insl2: u8[256] @ L.p_insl2 ro;
-cell insh2: u8[256] @ L.p_insh2 ro;
-cell insl3: u8[256] @ L.p_insl3 ro;
-cell insh3: u8[256] @ L.p_insh3 ro;
-cell insl4: u8[256] @ L.p_insl4 ro;
-cell insh4: u8[256] @ L.p_insh4 ro;
-cell insl5: u8[256] @ L.p_insl5 ro;
-cell insh5: u8[256] @ L.p_insh5 ro;
+cell insl: u8[256] @ L.p_insl3 ro;
+cell insh: u8[256] @ L.p_insh3 ro;
 cell tmpp: u8[256] @ L.p_tmpp1 ro;
 cell chdt: u8[256] @ L.p_chdt1 ro;
 cell chdp: u8[256] @ L.p_chdp1 ro;
@@ -639,8 +631,8 @@ machine voice[x in 0..L.chn] {
       } else {
         y := curins;
       }
-      let carry_lo = point_lo(insl2[y]);
-      let ptr = point_hi(insh2[y], carry_lo);
+      let carry_lo = point_lo(insl[y]);
+      let ptr = point_hi(insh[y], carry_lo);
       if instrument.control & timer == 0 {
         hrender(c);
         return;
@@ -699,8 +691,8 @@ machine voice[x in 0..L.chn] {
   // stage (the waveform table, unless the build runs more on a hard-restart tick).
   proc hrender(c: bool) {
     let y = curins;
-    let c3 = point_lo(insl3[y]);
-    let ptr = point_hi(insh3[y], c3);
+    let c3 = point_lo(insl[y]);
+    let ptr = point_hi(insh[y], c3);
     if L.vibslidealways {
       cntply2();
     } elif L.filteralways {
@@ -763,8 +755,8 @@ machine voice[x in 0..L.chn] {
       }
       return;
     }
-    let carry_lo = point_lo(insl4[ins]);
-    let ptr = point_hi(insh4[ins], carry_lo);
+    let carry_lo = point_lo(insl[ins]);
+    let ptr = point_hi(insh[ins], carry_lo);
     let note = curnot;
     if note == 0 {
       insptfx();
@@ -931,8 +923,8 @@ machine voice[x in 0..L.chn] {
   }
 
   proc cntply1(y: u8) {
-    let c = point_lo(insl5[y]);
-    let ptr = point_hi(insh5[y], c);
+    let c = point_lo(insl[y]);
+    let ptr = point_hi(insh[y], c);
   }
 
   // CNTPLY2: vibrato and slides, then the filter, PW and waveform tables.
@@ -1233,8 +1225,8 @@ machine voice[x in 0..L.chn] {
       return cin;
     }
     let y = curins;
-    let c1 = point_lo(insl1[y]);
-    let ptr = point_hi(insh1[y], c1);
+    let c1 = point_lo(insl[y]);
+    let ptr = point_hi(insh[y], c1);
     let speed = instrument.arp_speed;
     if neg(speed) {
       filtprg();
