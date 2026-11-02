@@ -849,7 +849,9 @@ def _initial(view: bytes, found: dict) -> Dict[str, object]:
         out[f"init_g_{name}"] = [
             int.from_bytes(view[found["sidg"] + 7 * x + offset :][:width], "little") for x in voices
         ]
-    out["init_seqt"] = [word(found["p_seqt1"] + 4 * x) for x in voices]
+    out["init_seqt"] = [
+        (word(found["p_seqt1"] + 4 * x) - found["swp_base"]) & 0xFFFF for x in voices
+    ]
     out["init_cutoff"] = byte(found["ctflgho"]) | byte(found["ctfhgho"]) << 8
     out["init_main_tempo"] = byte(found["tempo"])
     out["init_zp"] = word(found["zp"])

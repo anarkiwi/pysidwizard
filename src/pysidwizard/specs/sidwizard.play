@@ -60,23 +60,23 @@ view instrument @ ins {
   arp_speed @ 7; chord @ 8; octave @ 9; pw_start @ 10; filter_start @ 11; gateoff_wf @ 12;
   gateoff_pw @ 13; gateoff_filter @ 14; first_wave @ 15;
 }
-table orderlist via seqt stride 1 { b: u8; }
+table orderlist via seqt stride 1 offset L.swp_base { b: u8; }
 cell tmpp: u8[256] @ L.p_tmpp1 ro;
 cell chdt: u8[256] @ L.p_chdt1 ro;
 cell chdp: u8[256] @ L.p_chdp1 ro;
 cell subt1: u8[256] @ L.p_subt1 ro;
 cell subt2: u8[256] @ L.p_subt2 ro;
+cell subtune_order: u16[256] @ (L.p_subt1, L.p_subt2 + 1) ro;
+cell subtune_orders: u16[128] @ L.p_subt1 ro;
 cell tempotbl: u8[256] @ L.tempotbl;
 cell bigfx_pwhi: u8[21] @ L.bigfx_pwhi;
 
 // The player's tables: note frequencies, and the exponents slides and keyboard tracks scale by.
-cell freqtbl: u8[256] @ L.freqtbl ro notes(lo, -1);
-cell freqtbh: u8[256] @ L.freqtbh ro notes(hi, -1);
+cell notefreq: u16[256] @ (L.freqtbl, L.freqtbh) ro notes(word, -1);
 cell exptabh: u8[256] @ L.exptabh ro;
 cell exptabh_m1: u8[256] @ L.exptabh_m1 ro;
 cell exptbase: u8[256] @ L.exptbase ro;
-cell vib_lo: u8[256] @ L.vib_lo ro;
-cell vib_hi: u8[256] @ L.vib_hi ro;
+cell slidestep: u16[256] @ (L.vib_lo, L.vib_hi) ro;
 
 // Shared state: the filter, volume, the tables' reset mask, the small-effect value.
 state tablrst: u8 = L.init_tablrst;
@@ -117,26 +117,17 @@ cursor filter_table {
   match c0 {
     0..0x7f if L.finefiltsweep => sweep(into=cutoff, count=c0, step=c1, frac=3)
       then fswitch = c2 & 0x0f if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
-           ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
-           ckbdtrk = c2 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) != 0x80,
-           ckbdtrk = c2 if L.filtkbtrack && !L.kbtrack_fswitch;
+           ckbdtrk = c2 if L.filtkbtrack,
+           ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80;
     0..0x7f => sweep(into=cutoff.hi, count=c0, step=c1)
       then fswitch = c2 & 0x0f if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
-           ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
-           ckbdtrk = c2 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) != 0x80,
-           ckbdtrk = c2 if L.filtkbtrack && !L.kbtrack_fswitch;
-    0x80..0xfd if L.finefiltsweep => value(fltband = c0 & 0x70, resonib = c0 << 4, cutoff.hi = c1, cutoff.lo = 0)
+           ckbdtrk = c2 if L.filtkbtrack,
+           ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80;
+    0x80..0xfd => value(fltband = c0 & 0x70, resonib = c0 << 4, cutoff.hi = c1, cutoff.lo = 0 if L.finefiltsweep)
       then cwepcnt = 0,
            fswitch = c2 & 0x0f if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
-           ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
-           ckbdtrk = c2 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) != 0x80,
-           ckbdtrk = c2 if L.filtkbtrack && !L.kbtrack_fswitch;
-    0x80..0xfd => value(fltband = c0 & 0x70, resonib = c0 << 4, cutoff.hi = c1)
-      then cwepcnt = 0,
-           fswitch = c2 & 0x0f if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
-           ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
-           ckbdtrk = c2 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) != 0x80,
-           ckbdtrk = c2 if L.filtkbtrack && !L.kbtrack_fswitch;
+           ckbdtrk = c2 if L.filtkbtrack,
+           ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80;
     0xfe => jump(c1) hold 0..0x7f as 0x80;
     0xff => stop;
   }
@@ -242,8 +233,9 @@ machine voice[x in 0..L.chn] {
     field value when (fx & 0xE0) == 0 -> curval = value;
   }
 
-  // The carry the tables leave for the detune add.
-  signal c: bool = false;
+  // The carry the detune add takes in: left by the hard restart, the pulse width or the waveform
+  // row, and in a multispeed call passed on from the voice before.
+  signal detune_carry: bool = false;
 
   // The tick counter against the tempo program: it starts over when it reaches the program's
   // byte, which then moves on; a signed overflow in that compare restarts the program.
@@ -294,7 +286,7 @@ machine voice[x in 0..L.chn] {
           curinstemp := y;
         }
         curifx := 0;
-        c := y >= LEGATO;
+        detune_carry := y >= LEGATO;
         hr_tables();
         return;
       }
@@ -318,9 +310,9 @@ machine voice[x in 0..L.chn] {
       sfx_frame();
     }
     if L.mulply {
-      c := mulcarry;
+      detune_carry := mulcarry;
       multispeed();
-      mulcarry := c;
+      mulcarry := detune_carry;
       return;
     }
     fire frame;
@@ -414,7 +406,7 @@ machine voice[x in 0..L.chn] {
         if neg(target) {
           if L.subtunejump {
             subtpos := target << 3;
-            seqt := word(subt1[x * 2 + subtpos], subt2[x * 2 + subtpos + 1]) + L.swp_base;
+            seqt := subtune_order[x * 2 + subtpos];
           }
           if L.subtune_restarts {
             subtjmp := target;
@@ -492,7 +484,7 @@ machine voice[x in 0..L.chn] {
       instrument_frame();
       return;
     }
-    c := ite(!L.hardrestypes || y != 0, y >= LEGATO, curfx2 >= PORTAMENTO);
+    detune_carry := ite(!L.hardrestypes || y != 0, y >= LEGATO, curfx2 >= PORTAMENTO);
     if L.hardrestypes {
       ins := insptr[ite(y == 0 || !neg(y - LEGATO), curins, y)] + L.swp_base;
       if instrument.control & timer == 0 {
@@ -614,7 +606,7 @@ machine voice[x in 0..L.chn] {
       if L.first_frame_fixed_waveform {
         wfghost := 0x09;
       } else {
-        put_freq(word(lo(g_freq), freqtbh[ite(L.first_frame_freq_by_track, x * 7, dpitch)]));
+        put_freq(word(lo(g_freq), hi(notefreq[ite(L.first_frame_freq_by_track, x * 7, dpitch)])));
         wfghost := instrument.first_wave;
       }
     }
@@ -689,7 +681,7 @@ machine voice[x in 0..L.chn] {
       } elif mode == 0x81 {
         freq += freqmod;
       } elif L.portavibra && mode == NOTE_PORTA {
-        freq := word(freqtbl[dpitch], freqtbh[dpitch]);
+        freq := notefreq[dpitch];
       } else {
         portamento();
       }
@@ -699,7 +691,7 @@ machine voice[x in 0..L.chn] {
     }
     let a = lo(ins);
     if from == 3 && L.swp {
-      c := false;
+      detune_carry := false;
     }
     if from <= 2 {
       pulse_width();
@@ -720,7 +712,7 @@ machine voice[x in 0..L.chn] {
       fire filter;
     }
     if !neg(speed) && speed & 0x40 == 0 && L.swp {
-      c := false;
+      detune_carry := false;
     }
     if neg(speed) || speed & 0x40 != 0 {
       pulse_width();
@@ -733,27 +725,27 @@ machine voice[x in 0..L.chn] {
   proc pulse_width() {
     let f = false;
     react pw_table on pulse() -> f;
-    c := f;
     if !L.pwkeybtrack {
+      detune_carry := f;
       put_pw(pw);
       return;
     }
     let k = 0;
-    c := false;
+    let kc = false;
     if pkbdtrk != 0 {
       let i = pkbdtrk + dpitch;
       let c1 = carry(pkbdtrk, dpitch);
       k := exptabh[i] - exptabh_m1[i] - u8(!c1);
-      c := !borrow(exptabh[i], exptabh_m1[i], !c1);
+      kc := !borrow(exptabh[i], exptabh_m1[i], !c1);
     }
-    let t = u16(hi(pw)) + u16(k) + u16(c);
+    let t = u16(hi(pw)) + u16(k) + u16(kc);
     put_pw(word(lo(pw), lo(t)));
-    c := t > 0xFF;
+    detune_carry := t > 0xFF;
   }
 
   // Tone portamento: a step of FREQMOD towards the note, or the note once within a step.
   proc portamento() {
-    let t = word(freqtbl[dpitch], freqtbh[dpitch]);
+    let t = notefreq[dpitch];
     let r = u16(L.portavibra);
     let d = t - freq - r;
     if t >= freq + r {
@@ -802,10 +794,10 @@ machine voice[x in 0..L.chn] {
       arpscnt := reload & 0x3F;
       wave_row();
     }
-    let f = freq + ite(L.detunesupport, u16(detuner) + u16(c), 0);
+    let f = freq + ite(L.detunesupport, u16(detuner) + u16(detune_carry), 0);
     put_freq(f);
     if L.detunesupport {
-      c := f < freq;
+      detune_carry := f < freq;
     }
     put_wave(wfghost);
   }
@@ -819,13 +811,13 @@ machine voice[x in 0..L.chn] {
       let set = true;
       if wave == 0xFE {
         if neg(wave_table.c1) {
-          c := true;
+          detune_carry := true;
           return;
         }
         wftpos := wave_table.c1;
         wave := wave_table.c0;
       } elif wave == 0xFF {
-        c := true;
+        detune_carry := true;
         return;
       } elif L.arpspeedsupp && wave < 0x10 {
         arpscnt := wave;
@@ -845,7 +837,7 @@ machine voice[x in 0..L.chn] {
           }
           chordpos += 1;
           let r = relative_note(note);
-          c := r;
+          detune_carry := r;
           return;
         }
         chordpos := chdp[curchord];
@@ -856,12 +848,12 @@ machine voice[x in 0..L.chn] {
         }
         react wave_table on wave();
         if L.wfarp_nop_supp && pitch == 0x80 {
-          c := true;
+          detune_carry := true;
         } elif neg(pitch) && pitch < 0xE0 {
-          freq := word(freqtbl[pitch & 0x7F], freqtbh[pitch & 0x7F]);
-          c := false;
+          freq := notefreq[pitch & 0x7F];
+          detune_carry := false;
         } else {
-          c := relative_note(pitch);
+          detune_carry := relative_note(pitch);
         }
         return;
       }
@@ -870,7 +862,7 @@ machine voice[x in 0..L.chn] {
 
   proc relative_note(a: u8) -> bool {
     let n = (a + dpitch) & 0x7F;
-    freq := word(freqtbl[n], freqtbh[n]);
+    freq := notefreq[n];
     return carry(a, dpitch);
   }
 
@@ -891,7 +883,7 @@ machine voice[x in 0..L.chn] {
       freqmod := u16(exptbase[y]);
       return;
     }
-    freqmod := word(vib_lo[y], vib_hi[y]);
+    freqmod := slidestep[y];
   }
 
   proc set_vibrato(a: u8) {
@@ -1284,7 +1276,7 @@ machine subtune {
     if subtjmp != 0 {
       let y = (subtjmp & 0x7F) << 3;
       for v in L.order {
-        voice[v].seqt := word(subt1[y + v * 2], subt1[y + v * 2 + 1]);
+        voice[v].seqt := subtune_orders[(y >> 1) + v];
       }
       tempotbl[1] := subt1[y + L.chn * 2];
       tempotbl[2] := subt2[y + L.chn * 2];
