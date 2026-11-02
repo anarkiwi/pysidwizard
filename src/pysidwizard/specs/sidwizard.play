@@ -114,11 +114,6 @@ cell subt2: u8[256] @ L.p_subt2 ro;
 // each voice's track tempo follows at TRKTMPOS; the tempo effects rewrite them.
 cell tempotbl: u8[256] @ L.tempotbl;
 cell tmpt2: u8[256] @ L.p_tmpt2;
-cell tmpt3: u8[256] @ L.p_tmpt3;
-cell tmpt8: u8[256] @ L.p_tmpt8;
-cell tmpt9: u8[256] @ L.p_tmpt9;
-cell tmpt6: u8 @ L.p_tmpt6;
-cell tmpt7: u8 @ L.p_tmpt7;
 
 // Without tempo programs the clock compares against one byte.
 cell tempo_byte: u8 @ L.tempo;
@@ -462,7 +457,7 @@ machine voice[x in 0..L.chn] {
       }
     }
     if L.fastspeedbind {
-      if neg((tmpt3[tmppos] & 0x7F) - 3) {
+      if neg((tmpt2[tmppos] & 0x7F) - 3) {
         tick_2();
         return;
       }
@@ -1446,13 +1441,17 @@ machine voice[x in 0..L.chn] {
         }
       }
       0x10 => {
-        tmpt6 := a | 0x80;
+        if L.tempoprgsupp {
+          tempotbl[1] := a | 0x80;
+        } else {
+          tempo_byte := a | 0x80;
+        }
         maintm2(0);
       }
       0x11 => {
         if L.tempoprgsupp {
-          tmpt7 := a.lo | 0x80;
-          tmpt6 := a.hi;
+          tempotbl[2] := a.lo | 0x80;
+          tempotbl[1] := a.hi;
           maintm2(0);
         }
       }
@@ -1469,7 +1468,7 @@ machine voice[x in 0..L.chn] {
       0x14 => {
         if L.tempoprgsupp {
           let y = trktmp2(a.hi);
-          tmpt9[y] := a.lo | 0x80;
+          tempotbl[y + 2] := a.lo | 0x80;
         }
       }
       0x15 => {
@@ -1538,7 +1537,7 @@ machine voice[x in 0..L.chn] {
 
   proc trktmp2(a: u8) -> u8 {
     let y = trktmpos;
-    tmpt8[y] := a;
+    tempotbl[y + 1] := a;
     trktmp3(y);
     return y;
   }
