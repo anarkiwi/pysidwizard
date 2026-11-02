@@ -155,7 +155,7 @@ cell subtjmp: u8 @ L.subtjmp operand;
 // The chip's shared registers.
 cell sid_resfc: u8 @ L.sid + 0x17 out;
 cell sid_fmvol: u8 @ L.sid + 0x18 out;
-cell sid_fcut: u16 @ L.sid + 0x15 out;
+cell sid_fcut: u11 @ (L.sid + 0x15 : 3, L.sid + 0x16) out;
 
 // The filter's cutoff as the word FILTPRG sweeps, its fraction below the high byte.
 cell cutoff: u16 @ (L.ctflgho, L.ctfhgho) operand;
@@ -246,12 +246,12 @@ machine voice[x in 0..L.chn] {
     curchord: u8 @ L.curchord;
     chordpos: u8 @ L.chordpos;
     sidg_freq: u16 @ L.sidg;
-    sidg_pw: u16 @ L.sidg + 2;
+    sidg_pw: u12 @ L.sidg + 2;
     sidg_wave: u8 @ L.sidg + 4;
     sidg_ad: u8 @ L.sidg + 5;
     sidg_sr: u8 @ L.sidg + 6;
     chip_freq: u16 @ L.sid;
-    chip_pw: u16 @ L.sid + 2;
+    chip_pw: u12 @ L.sid + 2;
     chip_wave: u8 @ L.sid + 4;
     chip_ad: u8 @ L.sid + 5;
     chip_sr: u8 @ L.sid + 6;
@@ -1545,7 +1545,7 @@ machine commonregs {
       let shift = flshift;
       top := top + shift + u8(c);
     }
-    sid_fcut := word(ite(L.finefiltsweep, ctflgho, 0), top);
+    sid_fcut := u16(top) << 3 | ite(L.finefiltsweep, u16(ctflgho & 7), 0);
   }
 }
 
