@@ -155,8 +155,7 @@ cell subtjmp: u8 @ L.subtjmp operand;
 // The chip's shared registers.
 cell sid_resfc: u8 @ L.sid + 0x17 out;
 cell sid_fmvol: u8 @ L.sid + 0x18 out;
-cell sid_fcut_lo: u8 @ L.sid + 0x15 out;
-cell sid_fcut_hi: u8 @ L.sid + 0x16 out;
+cell sid_fcut: u16 @ L.sid + 0x15 out;
 
 // The filter's cutoff as the word FILTPRG sweeps, its fraction below the high byte.
 cell cutoff: u16 @ (L.ctflgho, L.ctfhgho) operand;
@@ -214,11 +213,7 @@ machine play {
 machine voice[x in 0..L.chn] {
   // Per-voice variables, voice x seven bytes on.
   record voice_vars @ 0 stride 7 {
-    freqlo: u8 @ L.freqlo;
-    freqhi: u8 @ L.freqhi;
     freq: u16 @ L.freqlo;
-    pwlogho: u8 @ L.pwlogho;
-    pwhigho: u8 @ L.pwhigho;
     pw: u16 @ L.pwlogho;
     wfghost: u8 @ L.wfghost;
     ptngate: u8 @ L.ptngate;
@@ -239,8 +234,6 @@ machine voice[x in 0..L.chn] {
     curfx2: u8 @ L.curfx2;
     curval: u8 @ L.curval;
     slidevib: u8 @ L.slidevib;
-    freqmodl: u8 @ L.freqmodl;
-    freqmodh: u8 @ L.freqmodh;
     freqmod: u16 @ L.freqmodl;
     videlcnt: u8 @ L.videlcnt;
     vibfrequ: u8 @ L.vibfrequ;
@@ -252,17 +245,13 @@ machine voice[x in 0..L.chn] {
     pkbdtrk: u8 @ L.pkbdtrk;
     curchord: u8 @ L.curchord;
     chordpos: u8 @ L.chordpos;
-    sidg_freqlo: u8 @ L.sidg;
-    sidg_freqhi: u8 @ L.sidg + 1;
-    sidg_pwlo: u8 @ L.sidg + 2;
-    sidg_pwhi: u8 @ L.sidg + 3;
+    sidg_freq: u16 @ L.sidg;
+    sidg_pw: u16 @ L.sidg + 2;
     sidg_wave: u8 @ L.sidg + 4;
     sidg_ad: u8 @ L.sidg + 5;
     sidg_sr: u8 @ L.sidg + 6;
-    chip_freqlo: u8 @ L.sid;
-    chip_freqhi: u8 @ L.sid + 1;
-    chip_pwlo: u8 @ L.sid + 2;
-    chip_pwhi: u8 @ L.sid + 3;
+    chip_freq: u16 @ L.sid;
+    chip_pw: u16 @ L.sid + 2;
     chip_wave: u8 @ L.sid + 4;
     chip_ad: u8 @ L.sid + 5;
     chip_sr: u8 @ L.sid + 6;
@@ -726,7 +715,7 @@ machine voice[x in 0..L.chn] {
       legatoo();
       return;
     }
-    freqmodh := 0x7F;
+    freqmod := word(lo(freqmod), 0x7F);
     slidevib := TONE_PORTA;
     legatoo();
   }
@@ -758,9 +747,9 @@ machine voice[x in 0..L.chn] {
           wfghost := 0x09;
         } else {
           if L.first_frame_freq_by_track {
-            sidg_freqhi := freqtbh[u8(x * 7)];
+            sidg_freq := word(lo(sidg_freq), freqtbh[u8(x * 7)]);
           } else {
-            sidg_freqhi := freqtbh[dpitch];
+            sidg_freq := word(lo(sidg_freq), freqtbh[dpitch]);
           }
           wfghost := instrument.first_wave;
         }
@@ -947,7 +936,7 @@ machine voice[x in 0..L.chn] {
   // SETPWID then WFARPTB, with the accumulator and carry the PW table leaves.
   proc setpwid_chain() {
     let c = setpwid();
-    let out = wfarptb(pwlogho, c);
+    let out = wfarptb(lo(pw), c);
   }
 
   // SETPWID: the PW table's row, then the keyboard track and the PW registers. Returns the
@@ -975,13 +964,12 @@ machine voice[x in 0..L.chn] {
         k := e - e1 - u8(!c1);
         c := !borrow(e, e1, !c1);
       }
-      let hi = pwhigho;
-      sidg_pwhi := k + hi + u8(c);
-      c := carry(k, hi, c);
+      let t = u16(hi(pw)) + u16(k) + u16(c);
+      sidg_pw := word(lo(pw), lo(t));
+      c := t > 0xFF;
     } else {
-      sidg_pwhi := pwhigho;
+      sidg_pw := pw;
     }
-    sidg_pwlo := pwlogho;
     return c;
   }
 
@@ -991,8 +979,7 @@ machine voice[x in 0..L.chn] {
   proc wfarptb(a: u8, c: bool) -> bool {
     let cw = wftable(a, c);
     let f = freq + ite(L.detunesupport, u16(detuner) + u16(cw), 0);
-    sidg_freqlo := lo(f);
-    sidg_freqhi := hi(f);
+    sidg_freq := f;
     if L.detunesupport {
       cw := f < freq;
     }
@@ -1106,7 +1093,7 @@ machine voice[x in 0..L.chn] {
       return out;
     }
     let c = setpwid();
-    let out = wfarptb(pwlogho, c);
+    let out = wfarptb(lo(pw), c);
     return out;
   }
 
@@ -1368,10 +1355,10 @@ machine voice[x in 0..L.chn] {
       0x0D => {
         detuner := a;
         if L.bigfx0d_falls {
-          pwhigho := a.lo;
+          pw := word(lo(pw), a.lo);
         }
       }
-      0x0E => pwhigho := a.lo;
+      0x0E => pw := word(lo(pw), a.lo);
       0x0F => {
         if L.bigfx_v10 {
           flshift := a;
@@ -1527,10 +1514,8 @@ machine commonregs {
       for v in L.order {
         voice[v].chip_sr := voice[v].sidg_sr;
         voice[v].chip_ad := voice[v].sidg_ad;
-        voice[v].chip_freqlo := voice[v].sidg_freqlo;
-        voice[v].chip_freqhi := voice[v].sidg_freqhi;
-        voice[v].chip_pwlo := voice[v].sidg_pwlo;
-        voice[v].chip_pwhi := voice[v].sidg_pwhi;
+        voice[v].chip_freq := voice[v].sidg_freq;
+        voice[v].chip_pw := voice[v].sidg_pw;
         voice[v].chip_wave := voice[v].sidg_wave;
       }
     }
@@ -1538,7 +1523,7 @@ machine commonregs {
     if !L.echo_support {
       sid_fmvol := mainvol | fltband;
     }
-    let cutoff = ctfhgho;
+    let top = ctfhgho;
     let c = false;
     if L.filtkbtrack {
       let track = ckbdtrk;
@@ -1553,18 +1538,14 @@ machine commonregs {
         c := carry(track, p);
         k := exptabh[track + p];
       }
-      cutoff := k + ctfhgho + u8(c);
+      top := k + ctfhgho + u8(c);
       c := carry(k, ctfhgho, c);
     }
     if L.filtshift_supp {
       let shift = flshift;
-      let shifted = cutoff + shift + u8(c);
-      cutoff := shifted;
+      top := top + shift + u8(c);
     }
-    sid_fcut_hi := cutoff;
-    if L.finefiltsweep {
-      sid_fcut_lo := ctflgho;
-    }
+    sid_fcut := word(ite(L.finefiltsweep, ctflgho, 0), top);
   }
 }
 
