@@ -326,9 +326,9 @@ machine voice[x in 0..L.chn] {
     let t = sfxtimer;
     if t == 0 {
       curins := curinstemp;
-      mem[L.sid + 0x13] := 0;
-      mem[L.sid + 0x14] := 0;
-      mem[L.sid + 0x12] := 0;
+      chip_ad := 0;
+      chip_sr := 0;
+      chip_wave := 0;
     } elif neg(t) {
       return;
     } elif t == sfxleng {
