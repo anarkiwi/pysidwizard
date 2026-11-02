@@ -9,7 +9,7 @@ spec sidwizard;
 
 layout {
   exptabh, exptabh_m1, exptbase, freqtbh, freqtbl, p_chdp1, p_chdt1, p_insh3, p_insl3, p_ptnh1,
-  p_ptnl1, p_subt1, p_subt2, p_tmpp1, sfxleng, sfxtimer, sid, swp_base, tempotbl, vib_hi, vib_lo:
+  p_ptnl1, p_subt1, p_subt2, p_tmpp1, bigfx_pwhi, sfxleng, sfxtimer, sid, swp_base, tempotbl, vib_hi, vib_lo:
   addr;
   chn, exp_end, exp_threshold, gate_mask, init_ckbdtrk, init_curinstemp, init_cutoff,
   init_cwepcnt, init_flshift, init_fltband, init_fltctrl, init_fltposi, init_fswitch, init_gate,
@@ -22,14 +22,14 @@ layout {
   init_arpsped, init_pkbdtrk, init_curchord, init_chordpos, init_flswtbl, init_flswtb2,
   init_trktmpos, init_seqtempo, init_transp2, init_detuner, init_trdelay, init_seqt, init_g_freq,
   init_g_pw, init_g_wave, init_g_ad, init_g_sr, order: list;
-  allghostregs, arpspeedsupp, bigfx0d_falls, bigfx1f_toggle, bigfx_delay_16, bigfx_v10,
+  allghostregs, arpspeedsupp, bigfx0d_falls, bigfx_pwhi_stray, bigfx1f_toggle, bigfx_delay_16, bigfx_v10,
   calcvibrato, chordsupport, delaysupport, detune_smallfx, detunesupport, echo_support,
   fastspeedbind, filt_ctrl_fx, filter_smallfx, filter_stop_rewinds, filteralways, filtkbtrack,
   filtresetsw, filtshift_supp, finefiltsweep, first_frame_fixed_waveform,
   first_frame_freq_by_track, frame1switch, gate_minus, gateoffptr, hardrestypes, hrender_inline,
   hrgtoff_or8, kbtrack_fswitch, mulply, multispeedsupp, noins_rts, octaveshift, play_gate,
   portame_notefx, portavibra, pulsealways, pwkeybtrack, pwresetsw, restart_trdelay,
-  retainzeropage, seq_fx_support, seq_tempo_capped, sfx, sound_resets_flshift, subtune_restarts,
+  retainzeropage, seq_fx_support, seq_tempo_capped, sfx, sfxinit, sound_resets_flshift, subtune_restarts,
   subtunejump, swp, table_fx_resets, tempoprgsupp, transposesupp, vibamfx_amp_only,
   vibfreqfx_supp, vibratotypes, vibslidealways, wfarp_nop_supp, wfctrl_fx_stores, wfctrl_smallfx:
   flag;
@@ -67,6 +67,7 @@ cell chdp: u8[256] @ L.p_chdp1 ro;
 cell subt1: u8[256] @ L.p_subt1 ro;
 cell subt2: u8[256] @ L.p_subt2 ro;
 cell tempotbl: u8[256] @ L.tempotbl;
+cell bigfx_pwhi: u8[21] @ L.bigfx_pwhi;
 
 // The player's tables: note frequencies, and the exponents slides and keyboard tracks scale by.
 cell freqtbl: u8[256] @ L.freqtbl ro notes(lo, -1);
@@ -949,6 +950,16 @@ machine voice[x in 0..L.chn] {
 
   // The instrument column's small effect ($40..), then the row's effect: big ($01..$1F, with
   // the value) or small ($20..).
+  // Bigfx $0D/$0E's pulse width high nibble: a build whose store lands outside the player's own
+  // pulse width byte writes the memory at the address it holds instead.
+  proc set_pw_high(a: u8) {
+    if L.bigfx_pwhi_stray {
+      bigfx_pwhi[x * 7] := a.lo;
+    } else {
+      pw := word(lo(pw), a.lo);
+    }
+  }
+
   proc effects() {
     if curifx >= 0x40 && curifx < 0xC0 {
       small_effect(curifx);
@@ -1068,10 +1079,10 @@ machine voice[x in 0..L.chn] {
       0x0D => {
         detuner := a;
         if L.bigfx0d_falls {
-          pw := word(lo(pw), a.lo);
+          set_pw_high(a);
         }
       }
-      0x0E => pw := word(lo(pw), a.lo);
+      0x0E => set_pw_high(a);
       0x0F => {
         if L.bigfx_v10 {
           flshift := a;
@@ -1239,6 +1250,31 @@ machine play {
   }
 }
 
+// An SFX build's SFXinit, the host's call that starts a sound effect on the third voice: A the
+// length, X the note and Y the instrument; the music's instrument is kept unless an effect is
+// still playing, and the voice's envelope and waveform registers are cleared for a stable start.
+machine sfxinit {
+  step {
+    sfxleng := cpu.a;
+    voice[2].curnot := cpu.x;
+    if neg(sfxtimer) {
+      curinstemp := voice[2].curins;
+    }
+    sfxtimer := cpu.a;
+    voice[2].curins := cpu.y;
+    voice[2].curifx := 0;
+    voice[2].slidevib := 0;
+    voice[2].out_ad := 0;
+    voice[2].out_sr := 0;
+    voice[2].out_wave := 0;
+    if !L.allghostregs {
+      voice[2].g_ad := 0;
+      voice[2].g_sr := 0;
+      voice[2].g_wave := 0;
+    }
+  }
+}
+
 // A subtune started from an orderlist jump (SID-Wizard 1.0): the subtune's orderlists and main
 // tempos are set, then every voice restarts.
 machine subtune {
@@ -1258,19 +1294,23 @@ machine subtune {
 }
 
 schedule {
-  play;
-  if !L.mulply || L.multispeedsupp {
-    for v in L.order {
-      voice[v];
-    }
-    if L.subtune_restarts {
-      subtune;
-      if subtune.jump {
-        for v in L.order {
-          voice[v];
+  if L.sfxinit {
+    sfxinit;
+  } else {
+    play;
+    if !L.mulply || L.multispeedsupp {
+      for v in L.order {
+        voice[v];
+      }
+      if L.subtune_restarts {
+        subtune;
+        if subtune.jump {
+          for v in L.order {
+            voice[v];
+          }
         }
       }
+      commonregs;
     }
-    commonregs;
   }
 }

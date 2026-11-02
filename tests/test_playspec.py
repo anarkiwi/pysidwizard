@@ -17,7 +17,7 @@ from pysidtracker.testing import make_tune_fixtures, resolve_tune, song_frames
 from pysidwizard import playspec
 from tests._refused import REASONS, REFUSED
 from tests._swm_cache import SW197_EXPORT_SHA256, sw197_export_path
-from tests.test_oracle import TUNES
+from tests.test_oracle import SONGS, TUNES
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -120,6 +120,32 @@ def test_entries_are_the_players_play_and_multispeed_calls():
     view = _view(data)
     table = SidImage.from_sid(data).load
     assert playspec.entries(view) == {_word(view, table + 4), _word(view, table + 7)}
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize("name", ("lykia_boss", "star_storm"))
+def test_an_sfx_build_has_sfxinit_as_an_entry(name):
+    """SFXsub's jump lands on SFXinit, which binds as its own entry."""
+    data = Path(resolve_tune(TUNES[name])).read_bytes()
+    view = _view(data)
+    sfxsub = SidImage.from_sid(data).load + 12
+    target = _word(view, sfxsub + 1)
+    assert target in playspec.entries(view)
+    assert playspec.binding(view, target)["sfxinit"]
+    assert not playspec.binding(view)["sfxinit"]
+    assert not playspec.binding(_view(_export("bronkosaurus")))["sfxinit"]
+
+
+@pytest.mark.oracle
+def test_a_pulse_width_effect_stored_outside_the_player_is_a_memory_write():
+    """prex_2nd_player's bigfx $0E stores at an address that is not its pulse width byte."""
+    path, song = SONGS["prex_2nd_player_4"]
+    player, _cpu = sw_spec_diff.players(Path(resolve_tune(path)).read_bytes(), song)
+    player.play_frame()
+    layout = playspec.binding(player.view(), player.entry)
+    assert layout["bigfx_pwhi_stray"]
+    assert layout["bigfx_pwhi"] != playspec.labels(player.view(), player.entry)["pwhigho"]
+    assert not playspec.binding(_view(_export("bronkosaurus")))["bigfx_pwhi_stray"]
 
 
 @pytest.mark.oracle

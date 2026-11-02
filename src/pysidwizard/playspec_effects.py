@@ -55,8 +55,8 @@ _BIG_FX = {
     "<table_fx_resets: A9 00 9D {pweepcnt:w} |> 60",
     0x0B: "20 {multi3c:w} A0 0B 71 {zp} 8D {fltposi_ref:w} "
     "<table_fx_resets: A9 00 8D {cwepcnt_ref:w} |> 60",
-    0x0D: "9D {detuner:w} <bigfx0d_falls: 29 0F 9D {pwhigho:w} 60 | 60 >",
-    0x0E: "29 0F 9D {pwhigho:w} 60",
+    0x0D: "9D {detuner:w} <bigfx0d_falls: 29 0F 9D {bigfx_pwhi:w} 60 | 60 >",
+    0x0E: "29 0F 9D {bigfx_pwhi:w} 60",
     0x0F: "<bigfx_v10: 8D {flshift_ref:w} | 8D {ctfhgho_ref:w} > 60",
     0x10: "09 80 8D {p_tmpt6:w} A9 00 <tempoprgsupp: 8D {tmppos:w} 8D ?? ?? 8D ?? ?? "
     "8D {tmpbase:w} 8D ?? ?? 8D ?? ?? |> 60",
@@ -138,6 +138,7 @@ def _sfx(found: dict) -> None:
         "curnot_v2": "curnot",
         "curfx2_v2": "curfx2",
         "curifx_v2": "curifx",
+        "slidevib_v2": "slidevib",
     }
     regs = {"sfx_ad": sid + 0x13, "sfx_sr": sid + 0x14, "sfx_wave": sid + 0x12}
     if any(found[k] != found[v] + 14 for k, v in voice3.items()) or any(

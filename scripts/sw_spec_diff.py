@@ -61,6 +61,10 @@ def call(player, addr: int, regs) -> None:
     """Run the 6502 subroutine at ``addr`` with ``(A, X, Y)`` on ``player``'s machine."""
     mpu = player._mpu  # pylint: disable=protected-access
     mpu.x, mpu.y = regs[1], regs[2]
+    if isinstance(player, SpecPlayer):
+        mpu.a = regs[0]
+        player._call(addr)  # pylint: disable=protected-access
+        return
     run_to_rts(mpu, player._obs, addr, regs[0], MAX_CYCLES)  # pylint: disable=protected-access
 
 

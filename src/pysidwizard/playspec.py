@@ -142,6 +142,13 @@ _PLAYER = (
     "20 {chknote:w} 4C ?? ?? AC {curinstemp_ref:w} 8C {curins_v2:w} 20 {sfx_hr:w} "
     "CE {sfxtimer_ref:w} |> 20 {dotrack:w} A2 07 20 {dotrack:w} A2 00 20 {dotrack:w}"
 )
+# SFXinit, the host's call that starts a sound effect: A the length, X the note, Y the instrument.
+_SFXINIT = (
+    "8D {sfxleng_ref:w} 8E {curnot_v2:w} 2C {sfxtimer_ref:w} 10 06 AE {curins_v2:w} "
+    "8E {curinstemp_ref:w} 8D {sfxtimer_ref:w} 8C {curins_v2:w} A9 00 8D {curifx_v2:w} "
+    "8D {slidevib_v2:w}"
+)
+_SFXINIT_LENGTH = CodePattern(_SFXINIT).length
 # A hand-edited PLAYER entry that toggles its own immediate and returns on alternate calls.
 _GATE = "A9 {at_gate} 49 {gate_mask} 8D {gate_ref:w} {gate_branch} 01 60"
 _MULPLY = _ZP_SAVE + (
@@ -708,6 +715,16 @@ def _entries(view: bytes) -> List[Tuple[int, int, int, Optional[int]]]:
     return [(e, p, c, mulplies.get(c)) for e, p, c in players]
 
 
+def _sfxinit(view: bytes, player: int) -> Optional[int]:
+    """The address of SFXinit, the code in front of SFX_HR, of the SFX build whose PLAYER is
+    ``player``; None for a build without sound effects."""
+    probe = _Scan(view, {"retainzeropage": None, "sfx": None})
+    if probe.match("PLAYER", player, _PLAYER) is None or not probe.flags["sfx"]:
+        return None
+    addr = probe.found["sfx_hr"] - _SFXINIT_LENGTH
+    return addr if probe.match("SFXinit", addr, _SFXINIT) is not None else None
+
+
 def _gate(view: bytes, player: int) -> Optional[dict]:
     """The hand-edited gate in front of ``player``: its fields, or None."""
     entry = player - CodePattern(_GATE).length
@@ -723,9 +740,14 @@ def _gate(view: bytes, player: int) -> Optional[dict]:
 
 
 def entries(view) -> set:
-    """Every SID-Wizard play entry (PLAYER or its gate) and MULPLY in ``view``."""
+    """Every SID-Wizard entry in ``view``: PLAYER or its gate, MULPLY and an SFX build's SFXinit."""
     view = bytes(view)
-    return {e for entry, _p, _c, m in _entries(view) for e in (entry, m) if e is not None}
+    return {
+        e
+        for entry, p, _c, m in _entries(view)
+        for e in (entry, m, _sfxinit(view, p))
+        if e is not None
+    }
 
 
 def detect(view, entry: int) -> tuple:
@@ -765,12 +787,16 @@ def _hrender_exit(found: dict, flags: dict) -> None:
         flags[flag] = flag in exits
 
 
-def _scan(scan: _Scan, player: int, commonregs: int, mulply: Optional[int]) -> dict:
+def _scan(
+    scan: _Scan, player: int, commonregs: int, mulply: Optional[int], sfxinit: Optional[int]
+) -> dict:
     """Every routine from PLAYER (and MULPLY) on, and the play gate in front of PLAYER."""
     scan.put("PLAYER", "player", player)
     scan.at("PLAYER", player, _PLAYER)
     if scan.flags["sfx"]:
         scan.at("SFX_HR", scan.found["sfx_hr"], "8D {sfx_ad:w} 8D {sfx_sr:w} 8D {sfx_wave:w} 60")
+        if sfxinit is not None:
+            scan.at("SFXinit", sfxinit, _SFXINIT)
     scan.put("PLAYER", "commonregs", commonregs)
     _commonregs(scan, commonregs)
     if mulply is not None:
@@ -836,7 +862,9 @@ def _found(view, entry: Optional[int] = None, variant: Optional[tuple] = None) -
     :func:`detect`'s). Raises :class:`ValueError` for a build the spec does not state.
     """
     view = bytes(view)
-    found_entries = [e for e in _entries(view) if entry is None or entry in (e[0], e[3])]
+    found_entries = [
+        e for e in _entries(view) if entry is None or entry in (e[0], e[3], _sfxinit(view, e[1]))
+    ]
     if not found_entries:
         where = "" if entry is None else f" at ${entry:04x}"
         raise ValueError(
@@ -845,15 +873,16 @@ def _found(view, entry: Optional[int] = None, variant: Optional[tuple] = None) -
     play_entry, player, commonregs, mulply = found_entries[0]
     features, quirks = variant or detect(view, player)
     flags = _flags(features, quirks)
-    found = _scan(_Scan(view, flags), player, commonregs, mulply)
+    sfxinit = _sfxinit(view, player)
+    found = _scan(_Scan(view, flags), player, commonregs, mulply, sfxinit)
     flags["play_gate"] = play_entry != player and entry in (None, play_entry)
     _hrender_exit(found, flags)
     _vars(found, flags)
-    columns = {found[n] for n in ("zp_note", "zp_inst", "zp_fx", "zp_value")}
-    if len(columns) > 1:
+    if len({found[n] for n in ("zp_note", "zp_inst", "zp_fx", "zp_value")}) > 1:
         raise ValueError("SID-Wizard reads the pattern's columns through different pointers")
     if flags["sfx"]:
         _sfx(found)
+    found["bigfx_pwhi_stray"] = found["bigfx_pwhi"] != found["pwhigho"]
     found["sid"] = found["sid_resfc"] - 0x17
     if not flags["allghostregs"]:
         found["sidg"] = found["sid"]
@@ -865,7 +894,12 @@ def _found(view, entry: Optional[int] = None, variant: Optional[tuple] = None) -
     found.update(
         {k: bool(getattr(features, k, False)) if v is None else v for k, v in flags.items()}
     )
-    found.update(chn=CHANNELS, mulply=entry is not None and entry == mulply, order=list(_ORDER))
+    found.update(
+        chn=CHANNELS,
+        mulply=entry is not None and entry == mulply,
+        sfxinit=entry is not None and entry == sfxinit,
+        order=list(_ORDER),
+    )
     found.update(_initial(view, found))
     return found
 
