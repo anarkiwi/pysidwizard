@@ -786,6 +786,8 @@ def _scan(scan: _Scan, player: int, commonregs: int, mulply: Optional[int]) -> d
     for name, derived in _DERIVED.items():
         for field, offset in derived:
             scan.found[field] = scan.found[name] + offset
+    swp = scan.flags.get("swp") and "swp_offset" in scan.found
+    scan.found["swp_base"] = scan.word(scan.found["swp_offset"]) if swp else 0
     return dict(scan.found)
 
 
