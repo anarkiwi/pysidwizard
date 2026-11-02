@@ -366,7 +366,9 @@ machine voice[x in 0..L.chn] {
       return;
     }
     if neg(count - 2) {
-      tick_1();
+      let p = curptn;
+      zp := word(ptnl[p], ptnh[p]) + ite(L.swp, swp, 0);
+      ptn_seq();
     } elif count == 2 {
       tick_2();
     } else {
@@ -437,12 +439,7 @@ machine voice[x in 0..L.chn] {
     hardrst(2);
   }
 
-  // TICK_1: the pattern's pointer again, then the pattern and orderlist step.
-  proc tick_1() {
-    let p = curptn;
-    zp := word(ptnl[p], ptnh[p]) + ite(L.swp, swp, 0);
-    ptn_seq();
-  }
+
 
   // PTN_SEQ: the delayed transpose takes effect, and at the pattern's end ($FF) the
   // orderlist advances: pattern numbers below $80 start a pattern, $FE ends the
@@ -715,7 +712,15 @@ machine voice[x in 0..L.chn] {
       insptfx();
       cntply2();
     } elif !neg(note - NOTE_FX_MIN) {
-      note_fx(note);
+      if neg(note - RUN_MAX) {
+        if !L.vibamfx_amp_only {
+          valstor := note;
+        }
+        vibamfx(note);
+      } else {
+        note_fx_at(note, wfghost);
+      }
+      insptfx();
       cntply2();
     } else {
       clegato(note);
@@ -745,7 +750,8 @@ machine voice[x in 0..L.chn] {
       return;
     }
     if curifx != LEGATO {
-      strtsnd();
+      startsound();
+      legatoo();
       return;
     }
     freqmodh := 0x7F;
@@ -759,15 +765,7 @@ machine voice[x in 0..L.chn] {
     sidg_wave := wfghost;
   }
 
-  // STRTSND: the sound starts. The instrument's control byte (its PW and filter
-  // reset-off bits cleared when an instrument was just selected) is kept in
-  // INSCTRL; the first-frame waveform and pitch, the table positions, the gate,
-  // vibrato, chord, PW and filter tables, and the ADSR are set (1.0: the PW and filter
-  // tables and the ADSR first, the filter shift cleared); the effects follow.
-  proc strtsnd() {
-    startsound();
-    legatoo();
-  }
+
 
   proc startsound() {
     if L.sound_resets_flshift {
@@ -873,13 +871,11 @@ machine voice[x in 0..L.chn] {
     if curins == 0 {
       return;
     }
-    cntply1(curins);
+    zp := word(insl[curins], insh[curins]) + ite(L.swp, swp, 0);
     cntply2();
   }
 
-  proc cntply1(y: u8) {
-    zp := word(insl[y], insh[y]) + ite(L.swp, swp, 0);
-  }
+
 
   // CNTPLY2: vibrato and slides, then the filter, PW and waveform tables.
   proc cntply2() {
@@ -1224,21 +1220,7 @@ machine voice[x in 0..L.chn] {
 
 
 
-  // NOTE_FX: a note-column effect. $60..$77 sets the vibrato amplitude; $78..$7F
-  // dispatch through NOTEFXTBL: note portamento, sync on/off, ring on/off, gate on,
-  // gate off (with GATEOFFPTR, the instrument's gate-off table positions); $7F takes
-  // the table's zero offset. The instrument and pattern effects follow.
-  proc note_fx(a: u8) {
-    if neg(a - RUN_MAX) {
-      if !L.vibamfx_amp_only {
-        valstor := a;
-      }
-      vibamfx(a);
-    } else {
-      note_fx_at(a, wfghost);
-    }
-    insptfx();
-  }
+
 
 
 
