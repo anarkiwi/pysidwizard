@@ -1458,10 +1458,10 @@ machine voice[x in 0..L.chn] {
   proc maintm2(a: u8) {
     if L.tempoprgsupp {
       for v in 0..L.chn {
-        mem[L.tmppos + v * 7] := a;
+        voice[v].tmppos := a;
       }
       for v in 0..L.chn {
-        mem[L.tmpbase + v * 7] := a;
+        voice[v].tmpbase := a;
       }
     }
   }
