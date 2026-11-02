@@ -83,26 +83,5 @@ build's cells, or jumps into it.
   (`-m oracle`). A tune without a play address (the echo export, whose engine calls
   PLAYER from its own interrupt) has its PLAYER called each frame. `scripts/sw_spec_diff.py` reports the first differing call of a tune,
   `scripts/sw_spec_census.py` runs many in parallel.
-- `tv.validate` proofs, X = 0: on a set covering every build and, in the oracle job, a
-  1.0 player (`pantheon`, with its voice restart); each routine from its label (a stretch to the next
-  routine or to a dispatch where its code runs on), each dispatched effect from its
-  table entry with its effect number assumed in the column. The table and sound-start
-  routines are oracle tests, proven by cases that together cover every state:
-  - FILTPRG and SETPWID (to ENDPWTB) by the kind of the row's first byte (`$80..$FD`,
-    `$FE`, `$FF`, and `$00..$7F` split into a sweep ended at its counter or a step of
-    either sign); ENDPWTB on its own;
-  - VIBSLIDE by SLIDEVIB's branches, a portamento further by its direction to the
-    note's frequency and the carries out of its low-byte difference, comparison and
-    step (the satisfiable combinations), its cases in four shards;
-  - STRTSND under the assumption that the instrument pointer lies in the module's data,
-    above the instrument pointer tables and below `$CE00`, so its bytes alias no player
-    cell, operand or chip register (as in every player the editor or SID-Maker builds);
-  - WFARPTB (to RTS) on builds without chords: a chord's `$7E` return re-reads the table
-    up to 256 times, a loop the SMT lowering unrolls to its bound.
-
-  Each test runs `scripts/sw_proof_census.py NAME --only LABEL --shard K/N --jobs 1` in
-  its own interpreter: z3's search, so a proof's time, depends on every term made before
-  it, and a fresh interpreter makes it reproducible. `--seeds S` proves under z3 seeds
-  0..S-1 and `--cases` times each case apart, exposing a case whose time depends on
-  solver heuristics.
+- The spec run natively and in Python, call by call, over each export: the SID writes, registers and memory outside the stack page equal.
 - `pysidtracker playspec check` on a bound layout.
