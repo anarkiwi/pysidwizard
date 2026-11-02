@@ -68,15 +68,15 @@ event pattern_end: tick;
 
 // The zero-page pointer the player reads instruments and patterns through, and an SWP
 // export's base its song tables' offsets are from.
-cell zp: u16 @ L.zp per_proc;
+cell zp: u16 @ L.zp;
 cell swp_lo: u8 @ L.swp_offset;
 cell swp_hi: u8 @ L.swp_offset + 1;
-cell zp_lo: u8 @ L.zp_lo per_proc;
-cell zp_hi: u8 @ L.zp_hi per_proc;
+cell zp_lo: u8 @ L.zp_lo;
+cell zp_hi: u8 @ L.zp_hi;
 
 // The pattern pointer the voice's pattern id selects. Each column's read names it
 // separately: an export relocated only in part addresses it differently.
-cell zp_note: u16 @ L.zp_note per_proc;
+cell zp_note: u16 @ L.zp_note;
 
 // The instrument the zero-page pointer selects, by field.
 view instrument @ zp {
@@ -120,7 +120,7 @@ cell subt2: u8[256] @ L.p_subt2 ro;
 // The tempo program the voices' clocks step through: one byte per tick count, the
 // last of a program having bit 7 set. Its first two bytes are the main tempo and
 // each voice's track tempo follows at TRKTMPOS; the tempo effects rewrite them.
-cell tempotbl: u8[256] @ L.tempotbl per_proc;
+cell tempotbl: u8[256] @ L.tempotbl;
 cell tmpt2: u8[256] @ L.p_tmpt2;
 cell tmpt3: u8[256] @ L.p_tmpt3;
 cell tmpt8: u8[256] @ L.p_tmpt8;
@@ -133,43 +133,43 @@ cell tempo_byte: u8 @ L.tempo;
 
 // The player's own tables: note frequencies, the exponent table, and the offsets
 // and addresses of the effect dispatch.
-cell freqtbl: u8[256] @ L.freqtbl ro per_proc notes(lo, -1);
-cell freqtbh: u8[256] @ L.freqtbh ro per_proc notes(hi, -1);
-cell exptabh: u8[256] @ L.exptabh ro per_proc;
-cell exptabh_m1: u8[256] @ L.exptabh_m1 ro per_proc;
-cell exptbase: u8[256] @ L.exptbase ro per_proc;
-cell vib_lo: u8[256] @ L.vib_lo ro per_proc;
-cell vib_hi: u8[256] @ L.vib_hi ro per_proc;
-cell notefxtbl: u8[256] @ L.notefxtbl ro per_proc;
-cell smallfxtbl: u8[256] @ L.smallfxtbl ro per_proc;
-cell bigfxtable: u8[256] @ L.bigfxtable ro per_proc;
+cell freqtbl: u8[256] @ L.freqtbl ro notes(lo, -1);
+cell freqtbh: u8[256] @ L.freqtbh ro notes(hi, -1);
+cell exptabh: u8[256] @ L.exptabh ro;
+cell exptabh_m1: u8[256] @ L.exptabh_m1 ro;
+cell exptbase: u8[256] @ L.exptbase ro;
+cell vib_lo: u8[256] @ L.vib_lo ro;
+cell vib_hi: u8[256] @ L.vib_hi ro;
+cell notefxtbl: u8[256] @ L.notefxtbl ro;
+cell smallfxtbl: u8[256] @ L.smallfxtbl ro;
+cell bigfxtable: u8[256] @ L.bigfxtable ro;
 
 // Immediates the player rewrites: the self-written state of the code.
-cell tablrst: u8 @ L.tablrst operand per_proc;
-cell insctrl: u8 @ L.insctrl operand per_proc;
-cell storfrl: u8 @ L.storfrl operand per_proc;
-cell fltctrl: u8 @ L.fltctrl operand per_proc;
-cell fltposi: u8 @ L.fltposi operand per_proc;
-cell cwepcnt: u8 @ L.cwepcnt operand per_proc;
-cell fswitch: u8 @ L.fswitch operand per_proc;
-cell resonib: u8 @ L.resonib operand per_proc;
-cell mainvol: u8 @ L.mainvol operand per_proc;
-cell fltband: u8 @ L.fltband operand per_proc;
-cell ckbdtrk: u8 @ L.ckbdtrk operand per_proc;
-cell ctfhgho: u8 @ L.ctfhgho operand per_proc;
-cell flshift: u8 @ L.flshift operand per_proc;
-cell ctflgho: u8 @ L.ctflgho operand per_proc;
-cell seqvolu: u8 @ L.seqvolu operand per_proc;
-cell valstor: u8 @ L.valstor operand per_proc;
-cell mergest: u8 @ L.mergest operand per_proc;
-cell mul3tmp: u8 @ L.mul3tmp operand per_proc;
-cell astorez: u8 @ L.astorez operand per_proc;
-cell indexj1: u8 @ L.indexj1 operand per_proc;
-cell indexj2: u8 @ L.indexj2 operand per_proc;
-cell indexjp: u16 @ L.indexjp operand per_proc;
-cell xstore: u8 @ L.xstore operand per_proc;
-cell subtpos: u8 @ L.subtpos operand per_proc;
-cell subtjmp: u8 @ L.subtjmp operand per_proc;
+cell tablrst: u8 @ L.tablrst operand;
+cell insctrl: u8 @ L.insctrl operand;
+cell storfrl: u8 @ L.storfrl operand;
+cell fltctrl: u8 @ L.fltctrl operand;
+cell fltposi: u8 @ L.fltposi operand;
+cell cwepcnt: u8 @ L.cwepcnt operand;
+cell fswitch: u8 @ L.fswitch operand;
+cell resonib: u8 @ L.resonib operand;
+cell mainvol: u8 @ L.mainvol operand;
+cell fltband: u8 @ L.fltband operand;
+cell ckbdtrk: u8 @ L.ckbdtrk operand;
+cell ctfhgho: u8 @ L.ctfhgho operand;
+cell flshift: u8 @ L.flshift operand;
+cell ctflgho: u8 @ L.ctflgho operand;
+cell seqvolu: u8 @ L.seqvolu operand;
+cell valstor: u8 @ L.valstor operand;
+cell mergest: u8 @ L.mergest operand;
+cell mul3tmp: u8 @ L.mul3tmp operand;
+cell astorez: u8 @ L.astorez operand;
+cell indexj1: u8 @ L.indexj1 operand;
+cell indexj2: u8 @ L.indexj2 operand;
+cell indexjp: u16 @ L.indexjp operand;
+cell xstore: u8 @ L.xstore operand;
+cell subtpos: u8 @ L.subtpos operand;
+cell subtjmp: u8 @ L.subtjmp operand;
 
 // The chip's shared registers.
 cell sid_resfc: u8 @ L.sid + 0x17 out;
@@ -178,7 +178,7 @@ cell sid_fcut_lo: u8 @ L.sid + 0x15 out;
 cell sid_fcut_hi: u8 @ L.sid + 0x16 out;
 
 // The filter's cutoff as the word FILTPRG sweeps, its fraction below the high byte.
-cell cutoff: u16 @ (L.ctflgho, L.ctfhgho) operand per_proc;
+cell cutoff: u16 @ (L.ctflgho, L.ctfhgho) operand;
 
 // The voice whose instrument's filter table the filter follows: its offset in the bunch.
 owner filter_owner: fltctrl { id x * 7; none 0xFF; on note claim; }
@@ -206,13 +206,13 @@ cursor filter_table {
 }
 
 // A hand-edited PLAYER entry toggles its own immediate and returns on alternate calls.
-cell gate: u8 @ L.gate operand per_proc;
+cell gate: u8 @ L.gate operand;
 
 // An SFX build's sound-effect state: its length, its timer, and the music's instrument
 // it keeps while it plays.
-cell sfxleng: u8 @ L.sfxleng per_proc;
-cell sfxtimer: u8 @ L.sfxtimer per_proc;
-cell curinstemp: u8 @ L.curinstemp per_proc;
+cell sfxleng: u8 @ L.sfxleng;
+cell sfxtimer: u8 @ L.sfxtimer;
+cell curinstemp: u8 @ L.curinstemp;
 
 // The play call's entry: the gate of a hand-edited player, then the zero-page pointer
 // the call restores on return.
@@ -232,42 +232,42 @@ machine play {
 
 machine voice[x in 0..L.chn] {
   // Per-voice variables sit in bunches of seven bytes, voice x at +x*7.
-  cell freqlo: u8 @ L.freqlo + x * 7 per_proc;
-  cell freqhi: u8 @ L.freqhi + x * 7 per_proc;
-  cell pwlogho: u8 @ L.pwlogho + x * 7 per_proc;
-  cell pwhigho: u8 @ L.pwhigho + x * 7 per_proc;
-  cell pw: u16 @ (L.pwlogho + x * 7, L.pwhigho + x * 7) per_proc;
-  cell wfghost: u8 @ L.wfghost + x * 7 per_proc;
-  cell ptngate: u8 @ L.ptngate + x * 7 per_proc;
-  cell pweepcnt: u8 @ L.pweepcnt + x * 7 per_proc;
-  cell packcnt: u8 @ L.packcnt + x * 7 per_proc;
-  cell spdcnt: u8 @ L.spdcnt + x * 7 per_proc;
-  cell seqpos: u8 @ L.seqpos + x * 7 per_proc;
-  cell ptnpos: u8 @ L.ptnpos + x * 7 per_proc;
-  cell wftpos: u8 @ L.wftpos + x * 7 per_proc;
-  cell pwtpos: u8 @ L.pwtpos + x * 7 per_proc;
-  cell arpscnt: u8 @ L.arpscnt + x * 7 per_proc;
-  cell curptn: u8 @ L.curptn + x * 7 per_proc;
-  cell curnot: u8 @ L.curnot + x * 7 per_proc;
-  cell dpitch: u8 @ L.dpitch + x * 7 per_proc;
-  cell curifx: u8 @ L.curifx + x * 7 per_proc;
-  cell curifx_long: u8 @ L.curifx_long + x * 7 per_proc;
-  cell curins: u8 @ L.curins + x * 7 per_proc;
-  cell curfx2: u8 @ L.curfx2 + x * 7 per_proc;
-  cell curval: u8 @ L.curval + x * 7 per_proc;
-  cell slidevib: u8 @ L.slidevib + x * 7 per_proc;
-  cell freqmodl: u8 @ L.freqmodl + x * 7 per_proc;
-  cell freqmodh: u8 @ L.freqmodh + x * 7 per_proc;
-  cell videlcnt: u8 @ L.videlcnt + x * 7 per_proc;
-  cell vibfrequ: u8 @ L.vibfrequ + x * 7 per_proc;
-  cell vibracnt: u8 @ L.vibracnt + x * 7 per_proc;
-  cell transp: u8 @ L.transp + x * 7 per_proc;
-  cell tmpbase: u8 @ L.tmpbase + x * 7 per_proc;
-  cell tmppos: u8 @ L.tmppos + x * 7 per_proc;
-  cell arpsped: u8 @ L.arpsped + x * 7 per_proc;
-  cell pkbdtrk: u8 @ L.pkbdtrk + x * 7 per_proc;
-  cell curchord: u8 @ L.curchord + x * 7 per_proc;
-  cell chordpos: u8 @ L.chordpos + x * 7 per_proc;
+  cell freqlo: u8 @ L.freqlo + x * 7;
+  cell freqhi: u8 @ L.freqhi + x * 7;
+  cell pwlogho: u8 @ L.pwlogho + x * 7;
+  cell pwhigho: u8 @ L.pwhigho + x * 7;
+  cell pw: u16 @ (L.pwlogho + x * 7, L.pwhigho + x * 7);
+  cell wfghost: u8 @ L.wfghost + x * 7;
+  cell ptngate: u8 @ L.ptngate + x * 7;
+  cell pweepcnt: u8 @ L.pweepcnt + x * 7;
+  cell packcnt: u8 @ L.packcnt + x * 7;
+  cell spdcnt: u8 @ L.spdcnt + x * 7;
+  cell seqpos: u8 @ L.seqpos + x * 7;
+  cell ptnpos: u8 @ L.ptnpos + x * 7;
+  cell wftpos: u8 @ L.wftpos + x * 7;
+  cell pwtpos: u8 @ L.pwtpos + x * 7;
+  cell arpscnt: u8 @ L.arpscnt + x * 7;
+  cell curptn: u8 @ L.curptn + x * 7;
+  cell curnot: u8 @ L.curnot + x * 7;
+  cell dpitch: u8 @ L.dpitch + x * 7;
+  cell curifx: u8 @ L.curifx + x * 7;
+  cell curifx_long: u8 @ L.curifx_long + x * 7;
+  cell curins: u8 @ L.curins + x * 7;
+  cell curfx2: u8 @ L.curfx2 + x * 7;
+  cell curval: u8 @ L.curval + x * 7;
+  cell slidevib: u8 @ L.slidevib + x * 7;
+  cell freqmodl: u8 @ L.freqmodl + x * 7;
+  cell freqmodh: u8 @ L.freqmodh + x * 7;
+  cell videlcnt: u8 @ L.videlcnt + x * 7;
+  cell vibfrequ: u8 @ L.vibfrequ + x * 7;
+  cell vibracnt: u8 @ L.vibracnt + x * 7;
+  cell transp: u8 @ L.transp + x * 7;
+  cell tmpbase: u8 @ L.tmpbase + x * 7;
+  cell tmppos: u8 @ L.tmppos + x * 7;
+  cell arpsped: u8 @ L.arpsped + x * 7;
+  cell pkbdtrk: u8 @ L.pkbdtrk + x * 7;
+  cell curchord: u8 @ L.curchord + x * 7;
+  cell chordpos: u8 @ L.chordpos + x * 7;
   // The voice's SID registers: ghost registers COMMONREGS copies to the chip, or the
   // chip itself in a build without them.
   cell sidg_freqlo: u8 @ L.sidg + x * 7;
@@ -278,13 +278,13 @@ machine voice[x in 0..L.chn] {
   cell sidg_ad: u8 @ L.sidg + x * 7 + 5;
   cell sidg_sr: u8 @ L.sidg + x * 7 + 6;
   // Constants and variables kept in the code's bunch of seven per voice.
-  cell flswtbl: u8 @ L.flswtbl + x * 7 ro per_proc;
-  cell flswtb2: u8 @ L.flswtb2 + x * 7 ro per_proc;
-  cell trktmpos: u8 @ L.trktmpos + x * 7 ro per_proc;
-  cell trdelay: u8 @ L.trdelay + x * 7 per_proc;
-  cell seqtempo: u8 @ L.seqtempo + x * 7 per_proc;
-  cell transp2: u8 @ L.transp2 + x * 7 per_proc;
-  cell detuner: u8 @ L.detuner + x * 7 per_proc;
+  cell flswtbl: u8 @ L.flswtbl + x * 7 ro;
+  cell flswtb2: u8 @ L.flswtb2 + x * 7 ro;
+  cell trktmpos: u8 @ L.trktmpos + x * 7 ro;
+  cell trdelay: u8 @ L.trdelay + x * 7;
+  cell seqtempo: u8 @ L.seqtempo + x * 7;
+  cell transp2: u8 @ L.transp2 + x * 7;
+  cell detuner: u8 @ L.detuner + x * 7;
   // The orderlist read: ``lda SEQUENCES,y`` whose operand the subtune setter rewrites.
   cell seqt: u16 @ L.p_seqt1 + x * 4 operand;
 
@@ -1738,7 +1738,7 @@ machine voice[x in 0..L.chn] {
 // byte scaled by the keyboard track of the filter controller's note and shifted by
 // the filter-shift effect, its low bits from the fine sweep.
 machine commonregs {
-  cell sid: u8[32] @ L.sid out per_proc;
+  cell sid: u8[32] @ L.sid out;
 
   step {
 
