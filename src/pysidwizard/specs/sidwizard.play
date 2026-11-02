@@ -1332,26 +1332,24 @@ machine voice[x in 0..L.chn] {
   // The note effect $78 + k with the waveform register preloaded.
   proc note_fx_at(n: u8, wave: u8) {
     let k = n - RUN_MAX;
-    if k == 0 || k == 7 {
-      if L.portame_notefx {
-        slidevib := NOTE_PORTA;
-        setfmod(DEFAULTPORTA, false);
-      } elif k == 7 {
-        wfghost := wave | 2;
+    match k {
+      0, 7 => {
+        if L.portame_notefx {
+          slidevib := NOTE_PORTA;
+          setfmod(DEFAULTPORTA, false);
+        } elif k == 7 {
+          wfghost := wave | 2;
+        }
       }
-    } elif k == 1 {
-      wfghost := wave | 2;
-    } elif k == 2 {
-      wfghost := wave & 0xFD;
-    } elif k == 3 {
-      wfghost := wave | 4;
-    } elif k == 4 {
-      wfghost := wave & 0xFB;
-    } elif k == 5 {
-      ptngate := 0xFF;
-      wfghost := wfghost | 1;
-    } else {
-      ngateof();
+      1 => wfghost := wave | 2;
+      2 => wfghost := wave & 0xFD;
+      3 => wfghost := wave | 4;
+      4 => wfghost := wave & 0xFB;
+      5 => {
+        ptngate := 0xFF;
+        wfghost := wfghost | 1;
+      }
+      _ => ngateof();
     }
   }
 
@@ -1419,63 +1417,68 @@ machine voice[x in 0..L.chn] {
   }
 
   proc smallfx(n: u8, v: u8) {
-    if n == 2 {
-      if L.allghostregs {
-        sidg_ad := setnibh(sidg_ad);
-      } else {
-        sidg_ad := setinbh(3);
-      }
-    } elif n == 3 {
-      if L.allghostregs {
-        sidg_ad := setnibl(sidg_ad);
-      } else {
-        sidg_ad := setnibl(instrument.ad);
-      }
-    } elif n == 4 {
-      wfghost := setnibh(wfghost);
-    } elif n == 5 {
-      if L.allghostregs {
-        sidg_sr := setnibh(sidg_sr);
-      } else {
-        sidg_sr := setinbh(4);
-      }
-    } elif n == 6 {
-      if L.allghostregs {
-        sidg_sr := setnibl(sidg_sr);
-      } else {
-        sidg_sr := setnibl(instrument.sr);
-      }
-    } elif n == 7 {
-      smalfx7(v);
-    } elif n == 8 {
-      vibamfx(v);
-    } elif n == 9 {
-      if L.vibfreqfx_supp {
-        vibfrequ := v << 1;
-      }
-    } elif n == 0x0A {
-      mainvol := v;
-      if L.seq_fx_support {
-        seqvolu := v;
-      }
-    } elif n == 0x0B {
-      if L.filter_smallfx {
-        fltband := v << 4;
-      }
-    } elif n == 0x0C {
-      smalfxc(v);
-    } elif n == 0x0D && L.detune_smallfx {
-      detuner := v << 3;
-    } elif n == 0x0D || n == 0x0E {
-      if L.wfctrl_smallfx {
-        let w = setnibl(wfghost);
-        if L.wfctrl_fx_stores {
-          wfghost := w;
+    match n {
+      2 => {
+        if L.allghostregs {
+          sidg_ad := setnibh(sidg_ad);
+        } else {
+          sidg_ad := setinbh(3);
         }
       }
-    } elif n == 0x0F {
-      if L.filter_smallfx {
-        resonib := v << 4;
+      3 => {
+        if L.allghostregs {
+          sidg_ad := setnibl(sidg_ad);
+        } else {
+          sidg_ad := setnibl(instrument.ad);
+        }
+      }
+      4 => wfghost := setnibh(wfghost);
+      5 => {
+        if L.allghostregs {
+          sidg_sr := setnibh(sidg_sr);
+        } else {
+          sidg_sr := setinbh(4);
+        }
+      }
+      6 => {
+        if L.allghostregs {
+          sidg_sr := setnibl(sidg_sr);
+        } else {
+          sidg_sr := setnibl(instrument.sr);
+        }
+      }
+      7 => smalfx7(v);
+      8 => vibamfx(v);
+      9 => {
+        if L.vibfreqfx_supp {
+          vibfrequ := v << 1;
+        }
+      }
+      0x0A => {
+        mainvol := v;
+        if L.seq_fx_support {
+          seqvolu := v;
+        }
+      }
+      0x0B => {
+        if L.filter_smallfx {
+          fltband := v << 4;
+        }
+      }
+      0x0C => smalfxc(v);
+      0x0D if L.detune_smallfx => detuner := v << 3;
+      0x0D, 0x0E => {
+        if L.wfctrl_smallfx {
+          let w = setnibl(wfghost);
+          if L.wfctrl_fx_stores {
+            wfghost := w;
+          }
+        }
+      }
+      0x0F => {
+        if L.filter_smallfx {
+          resonib := v << 4;
+        }
       }
     }
   }
@@ -1543,130 +1546,143 @@ machine voice[x in 0..L.chn] {
   // otherwise: $04 with $Fx sets the waveform table, $09 the vibrato type, $0F the filter
   // shift, and $16..$1E are none.
   proc bigfx(n: u8, a: u8, z: bool) {
-    if n == 1 {
-      slidevib := SLIDE_UP;
-      setfmod(a, a == 0);
-    } elif n == 2 {
-      slidevib := SLIDE_DOWN;
-      setfmod(a, a == 0);
-    } elif n == 3 {
-      slidevib := TONE_PORTA;
-      setfmod(a, a == 0);
-    } elif n == 4 {
-      if L.bigfx_v10 && a >= 0xF0 {
-        let m = multi3c(a & 0x0F);
-        wftpos := lo(m) + WFTABLEPOS + hi(m);
-      } else {
-        wfghost := a;
+    match n {
+      1 => {
+        slidevib := SLIDE_UP;
+        setfmod(a, a == 0);
       }
-    } elif n == 5 {
-      sidg_ad := a;
-    } elif n == 6 {
-      sidg_sr := a;
-    } elif n == 7 {
-      smalfx7(a);
-    } elif n == 8 {
-      bigfx08(a);
-    } elif n == 9 {
-      if L.bigfx_v10 {
-        slidevib := a & 0x30;
-      } else {
-        let m = multi3c(a);
-        wftpos := lo(m) + WFTABLEPOS + hi(m);
+      2 => {
+        slidevib := SLIDE_DOWN;
+        setfmod(a, a == 0);
       }
-    } elif n == 0x0A {
-      let m = multi3c(a);
-      pwtpos := lo(m) + instrument.pw_start + hi(m);
-      if L.table_fx_resets {
-        pweepcnt := 0;
+      3 => {
+        slidevib := TONE_PORTA;
+        setfmod(a, a == 0);
       }
-    } elif n == 0x0B {
-      let m = multi3c(a);
-      fltposi := lo(m) + instrument.filter_start + hi(m);
-      if L.table_fx_resets {
-        cwepcnt := 0;
-      }
-    } elif n == 0x0C {
-      smalfxc(a);
-    } elif n == 0x0D {
-      detuner := a;
-      if L.bigfx0d_falls {
-        pwhigho := a & 0x0F;
-      }
-    } elif n == 0x0E {
-      pwhigho := a & 0x0F;
-    } elif n == 0x0F {
-      if L.bigfx_v10 {
-        flshift := a;
-      } else {
-        ctfhgho := a;
-      }
-    } elif n == 0x10 {
-      maintmp(a | 0x80);
-    } elif n == 0x11 {
-      if L.tempoprgsupp {
-        tmpt7 := (a & 0x0F) | 0x80;
-        maintmp(a >> 4);
-      }
-    } elif n == 0x12 {
-      if L.tempoprgsupp && !z {
-        maintm2(tmpp1[a]);
-      }
-    } elif n == 0x13 {
-      if L.tempoprgsupp {
-        traktmp(a);
-      }
-    } elif n == 0x14 {
-      if L.tempoprgsupp {
-        let y = trktmp2(a >> 4);
-        tmpt9[y] := (a & 0x0F) | 0x80;
-      }
-    } elif n == 0x15 {
-      if L.tempoprgsupp && !z {
-        trktmp3(tmpp2[a]);
-      }
-    } elif L.bigfx_delay_16 && n >= 0x16 && n <= 0x1D {
-      if L.delaysupport {
-        delayer(a);
-      }
-    } elif n == 0x16 {
-      if !L.bigfx_v10 {
-        slidevib := a & 0x30;
-      }
-    } elif n < 0x1D {
-      if L.filtshift_supp && !L.bigfx_v10 {
-        flshift := a;
-      }
-    } elif n == 0x1D {
-      if L.delaysupport {
-        delayer(a);
-      }
-    } elif n == 0x1E {
-      if L.delaysupport {
-        if trdelay == 0 {
-          spdcnt += a;
-          delayer(spdcnt);
+      4 => {
+        if L.bigfx_v10 && a >= 0xF0 {
+          let m = multi3c(a & 0x0F);
+          wftpos := lo(m) + WFTABLEPOS + hi(m);
         } else {
+          wfghost := a;
+        }
+      }
+      5 => sidg_ad := a;
+      6 => sidg_sr := a;
+      7 => smalfx7(a);
+      8 => bigfx08(a);
+      9 => {
+        if L.bigfx_v10 {
+          slidevib := a & 0x30;
+        } else {
+          let m = multi3c(a);
+          wftpos := lo(m) + WFTABLEPOS + hi(m);
+        }
+      }
+      0x0A => {
+        let m = multi3c(a);
+        pwtpos := lo(m) + instrument.pw_start + hi(m);
+        if L.table_fx_resets {
+          pweepcnt := 0;
+        }
+      }
+      0x0B => {
+        let m = multi3c(a);
+        fltposi := lo(m) + instrument.filter_start + hi(m);
+        if L.table_fx_resets {
+          cwepcnt := 0;
+        }
+      }
+      0x0C => smalfxc(a);
+      0x0D => {
+        detuner := a;
+        if L.bigfx0d_falls {
+          pwhigho := a & 0x0F;
+        }
+      }
+      0x0E => pwhigho := a & 0x0F;
+      0x0F => {
+        if L.bigfx_v10 {
+          flshift := a;
+        } else {
+          ctfhgho := a;
+        }
+      }
+      0x10 => {
+        tmpt6 := a | 0x80;
+        maintm2(0);
+      }
+      0x11 => {
+        if L.tempoprgsupp {
+          tmpt7 := (a & 0x0F) | 0x80;
+          tmpt6 := a >> 4;
+          maintm2(0);
+        }
+      }
+      0x12 => {
+        if L.tempoprgsupp && !z {
+          maintm2(tmpp1[a]);
+        }
+      }
+      0x13 => {
+        if L.tempoprgsupp {
+          traktmp(a);
+        }
+      }
+      0x14 => {
+        if L.tempoprgsupp {
+          let y = trktmp2(a >> 4);
+          tmpt9[y] := (a & 0x0F) | 0x80;
+        }
+      }
+      0x15 => {
+        if L.tempoprgsupp && !z {
+          trktmp3(tmpp2[a]);
+        }
+      }
+       0x16..0x1D if L.bigfx_delay_16 => {
+        if L.delaysupport {
           delayer(a);
         }
       }
-    } else {
-      if L.filt_ctrl_fx {
-        fswitch := a & 0x0F;
-        resonib := a & 0xF0;
+      0x16 => {
+        if !L.bigfx_v10 {
+          slidevib := a & 0x30;
+        }
       }
-      if L.bigfx1f_toggle {
-        fswitch ^= 0x08;
+       0..0x1C => {
+        if L.filtshift_supp && !L.bigfx_v10 {
+          flshift := a;
+        }
+      }
+      0x1D => {
+        if L.delaysupport {
+          delayer(a);
+        }
+      }
+      0x1E => {
+        if L.delaysupport {
+          if trdelay == 0 {
+            spdcnt += a;
+            delayer(spdcnt);
+          } else {
+            delayer(a);
+          }
+        }
+      }
+      _ => {
+        if L.filt_ctrl_fx {
+          fswitch := a & 0x0F;
+          resonib := a & 0xF0;
+        }
+        if L.bigfx1f_toggle {
+          fswitch ^= 0x08;
+        }
       }
     }
   }
 
-  // MAINTMP / MAINTM2: the main tempo, every voice's tempo program restarting at A.
-  proc maintmp(a: u8) {
-    tmpt6 := a;
-    maintm2(0);
-  }
-
+  // MAINTM2: every voice's tempo program restarting at A.
   proc maintm2(a: u8) {
     if L.tempoprgsupp {
       for v in 0..L.chn {
