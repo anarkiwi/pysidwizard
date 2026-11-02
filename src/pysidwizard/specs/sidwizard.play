@@ -134,7 +134,6 @@ cell bigfxtable: u8[256] @ L.bigfxtable ro;
 // Immediates the player rewrites: the self-written state of the code.
 cell tablrst: u8 @ L.tablrst operand;
 cell insctrl: u8 @ L.insctrl operand;
-cell storfrl: u8 @ L.storfrl operand;
 cell fltctrl: u8 @ L.fltctrl operand;
 cell fltposi: u8 @ L.fltposi operand;
 cell cwepcnt: u8 @ L.cwepcnt operand;
@@ -214,6 +213,7 @@ machine voice[x in 0..L.chn] {
   // Per-voice variables sit in bunches of seven bytes, voice x at +x*7.
   cell freqlo: u8 @ L.freqlo + x * 7;
   cell freqhi: u8 @ L.freqhi + x * 7;
+  cell freq: u16 @ (L.freqlo + x * 7, L.freqhi + x * 7);
   cell pwlogho: u8 @ L.pwlogho + x * 7;
   cell pwhigho: u8 @ L.pwhigho + x * 7;
   cell pw: u16 @ (L.pwlogho + x * 7, L.pwhigho + x * 7);
@@ -238,6 +238,7 @@ machine voice[x in 0..L.chn] {
   cell slidevib: u8 @ L.slidevib + x * 7;
   cell freqmodl: u8 @ L.freqmodl + x * 7;
   cell freqmodh: u8 @ L.freqmodh + x * 7;
+  cell freqmod: u16 @ (L.freqmodl + x * 7, L.freqmodh + x * 7);
   cell videlcnt: u8 @ L.videlcnt + x * 7;
   cell vibfrequ: u8 @ L.vibfrequ + x * 7;
   cell vibracnt: u8 @ L.vibracnt + x * 7;
@@ -865,11 +866,7 @@ machine voice[x in 0..L.chn] {
   proc vibslide() {
     let y = slidevib;
     if L.vibratotypes && y == 0 {
-      let c = carry(freqmodl, videlcnt);
-      freqmodl += videlcnt;
-      if c {
-        freqmodh += 1;
-      }
+      freqmod += u16(videlcnt);
       dovibra();
     } elif !neg(y) {
       if neg(videlcnt) {
@@ -878,9 +875,9 @@ machine voice[x in 0..L.chn] {
         videlcnt -= 1;
       }
     } elif y == SLIDE_DOWN {
-      subfreq(true);
+      freq -= freqmod;
     } elif neg(y - SLIDE_DOWN) {
-      addfreq(false);
+      freq += freqmod;
     } elif L.portavibra && y == NOTE_PORTA {
       targetn();
     } else {
@@ -891,31 +888,21 @@ machine voice[x in 0..L.chn] {
   // PORTAME: the difference to the note's frequency, then a step of FREQMOD
   // towards it, or the target itself once the step reaches it.
   proc portame(c: bool) {
-    let p = dpitch;
-    let lo = freqtbl[p];
-    storfrl := lo - freqlo - u8(!c);
-    let c1 = !borrow(lo, freqlo, !c);
-    let hi = freqtbh[p];
-    let diff_hi = hi - freqhi - u8(!c1);
-    let c2 = !borrow(hi, freqhi, !c1);
-    let diff_lo = storfrl;
-    if c2 {
-      let c3 = !borrow(diff_lo, freqmodl);
-      let c4 = !borrow(diff_hi, freqmodh, !c3);
-      if c4 {
-        addfreq(true);
+    let t = word(freqtbl[dpitch], freqtbh[dpitch]);
+    let d = t - freq - u16(!c);
+    if t >= freq + u16(!c) {
+      if d >= freqmod {
+        freq += freqmod + 1;
       } else {
         portend();
       }
+    } elif d + freqmod < d {
+      portend();
     } else {
-      let c3 = carry(diff_lo, freqmodl);
-      if carry(diff_hi, freqmodh, c3) {
-        portend();
-      } else {
-        subfreq(false);
-      }
+      freq -= freqmod + 1;
     }
   }
+
 
   proc portend() {
     if L.portavibra {
@@ -926,9 +913,7 @@ machine voice[x in 0..L.chn] {
   }
 
   proc targetn() {
-    let p = dpitch;
-    freqlo := freqtbl[p];
-    freqhi := freqtbh[p];
+    freq := word(freqtbl[dpitch], freqtbh[dpitch]);
   }
 
   // DOVIBRA: the vibrato counter counts VIBFREQU down; its upper half slides up.
@@ -940,27 +925,15 @@ machine voice[x in 0..L.chn] {
     a -= 1;
     vibracnt := a;
     if a << 1 < vibfrequ {
-      addfreq(false);
+      freq += freqmod;
     } else {
-      subfreq(true);
+      freq -= freqmod;
     }
   }
 
-  proc subfreq(c: bool) {
-    let lo = freqlo;
-    let m = freqmodl;
-    freqlo := lo - m - u8(!c);
-    let c1 = !borrow(lo, m, !c);
-    freqhi := freqhi - freqmodh - u8(!c1);
-  }
 
-  proc addfreq(c: bool) {
-    let lo = freqlo;
-    let m = freqmodl;
-    freqlo := lo + m + u8(c);
-    let c1 = carry(lo, m, c);
-    freqhi := freqhi + freqmodh + u8(c1);
-  }
+
+
 
   // FILTPRG: the filter table, for the voice that owns the filter.
   proc filtprg() {
@@ -1015,17 +988,11 @@ machine voice[x in 0..L.chn] {
   // and waveform registers. Returns the carry the code leaves.
   proc wfarptb(a: u8, c: bool) -> bool {
     let cw = wftable(a, c);
-    let lo = freqlo;
+    let f = freq + ite(L.detunesupport, u16(detuner) + u16(cw), 0);
+    sidg_freqlo := lo(f);
+    sidg_freqhi := hi(f);
     if L.detunesupport {
-      let d = detuner;
-      sidg_freqlo := lo + d + u8(cw);
-      let c1 = carry(lo, d, cw);
-      let hi = freqhi;
-      sidg_freqhi := hi + u8(c1);
-      cw := carry(hi, 0, c1);
-    } else {
-      sidg_freqlo := lo;
-      sidg_freqhi := freqhi;
+      cw := f < freq;
     }
     sidg_wave := wfghost;
     return cw;
@@ -1117,8 +1084,7 @@ machine voice[x in 0..L.chn] {
 
   proc absptch(a: u8) {
     let y = a & 0x7F;
-    freqlo := freqtbl[y];
-    freqhi := freqtbh[y];
+    freq := word(freqtbl[y], freqtbh[y]);
   }
 
   // MULCNTP: a multispeed call runs the instrument's tables once its first frame
@@ -1169,8 +1135,7 @@ machine voice[x in 0..L.chn] {
     let y = a;
     if L.calcvibrato {
       if z {
-        freqmodl := a;
-        freqmodh := 0;
+        freqmod := u16(a);
         return;
       }
       let half = a >> 1;
@@ -1179,12 +1144,10 @@ machine voice[x in 0..L.chn] {
     if y >= L.exp_end {
       y := L.exp_end;
     } elif y < L.exp_threshold {
-      freqmodl := exptbase[y];
-      freqmodh := 0;
+      freqmod := u16(exptbase[y]);
       return;
     }
-    freqmodl := vib_lo[y];
-    freqmodh := vib_hi[y];
+    freqmod := word(vib_lo[y], vib_hi[y]);
   }
 
 
