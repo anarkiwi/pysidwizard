@@ -1,5 +1,6 @@
 """Play a SID-Wizard tune with the playspec and with its own 6502, call by call, and
-report the first call whose SID writes or memory (outside the stack page) differ.
+report the first call whose audible output differs: the SID registers (the bits the chip ignores
+masked), and per voice whether its gate was cleared and set again or TEST set within the call.
 
     python scripts/sw_spec_diff.py TUNE.sid [--frames N] [--song S]
 """
@@ -21,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from pysidwizard import playspec  # noqa: E402  # pylint: disable=wrong-import-position
 
-STACK = range(0x100, 0x200)
+UNUSED = {3: 0x0F, 10: 0x0F, 17: 0x0F, 21: 0x07}
 MAX_CYCLES = 200_000
 
 
@@ -60,42 +61,46 @@ def call(player, addr: int, regs) -> None:
     """Run the 6502 subroutine at ``addr`` with ``(A, X, Y)`` on ``player``'s machine."""
     mpu = player._mpu  # pylint: disable=protected-access
     mpu.x, mpu.y = regs[1], regs[2]
+    if isinstance(player, SpecPlayer):
+        mpu.a = regs[0]
+        player._call(addr)  # pylint: disable=protected-access
+        return
     run_to_rts(mpu, player._obs, addr, regs[0], MAX_CYCLES)  # pylint: disable=protected-access
 
 
+def audible(writes, regs, ctrl):
+    """One call's registers with the bits the chip ignores masked, and per voice whether its gate
+    was cleared and set again and whether TEST was set within the call; ``ctrl`` (each voice's
+    control register at the end of the call before) is updated."""
+    edges = []
+    for v in range(3):
+        seen = [ctrl[v]] + [val for r, val in writes if r == 4 + 7 * v]
+        ctrl[v] = regs[4 + 7 * v]
+        edges.append((bool(ctrl[v] & 1) and any(not s & 1 for s in seen), any(s & 8 for s in seen)))
+    return tuple(r & UNUSED.get(i, 0xFF) for i, r in enumerate(regs)), tuple(edges)
+
+
 def first_difference(data: bytes, frames: int, song: int = 1, progress: bool = True, calls=None):
-    """``(frame, addresses, players)`` of the first call the two players leave differently,
-    or None; ``calls`` maps a frame to ``(addr, (A, X, Y))``, a subroutine both run first."""
+    """``(frame, spec output, 6502 output)`` of the first call the two players leave sounding
+    differently, or None; ``calls`` maps a frame to ``(addr, (A, X, Y))``, a subroutine both
+    run first."""
     spec, cpu = players(data, song)
+    ctrl_spec, ctrl_cpu = [0] * 3, [0] * 3
     for frame in tqdm(range(frames), desc="calls", unit="call", disable=not progress):
         if calls and frame in calls:
             for player in (spec, cpu):
                 call(player, *calls[frame])
-        spec.play_frame()
-        cpu.play_frame()
-        mine, real = spec.memory, bytes(cpu._mem)  # pylint: disable=protected-access
-        same = (
-            mine[: STACK.start] == real[: STACK.start] and mine[STACK.stop :] == real[STACK.stop :]
-        )
-        if not same or spec.regs != cpu.regs:
-            diff = [a for a in range(0x10000) if mine[a] != real[a] and a not in STACK]
-            return frame, diff, (spec, cpu)
+        mine = audible(spec.play_frame(), spec.snapshot(), ctrl_spec)
+        real = audible(cpu.play_frame(), cpu.snapshot(), ctrl_cpu)
+        if mine != real:
+            return frame, mine, real
     return None
 
 
-def report(spec, cpu, frame: int, diff) -> None:
-    """Print the differing call's addresses, by the binding's names, and the registers."""
-    names = {}
-    for name, addr in playspec.labels(spec.view(), spec.entry).items():
-        for k in range(0, 3 * playspec.VOICE_STRIDE, playspec.VOICE_STRIDE):
-            names.setdefault(addr + k, f"{name}+{k}" if k else name)
-    mine, real = spec.memory, bytes(cpu._mem)  # pylint: disable=protected-access
+def report(frame: int, mine, real) -> None:
+    """Print the differing call's registers and edges."""
     print(f"call {frame} differs")
-    for addr in diff[:24]:
-        print(
-            f"  ${addr:04x} {names.get(addr, ''):<16} spec ${mine[addr]:02x} 6502 ${real[addr]:02x}"
-        )
-    print(f"  regs spec {spec.regs}\n  regs 6502 {cpu.regs}")
+    print(f"  spec {mine[0]} {mine[1]}\n  6502 {real[0]} {real[1]}")
 
 
 def main(argv=None) -> None:
@@ -111,8 +116,7 @@ def main(argv=None) -> None:
     if found is None:
         print(f"{args.tune.name}: {frames} calls equal")
         return
-    frame, diff, (spec, cpu) = found
-    report(spec, cpu, frame, diff)
+    report(*found)
 
 
 if __name__ == "__main__":

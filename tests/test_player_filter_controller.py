@@ -1,8 +1,7 @@
 """The filter controller: SETFLTP's claim, FILTPRG's one global CWEPCNT and FLTPOSI walk.
 
 Each test steps a SWMPlayer and the 6502 of the same SID-Maker export together, asserting
-every call's SID writes and memory agree, and reads FLTCTRL / FLTPOSI / CWEPCNT (operands
-of the player's own code) at the binder's addresses.
+every call's audible output agree, and reads FLTCTRL / FLTPOSI / CWEPCNT from the spec's state.
 """
 
 from __future__ import annotations
@@ -10,7 +9,6 @@ from __future__ import annotations
 from functools import cached_property
 from typing import Optional
 
-import numpy as np
 import pytest
 
 from pysidwizard import (
@@ -25,11 +23,9 @@ from pysidwizard import (
     playspec,
     straight_tempo,
 )
-from tests._toy import SETUP_FRAMES, STACK, emu
+from tests._toy import SETUP_FRAMES, audible, emu, set_variable, variable
 
 VOICES = tuple(v * playspec.VOICE_STRIDE for v in range(playspec.CHANNELS))
-OUTSIDE_STACK = np.ones(0x10000, bool)
-OUTSIDE_STACK[STACK.start : STACK.stop] = False
 
 
 class _Lockstep:
@@ -39,15 +35,14 @@ class _Lockstep:
         self.spec = SWMPlayer(swm)
         self.cpu = emu(self.spec)
         self.calls = 0
+        self.ctrl = [0] * 3, [0] * 3
 
     def step(self, calls: int = 1) -> _Lockstep:
-        """Run ``calls`` play calls on both, asserting equal SID writes and memory."""
+        """Run ``calls`` play calls on both, asserting equal audible output."""
         for _ in range(calls):
-            assert self.spec.play_frame() == self.cpu.play_frame(), f"call {self.calls} writes"
-            mine = np.frombuffer(self.spec.memory, np.uint8)
-            real = np.frombuffer(bytes(self.cpu._mem), np.uint8)  # pylint: disable=protected-access
-            diff = np.flatnonzero((mine != real) & OUTSIDE_STACK)
-            assert not diff.size, f"call {self.calls} memory differs at {diff[:8]}"
+            mine = audible(self.spec.play_frame(), self.spec.snapshot(), self.ctrl[0])
+            real = audible(self.cpu.play_frame(), self.cpu.snapshot(), self.ctrl[1])
+            assert mine == real, f"call {self.calls} audible output"
             self.calls += 1
         return self
 
@@ -57,11 +52,11 @@ class _Lockstep:
         return playspec.labels(self.spec.view(), self.spec.entry)
 
     def __getitem__(self, name: str) -> int:
-        return self.spec.memory[self.lab[name]]
+        return variable(self.spec, name)
 
     def voice(self, name: str, voice: int) -> int:
         """Per-voice variable ``name`` of ``voice``."""
-        return self.spec.memory[self.lab[name] + voice * playspec.VOICE_STRIDE]
+        return variable(self.spec, name, voice)
 
     def poke(self, addr: int, *values: int) -> None:
         """Store ``values`` from ``addr`` in both memories."""
@@ -70,8 +65,9 @@ class _Lockstep:
                 mem[addr + k] = value
 
     def set(self, name: str, value: int) -> None:
-        """Store ``value`` at label ``name`` in both memories."""
-        self.poke(self.lab[name], value)
+        """Store ``value`` in the player variable ``name`` of both players."""
+        self.cpu._mem[self.lab[name]] = value  # pylint: disable=protected-access
+        set_variable(self.spec, name, value)
 
     def instrument(self, number: int) -> int:
         """The address of instrument ``number`` (1-based) in the image."""

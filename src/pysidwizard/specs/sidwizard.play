@@ -1,361 +1,290 @@
-// SID-Wizard playroutine (player.asm): one play call of a single-SID build. PLAYER runs
-// DOTRACK for each voice, the last first, then COMMONREGS writes the chip's shared
-// registers; MULPLY, the multispeed entry, runs only the instrument tables of each voice.
-// Every name L.* is a player address, flag or byte resolved from the build's code; each
-// flag is a ``feature`` switch of the build or a release difference of the player.
+// SID-Wizard's play call, every build: the L.* flags are the features and release differences of
+// the player in the image, and each player variable is state that starts from what the init left
+// (L.init_*). Voices play last first, then the shared filter and volume registers. Each voice
+// counts ticks against a tempo program; tick 0 reads a row and hard-restarts its note, tick 1
+// steps the pattern and orderlist, tick 2 starts the note, other ticks run the instrument:
+// vibrato and slides, then its filter, pulse and waveform tables. A multispeed call runs only
+// the tables.
 spec sidwizard;
 
 layout {
-  zp, zp_lo, zp_hi, exptabh_m1, zp_note, zp_inst, zp_fx, zp_value, sid, sidg,
-  freqlo, freqhi, pwlogho, pwhigho, wfghost, ptngate, pweepcnt,
-  packcnt, spdcnt, seqpos, ptnpos, wftpos, pwtpos, arpscnt,
-  curptn, curnot, dpitch, curifx, curifx_long, curins, curfx2, curval,
-  slidevib, freqmodl, freqmodh, videlcnt, vibfrequ, vibracnt, transp,
-  tmpbase, tmppos, arpsped, pkbdtrk, curchord, chordpos,
-  flswtbl, flswtb2, trktmpos, trdelay, seqtempo, transp2, detuner,
-  p_ptnl1, p_ptnh1, p_ptnl2, p_ptnh2,
-  p_insl1, p_insh1, p_insl2, p_insh2, p_insl3, p_insh3, p_insl4, p_insh4, p_insl5, p_insh5,
-  tempotbl, tempo, p_tmpt2, p_tmpt3, p_tmpt6, p_tmpt7, p_tmpt8, p_tmpt9, p_tmpp1, p_tmpp2,
-  p_chdt1, p_chdt2, p_chdp1, p_chdp2, p_chdp3, p_chdp4, p_subt1, p_subt2, p_seqt1,
-  freqtbl, freqtbh, exptabh, exptbase, vib_lo, vib_hi, notefxtbl, smallfxtbl, bigfxtable,
-  tablrst, insctrl, storfrl, fltctrl, fltposi, cwepcnt, fswitch, resonib, mainvol,
-  fltband, ckbdtrk, ctfhgho, flshift, ctflgho, seqvolu, valstor, mergest, mul3tmp,
-  astorez, indexj1, indexj2, indexjp, xstore, subtpos, gate, swp_offset, sfxtimer, sfxleng,
-  curinstemp, subtjmp: addr;
-  sel_ins_limit, exp_end, exp_threshold, chn, gate_mask: byte;
-  transposesupp, octaveshift, chordsupport, calcvibrato, vibratotypes, detunesupport,
-  portavibra, arpspeedsupp, portame_notefx, gateoffptr, filtresetsw, filtkbtrack,
-  pwresetsw, pwkeybtrack, wfarp_nop_supp, finefiltsweep, hardrestypes, frame1switch,
-  tempoprgsupp, fastspeedbind, delaysupport, subtunejump,
-  multispeedsupp, allghostregs, retainzeropage, filteralways, pulsealways,
-  vibslidealways, filt_ctrl_fx, filtshift_supp, seq_fx_support, vibfreqfx_supp,
-  filter_smallfx, detune_smallfx, wfctrl_smallfx,
-  first_frame_freq_by_track, first_frame_fixed_waveform, filter_stop_rewinds,
-  kbtrack_fswitch, wfctrl_fx_stores, mulply, play_gate, gate_minus, swp, sfx, hr_ad_first,
-  adsr_ad_first, seq_tempo_capped, table_fx_resets, subtune_restarts, sound_tables_first,
-  sound_resets_flshift, vibamfx_amp_only, bigfx_v10, echo_support, hrender_inline,
-  restart_trdelay, bigfx0d_falls, bigfx_delay_16, bigfx1f_toggle,
-  hrgtoff_or8, noins_rts: flag;
-  order, chain: list;
+  exptabh, exptabh_m1, exptbase, freqtbh, freqtbl, p_chdp1, p_chdt1, p_insh3, p_insl3, p_ptnh1,
+  p_ptnl1, p_subt1, p_subt2, p_tmpp1, bigfx_pwhi, sfxleng, sfxtimer, sid, swp_base, tempotbl, vib_hi, vib_lo:
+  addr;
+  chn, exp_end, exp_threshold, gate_mask, init_ckbdtrk, init_curinstemp, init_cutoff,
+  init_cwepcnt, init_flshift, init_fltband, init_fltctrl, init_fltposi, init_fswitch, init_gate,
+  init_insctrl, init_main_tempo, init_mainvol, init_resonib, init_seqvolu, init_subtjmp,
+  init_subtpos, init_tablrst, init_valstor, init_zp, sel_ins_limit: byte;
+  init_freq, init_pw, init_wfghost, init_ptngate, init_pweepcnt, init_packcnt, init_spdcnt,
+  init_seqpos, init_ptnpos, init_wftpos, init_pwtpos, init_arpscnt, init_curptn, init_curnot,
+  init_dpitch, init_curifx, init_curins, init_curfx2, init_curval, init_slidevib, init_freqmod,
+  init_videlcnt, init_vibfrequ, init_vibracnt, init_transp, init_tmpbase, init_tmppos,
+  init_arpsped, init_pkbdtrk, init_curchord, init_chordpos, init_flswtbl, init_flswtb2,
+  init_trktmpos, init_seqtempo, init_transp2, init_detuner, init_trdelay, init_seqt, init_g_freq,
+  init_g_pw, init_g_wave, init_g_ad, init_g_sr, order: list;
+  allghostregs, arpspeedsupp, bigfx0d_falls, bigfx_pwhi_stray, bigfx1f_toggle, bigfx_delay_16, bigfx_v10,
+  calcvibrato, chordsupport, delaysupport, detune_smallfx, detunesupport, echo_support,
+  fastspeedbind, filt_ctrl_fx, filter_smallfx, filter_stop_rewinds, filteralways, filtkbtrack,
+  filtresetsw, filtshift_supp, finefiltsweep, first_frame_fixed_waveform,
+  first_frame_freq_by_track, frame1switch, gate_minus, gateoffptr, hardrestypes, hrender_inline,
+  hrgtoff_or8, kbtrack_fswitch, mulply, multispeedsupp, noins_rts, octaveshift, play_gate,
+  portame_notefx, portavibra, pulsealways, pwkeybtrack, pwresetsw, restart_trdelay,
+  retainzeropage, seq_fx_support, seq_tempo_capped, sfx, sfxinit, sound_resets_flshift, subtune_restarts,
+  subtunejump, swp, table_fx_resets, tempoprgsupp, transposesupp, vibamfx_amp_only,
+  vibfreqfx_supp, vibratotypes, vibslidealways, wfarp_nop_supp, wfctrl_fx_stores, wfctrl_smallfx:
+  flag;
 }
 
-const RUN_MIN = 0x70;
-const RUN_MAX = 0x78;
-const RUN_BASE = 0x6F;
-const FX_VALUE_MASK = 0xE0;
-const NOTE_FX_MIN = 0x60;
 const LEGATO = 0x3F;
 const PORTAMENTO = 0x03;
-const WFTABLEPOS = 0x10;
-const DEFAULTPORTA = 110;
-const DEFAULT_HR_AD = 0x0F;
-const DEFAULT_HR_SR = 0x00;
-const SEQ_END = 0xFE;
-const SEQ_LOOP = 0xFF;
-const TABLE_JUMP = 0xFE;
-const PTN_END = 0xFF;
-const CHORD_RETURN = 0x7E;
-const CHORD_LOOP = 0x7F;
-const SLIDE_UP = 0x81;
-const SLIDE_DOWN = 0x82;
+const NOTE_FX = 0x60;
 const TONE_PORTA = 0x83;
 const NOTE_PORTA = 0xFF;
+const WAVE_START = 0x10;
 
-// The zero-page pointer the player reads instruments and patterns through, and an SWP
-// export's base its song tables' offsets are from.
-cell zp: u16 @ L.zp per_proc;
-cell swp_lo: u8 @ L.swp_offset;
-cell swp_hi: u8 @ L.swp_offset + 1;
-cell zp_lo: u8 @ L.zp_lo per_proc;
-cell zp_hi: u8 @ L.zp_hi per_proc;
+event pulse: tick;
+event filter: tick;
+event advance: tick;
+event pattern_end: tick;
+event wave: tick;
 
-// The pattern pointer the voice's pattern id selects. Each column's read names it
-// separately: an export relocated only in part addresses it differently.
-cell zp_note: u16 @ L.zp_note per_proc;
-cell zp_inst: u16 @ L.zp_inst per_proc;
-cell zp_fx: u16 @ L.zp_fx per_proc;
-cell zp_value: u16 @ L.zp_value per_proc;
-
-// Song data, read through each instruction's own operand.
-cell ptnl1: u8[256] @ L.p_ptnl1 ro;
-cell ptnh1: u8[256] @ L.p_ptnh1 ro;
-cell ptnl2: u8[256] @ L.p_ptnl2 ro;
-cell ptnh2: u8[256] @ L.p_ptnh2 ro;
-cell insl1: u8[256] @ L.p_insl1 ro;
-cell insh1: u8[256] @ L.p_insh1 ro;
-cell insl2: u8[256] @ L.p_insl2 ro;
-cell insh2: u8[256] @ L.p_insh2 ro;
-cell insl3: u8[256] @ L.p_insl3 ro;
-cell insh3: u8[256] @ L.p_insh3 ro;
-cell insl4: u8[256] @ L.p_insl4 ro;
-cell insh4: u8[256] @ L.p_insh4 ro;
-cell insl5: u8[256] @ L.p_insl5 ro;
-cell insh5: u8[256] @ L.p_insh5 ro;
-cell tmpp1: u8[256] @ L.p_tmpp1 ro;
-cell tmpp2: u8[256] @ L.p_tmpp2 ro;
-cell chdt1: u8[256] @ L.p_chdt1 ro;
-cell chdt2: u8[256] @ L.p_chdt2 ro;
-cell chdp1: u8[256] @ L.p_chdp1 ro;
-cell chdp2: u8[256] @ L.p_chdp2 ro;
-cell chdp3: u8[256] @ L.p_chdp3 ro;
-cell chdp4: u8[256] @ L.p_chdp4 ro;
+// Song data: instruments and patterns through their pointer tables, the orderlists, chords,
+// tempo programs and subtunes. The instrument read is the one any voice last pointed at; a call
+// that keeps the zero page starts from the pointer the init left.
+state ins: u16 = L.init_zp;
+cell insptr: u16[256] @ (L.p_insl3, L.p_insh3) ro;
+cell ptnptr: u16[256] @ (L.p_ptnl1, L.p_ptnh1) ro;
+table insdata @ ins stride 1 { b: u8; }
+view instrument @ ins {
+  control @ 0; hr_ad @ 1; hr_sr @ 2; ad @ 3; sr @ 4; vibrato @ 5; vibrato_delay @ 6;
+  arp_speed @ 7; chord @ 8; octave @ 9; pw_start @ 10; filter_start @ 11; gateoff_wf @ 12;
+  gateoff_pw @ 13; gateoff_filter @ 14; first_wave @ 15;
+}
+table orderlist via seqt stride 1 { b: u8; }
+cell tmpp: u8[256] @ L.p_tmpp1 ro;
+cell chdt: u8[256] @ L.p_chdt1 ro;
+cell chdp: u8[256] @ L.p_chdp1 ro;
 cell subt1: u8[256] @ L.p_subt1 ro;
 cell subt2: u8[256] @ L.p_subt2 ro;
+cell tempotbl: u8[256] @ L.tempotbl;
+cell bigfx_pwhi: u8[21] @ L.bigfx_pwhi;
 
-// The tempo program the voices' clocks step through: one byte per tick count, the
-// last of a program having bit 7 set. Its first two bytes are the main tempo and
-// each voice's track tempo follows at TRKTMPOS; the tempo effects rewrite them.
-cell tempotbl: u8[256] @ L.tempotbl per_proc;
-cell tmpt2: u8[256] @ L.p_tmpt2;
-cell tmpt3: u8[256] @ L.p_tmpt3;
-cell tmpt8: u8[256] @ L.p_tmpt8;
-cell tmpt9: u8[256] @ L.p_tmpt9;
-cell tmpt6: u8 @ L.p_tmpt6;
-cell tmpt7: u8 @ L.p_tmpt7;
+// The player's tables: note frequencies, and the exponents slides and keyboard tracks scale by.
+cell freqtbl: u8[256] @ L.freqtbl ro notes(lo, -1);
+cell freqtbh: u8[256] @ L.freqtbh ro notes(hi, -1);
+cell exptabh: u8[256] @ L.exptabh ro;
+cell exptabh_m1: u8[256] @ L.exptabh_m1 ro;
+cell exptbase: u8[256] @ L.exptbase ro;
+cell vib_lo: u8[256] @ L.vib_lo ro;
+cell vib_hi: u8[256] @ L.vib_hi ro;
 
-// Without tempo programs the clock compares against one byte.
-cell tempo_byte: u8 @ L.tempo;
-
-// The player's own tables: note frequencies, the exponent table, and the offsets
-// and addresses of the effect dispatch.
-cell freqtbl: u8[256] @ L.freqtbl ro per_proc notes(lo, -1);
-cell freqtbh: u8[256] @ L.freqtbh ro per_proc notes(hi, -1);
-cell exptabh: u8[256] @ L.exptabh ro per_proc;
-cell exptabh_m1: u8[256] @ L.exptabh_m1 ro per_proc;
-cell exptbase: u8[256] @ L.exptbase ro per_proc;
-cell vib_lo: u8[256] @ L.vib_lo ro per_proc;
-cell vib_hi: u8[256] @ L.vib_hi ro per_proc;
-cell notefxtbl: u8[256] @ L.notefxtbl ro per_proc;
-cell smallfxtbl: u8[256] @ L.smallfxtbl ro per_proc;
-cell bigfxtable: u8[256] @ L.bigfxtable ro per_proc;
-
-// Immediates the player rewrites: the self-written state of the code.
-cell tablrst: u8 @ L.tablrst operand per_proc;
-cell insctrl: u8 @ L.insctrl operand per_proc;
-cell storfrl: u8 @ L.storfrl operand per_proc;
-cell fltctrl: u8 @ L.fltctrl operand per_proc;
-cell fltposi: u8 @ L.fltposi operand per_proc;
-cell cwepcnt: u8 @ L.cwepcnt operand per_proc;
-cell fswitch: u8 @ L.fswitch operand per_proc;
-cell resonib: u8 @ L.resonib operand per_proc;
-cell mainvol: u8 @ L.mainvol operand per_proc;
-cell fltband: u8 @ L.fltband operand per_proc;
-cell ckbdtrk: u8 @ L.ckbdtrk operand per_proc;
-cell ctfhgho: u8 @ L.ctfhgho operand per_proc;
-cell flshift: u8 @ L.flshift operand per_proc;
-cell ctflgho: u8 @ L.ctflgho operand per_proc;
-cell seqvolu: u8 @ L.seqvolu operand per_proc;
-cell valstor: u8 @ L.valstor operand per_proc;
-cell mergest: u8 @ L.mergest operand per_proc;
-cell mul3tmp: u8 @ L.mul3tmp operand per_proc;
-cell astorez: u8 @ L.astorez operand per_proc;
-cell indexj1: u8 @ L.indexj1 operand per_proc;
-cell indexj2: u8 @ L.indexj2 operand per_proc;
-cell indexjp: u16 @ L.indexjp operand per_proc;
-cell xstore: u8 @ L.xstore operand per_proc;
-cell subtpos: u8 @ L.subtpos operand per_proc;
-cell subtjmp: u8 @ L.subtjmp operand per_proc;
-
-// The chip's shared registers.
+// Shared state: the filter, volume, the tables' reset mask, the small-effect value.
+state tablrst: u8 = L.init_tablrst;
+state insctrl: u8 = L.init_insctrl;
+state fltctrl: u8 = L.init_fltctrl;
+state fltposi: u8 = L.init_fltposi;
+state cwepcnt: u8 = L.init_cwepcnt;
+state fswitch: u8 = L.init_fswitch;
+state resonib: u8 = L.init_resonib;
+state mainvol: u8 = L.init_mainvol;
+state fltband: u8 = L.init_fltband;
+state ckbdtrk: u8 = L.init_ckbdtrk;
+state cutoff: u16 = L.init_cutoff;
+state flshift: u8 = L.init_flshift;
+state seqvolu: u8 = L.init_seqvolu;
+state valstor: u8 = L.init_valstor;
+state subtpos: u8 = L.init_subtpos;
 cell sid_resfc: u8 @ L.sid + 0x17 out;
 cell sid_fmvol: u8 @ L.sid + 0x18 out;
-cell sid_fcut_lo: u8 @ L.sid + 0x15 out;
-cell sid_fcut_hi: u8 @ L.sid + 0x16 out;
+cell sid_fcut: u11 @ (L.sid + 0x15 : 3, L.sid + 0x16) out;
 
-// A hand-edited PLAYER entry toggles its own immediate and returns on alternate calls.
-cell gate: u8 @ L.gate operand per_proc;
+state mulcarry: bool = false;
+state main_tempo: u8 = L.init_main_tempo;
+state subtjmp: u8 = L.init_subtjmp;
+state gate: u8 = L.init_gate;
+state curinstemp: u8 = L.init_curinstemp;
+cell sfxleng: u8 @ L.sfxleng;
+cell sfxtimer: u8 @ L.sfxtimer;
 
-// An SFX build's sound-effect state: its length, its timer, and the music's instrument
-// it keeps while it plays.
-cell sfxleng: u8 @ L.sfxleng per_proc;
-cell sfxtimer: u8 @ L.sfxtimer per_proc;
-cell curinstemp: u8 @ L.curinstemp per_proc;
+owner filter_owner: fltctrl { id x * 7; none 0xFF; on note claim; }
 
-// The play call's entry: the gate of a hand-edited player, then the zero-page pointer
-// the call restores on return.
-machine play {
-  signal zp_saved: u16 = 0;
-  step {
-    if L.play_gate {
-      let g = gate ^ L.gate_mask;
-      gate := g;
-      if neg(g) != L.gate_minus {
-        finish;
-      }
-    }
-    zp_saved := zp;
+// The filter table of the voice owning the filter: sweep, set (band, resonance, cutoff),
+// jump, stop; the third byte is the keyboard track or a filter switch.
+cursor filter_table {
+  table @ ins width 3;
+  pos fltposi; count cwepcnt; values cutoff, fltband, resonib, ckbdtrk, fswitch;
+  on filter step;
+  match c0 {
+    0..0x7f if L.finefiltsweep => sweep(into=cutoff, count=c0, step=c1, frac=3)
+      then fswitch = c2 & 0x0f if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
+           ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
+           ckbdtrk = c2 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) != 0x80,
+           ckbdtrk = c2 if L.filtkbtrack && !L.kbtrack_fswitch;
+    0..0x7f => sweep(into=cutoff.hi, count=c0, step=c1)
+      then fswitch = c2 & 0x0f if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
+           ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
+           ckbdtrk = c2 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) != 0x80,
+           ckbdtrk = c2 if L.filtkbtrack && !L.kbtrack_fswitch;
+    0x80..0xfd if L.finefiltsweep => value(fltband = c0 & 0x70, resonib = c0 << 4, cutoff.hi = c1, cutoff.lo = 0)
+      then cwepcnt = 0,
+           fswitch = c2 & 0x0f if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
+           ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
+           ckbdtrk = c2 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) != 0x80,
+           ckbdtrk = c2 if L.filtkbtrack && !L.kbtrack_fswitch;
+    0x80..0xfd => value(fltband = c0 & 0x70, resonib = c0 << 4, cutoff.hi = c1)
+      then cwepcnt = 0,
+           fswitch = c2 & 0x0f if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
+           ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
+           ckbdtrk = c2 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) != 0x80,
+           ckbdtrk = c2 if L.filtkbtrack && !L.kbtrack_fswitch;
+    0xfe => jump(c1) hold 0..0x7f as 0x80;
+    0xff => stop;
   }
 }
 
 machine voice[x in 0..L.chn] {
-  // Per-voice variables sit in bunches of seven bytes, voice x at +x*7.
-  cell freqlo: u8 @ L.freqlo + x * 7 per_proc;
-  cell freqhi: u8 @ L.freqhi + x * 7 per_proc;
-  cell pwlogho: u8 @ L.pwlogho + x * 7 per_proc;
-  cell pwhigho: u8 @ L.pwhigho + x * 7 per_proc;
-  cell wfghost: u8 @ L.wfghost + x * 7 per_proc;
-  cell ptngate: u8 @ L.ptngate + x * 7 per_proc;
-  cell pweepcnt: u8 @ L.pweepcnt + x * 7 per_proc;
-  cell packcnt: u8 @ L.packcnt + x * 7 per_proc;
-  cell spdcnt: u8 @ L.spdcnt + x * 7 per_proc;
-  cell seqpos: u8 @ L.seqpos + x * 7 per_proc;
-  cell ptnpos: u8 @ L.ptnpos + x * 7 per_proc;
-  cell wftpos: u8 @ L.wftpos + x * 7 per_proc;
-  cell pwtpos: u8 @ L.pwtpos + x * 7 per_proc;
-  cell arpscnt: u8 @ L.arpscnt + x * 7 per_proc;
-  cell curptn: u8 @ L.curptn + x * 7 per_proc;
-  cell curnot: u8 @ L.curnot + x * 7 per_proc;
-  cell dpitch: u8 @ L.dpitch + x * 7 per_proc;
-  cell curifx: u8 @ L.curifx + x * 7 per_proc;
-  cell curifx_long: u8 @ L.curifx_long + x * 7 per_proc;
-  cell curins: u8 @ L.curins + x * 7 per_proc;
-  cell curfx2: u8 @ L.curfx2 + x * 7 per_proc;
-  cell curval: u8 @ L.curval + x * 7 per_proc;
-  cell slidevib: u8 @ L.slidevib + x * 7 per_proc;
-  cell freqmodl: u8 @ L.freqmodl + x * 7 per_proc;
-  cell freqmodh: u8 @ L.freqmodh + x * 7 per_proc;
-  cell videlcnt: u8 @ L.videlcnt + x * 7 per_proc;
-  cell vibfrequ: u8 @ L.vibfrequ + x * 7 per_proc;
-  cell vibracnt: u8 @ L.vibracnt + x * 7 per_proc;
-  cell transp: u8 @ L.transp + x * 7 per_proc;
-  cell tmpbase: u8 @ L.tmpbase + x * 7 per_proc;
-  cell tmppos: u8 @ L.tmppos + x * 7 per_proc;
-  cell arpsped: u8 @ L.arpsped + x * 7 per_proc;
-  cell pkbdtrk: u8 @ L.pkbdtrk + x * 7 per_proc;
-  cell curchord: u8 @ L.curchord + x * 7 per_proc;
-  cell chordpos: u8 @ L.chordpos + x * 7 per_proc;
-  // The voice's SID registers: ghost registers COMMONREGS copies to the chip, or the
-  // chip itself in a build without them.
-  cell sidg_freqlo: u8 @ L.sidg + x * 7;
-  cell sidg_freqhi: u8 @ L.sidg + x * 7 + 1;
-  cell sidg_pwlo: u8 @ L.sidg + x * 7 + 2;
-  cell sidg_pwhi: u8 @ L.sidg + x * 7 + 3;
-  cell sidg_wave: u8 @ L.sidg + x * 7 + 4;
-  cell sidg_ad: u8 @ L.sidg + x * 7 + 5;
-  cell sidg_sr: u8 @ L.sidg + x * 7 + 6;
-  // Constants and variables kept in the code's bunch of seven per voice.
-  cell flswtbl: u8 @ L.flswtbl + x * 7 ro per_proc;
-  cell flswtb2: u8 @ L.flswtb2 + x * 7 ro per_proc;
-  cell trktmpos: u8 @ L.trktmpos + x * 7 ro per_proc;
-  cell trdelay: u8 @ L.trdelay + x * 7 per_proc;
-  cell seqtempo: u8 @ L.seqtempo + x * 7 per_proc;
-  cell transp2: u8 @ L.transp2 + x * 7 per_proc;
-  cell detuner: u8 @ L.detuner + x * 7 per_proc;
-  // The orderlist read: ``lda SEQUENCES,y`` whose operand the subtune setter rewrites.
-  cell seqt: u16 @ L.p_seqt1 + x * 4 operand;
+  state freq: u16 = L.init_freq[x];
+  state pw: u16 = L.init_pw[x];
+  state wfghost: u8 = L.init_wfghost[x];
+  state ptngate: u8 = L.init_ptngate[x];
+  state pweepcnt: u8 = L.init_pweepcnt[x];
+  state packcnt: u8 = L.init_packcnt[x];
+  state spdcnt: u8 = L.init_spdcnt[x];
+  state seqpos: u8 = L.init_seqpos[x];
+  state ptnpos: u8 = L.init_ptnpos[x];
+  state wftpos: u8 = L.init_wftpos[x];
+  state pwtpos: u8 = L.init_pwtpos[x];
+  state arpscnt: u8 = L.init_arpscnt[x];
+  state curptn: u8 = L.init_curptn[x];
+  state curnot: u8 = L.init_curnot[x];
+  state dpitch: u8 = L.init_dpitch[x];
+  state curifx: u8 = L.init_curifx[x];
+  state curins: u8 = L.init_curins[x];
+  state curfx2: u8 = L.init_curfx2[x];
+  state curval: u8 = L.init_curval[x];
+  state slidevib: u8 = L.init_slidevib[x];
+  state freqmod: u16 = L.init_freqmod[x];
+  state videlcnt: u8 = L.init_videlcnt[x];
+  state vibfrequ: u8 = L.init_vibfrequ[x];
+  state vibracnt: u8 = L.init_vibracnt[x];
+  state transp: u8 = L.init_transp[x];
+  state tmpbase: u8 = L.init_tmpbase[x];
+  state tmppos: u8 = L.init_tmppos[x];
+  state arpsped: u8 = L.init_arpsped[x];
+  state pkbdtrk: u8 = L.init_pkbdtrk[x];
+  state curchord: u8 = L.init_curchord[x];
+  state chordpos: u8 = L.init_chordpos[x];
+  state flswtbl: u8 = L.init_flswtbl[x];
+  state flswtb2: u8 = L.init_flswtb2[x];
+  state trktmpos: u8 = L.init_trktmpos[x];
+  state seqtempo: u8 = L.init_seqtempo[x];
+  state transp2: u8 = L.init_transp2[x];
+  state detuner: u8 = L.init_detuner[x];
+  state trdelay: u8 = L.init_trdelay[x];
+  record voice_vars @ 0 stride 7 {
+    out_freq: u16 @ L.sid; out_pw: u12 @ L.sid + 2; out_wave: u8 @ L.sid + 4;
+    out_ad: u8 @ L.sid + 5; out_sr: u8 @ L.sid + 6;
+  }
+  // The voice's registers as the player holds them; a build with ghost registers writes the chip
+  // from them once all voices have played.
+  state g_freq: u16 = L.init_g_freq[x];
+  state g_pw: u16 = L.init_g_pw[x];
+  state g_wave: u8 = L.init_g_wave[x];
+  state g_ad: u8 = L.init_g_ad[x];
+  state g_sr: u8 = L.init_g_sr[x];
+  state seqt: u16 = L.init_seqt[x];
 
-  // The carry the voice's multispeed call leaves for the next voice's, the tick number
-  // the clock leaves for DOTRACK, and whether the voice has played this call (a second
-  // step is the subtune restart).
-  signal c: bool = false;
-  signal ticks: u8 = 0;
-  signal played: bool = false;
-
-  step {
-    if played {
-      restart();
-      return;
-    }
-    played := true;
-    if L.sfx && x == 2 && !L.mulply {
-      sfx();
-    }
-    if L.mulply {
-      let cin = cpu.c;
-      for p in L.order {
-        if member(p * 16 + x, L.chain) {
-          cin := voice[p].c;
-        }
-      }
-      c := mulcntp(cin);
-    } else {
-      dotrack();
+  // The pulse table: sweep, set, jump, stop; the third byte is the keyboard track.
+  cursor pw_table {
+    table @ ins width 3;
+    pos pwtpos; count pweepcnt; values pw, pkbdtrk;
+    on pulse step;
+    match c0 {
+      0..0x7f => sweep(into=pw, count=c0, step=c1) then pkbdtrk = c2 if L.pwkeybtrack;
+      0x80..0xfd => value(pw.hi = c0 & 0x7f, pw.lo = c1) then pkbdtrk = c2 if L.pwkeybtrack, pweepcnt = 0;
+      0xfe => jump(c1) hold 0..0x7f as 0x80;
+      0xff => stop;
     }
   }
 
-  // An SFX build's sound effect on the third voice: SFXinit sets SFXTIMER to SFXLENG,
-  // whose first frame starts the note, and the timer counts down to 0, whose frame
-  // gives back the music's instrument and silences the voice for its next note.
-  proc sfx() {
-    let t = sfxtimer;
-    if t == 0 {
-      curins := curinstemp;
-      mem[L.sid + 0x13] := 0;
-      mem[L.sid + 0x14] := 0;
-      mem[L.sid + 0x12] := 0;
-    } elif neg(t) {
-      return;
-    } elif t == sfxleng {
-      chknote(cpu.y);
-    }
-    sfxtimer -= 1;
+  // The waveform/arpeggio table, read a row at a time: waveform, pitch, detune.
+  cursor wave_table {
+    table @ ins width 3;
+    pos wftpos;
+    on wave step;
+    match c0 { _ => value(); }
   }
 
-  // DOTRACK: the tick clock picks the voice's work for this tick.
-  proc dotrack() {
-    tick();
-    let count = ticks;
-    if count == 0 {
-      tick_0();
-    } elif neg(count - 2) {
-      tick_1();
-    } elif count == 2 {
-      tick_2();
-    } else {
-      cntplay();
-    }
-  }
-
-  // The voice's tick counter against the tempo program: SPDCNT counts up from zero
-  // and starts over when it equals the tempo byte TMPPOS selects, which then moves
-  // on. A signed overflow in the compare (a counter far past a tempo byte with
-  // bit 7 set) sends TMPPOS back to the program's start, TMPBASE. A build without
-  // tempo programs compares against one byte. The count before the increment is
-  // the tick number.
-  proc tick() {
-    let count = spdcnt;
-    if L.tempoprgsupp {
-      let next_pos = tmppos + 1;
-      let tempo = tempotbl[next_pos];
-      let diff = count - tempo;
-      if diff == 0 {
-        spdcnt := 0;
-        tmppos := next_pos;
-      } elif neg((count ^ tempo) & (count ^ diff)) {
-        spdcnt := 0;
-        tmppos := tmpbase;
-      }
-    } else {
-      let diff = count - tempo_byte;
-      if diff == 0 || neg((count ^ tempo_byte) & (count ^ diff)) {
-        spdcnt := 0;
-      }
-    }
-    ticks := spdcnt;
-    spdcnt += 1;
-  }
-
-  // TICK_0: the row tick. The pattern's pointer, the one-shot columns cleared, the
-  // delayed main volume and track tempo of the orderlist effects, then the row; the
-  // hard restart of the coming note follows (two ticks ahead, as the instrument's
-  // control byte bit 1 asks), or at a tempo below 2 the orderlist step.
-  proc tick_0() {
-    let p = curptn;
-    let carry_lo = point_lo(ptnl1[p]);
-    let ptr = point_hi(ptnh1[p], carry_lo);
+  // Before a row is read, its one-shot columns are cleared and the orderlist's delayed volume
+  // and track tempo take effect.
+  handler row_prep on row {
     curifx := 0;
     curfx2 := 0;
     if L.seq_fx_support {
       mainvol := seqvolu;
     }
+    if L.tempoprgsupp && seqtempo != 0 {
+      track_tempo(seqtempo | 0x80);
+      seqtempo := 0;
+    }
+  }
+
+  // A pattern row: note, then instrument, effect and value as each byte before asks; a note of
+  // $70..$77 is a run of empty rows.
+  cursor row_reader { stream @ ptnptr[curptn] + L.swp_base; pos ptnpos last;
+    on row next;
+    on pattern_end reset;
+    on advance settle;
+    run 0x70..0x77 base 0x6F -> packcnt;
+    field note -> curnot = note & 0x7F;
+    field inst when neg(note) -> curifx = inst & 0x7F;
+    field fx when neg(inst) -> curfx2 = fx;
+    field value when (fx & 0xE0) == 0 -> curval = value;
+  }
+
+  // The carry the tables leave for the detune add.
+  signal c: bool = false;
+
+  // The tick counter against the tempo program: it starts over when it reaches the program's
+  // byte, which then moves on; a signed overflow in that compare restarts the program.
+  signal due: bool = false;
+  signal ticks: u8 = 0;
+  handler tempo_program on frame {
+    let tempo = ite(L.tempoprgsupp, tempotbl[tmppos + 1], main_tempo);
+    let diff = spdcnt - tempo;
+    due := diff == 0 || neg((spdcnt ^ tempo) & (spdcnt ^ diff));
+    ticks := ite(due || spdcnt == 0, 0, spdcnt);
     if L.tempoprgsupp {
-      let delayed = seqtempo;
-      if delayed != 0 {
-        traktmp(delayed);
-        seqtempo := 0;
+      if diff == 0 {
+        tmppos += 1;
+      } elif due {
+        tmppos := tmpbase;
       }
     }
-    read_row();
+  }
+  counter beat: spdcnt { on frame += 1; reload 1; wrap when due || spdcnt == 0 -> row; }
+
+  // An SFX build's sound effect on the third voice: its timer counts down from the effect's
+  // length, the first frame starting the note, the last giving the music's instrument back and
+  // silencing the voice.
+  proc sfx_frame() {
+    let t = sfxtimer;
+    if t == 0 {
+      curins := curinstemp;
+      if !L.allghostregs {
+        put_ad(0);
+        put_sr(0);
+        put_wave(0);
+      }
+    } elif neg(t) {
+      return;
+    } elif t == sfxleng {
+      note_start(cpu.y);
+    }
+    sfxtimer -= 1;
+  }
+
+  handler row_tail on row {
     if L.sfx && x == 2 && !neg(sfxtimer) {
       curfx2 := 0;
       curnot := 0;
@@ -365,131 +294,127 @@ machine voice[x in 0..L.chn] {
           curinstemp := y;
         }
         curifx := 0;
-        hrender(y >= LEGATO);
+        c := y >= LEGATO;
+        hr_tables();
         return;
       }
     }
-    if L.fastspeedbind {
-      if neg((tmpt2[tmppos] & 0x7F) - 2) {
-        ptn_seq();
-        return;
-      }
-    }
-    hardrst(2);
-  }
-
-  // One row of the NOP-packed pattern stream: a note byte, then an instrument byte
-  // if the note's bit 7 is set, then an effect byte if the instrument's bit 7 is set,
-  // then a value byte if the effect is below $20. A note byte of $70..$77 starts a run
-  // of 2..9 empty rows, whose rest PACKCNT counts down. PTNPOS keeps the offset of the
-  // last byte read.
-  proc read_row() {
-    stream note_col = zp_note @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
-    stream inst_col = zp_inst @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
-    stream fx_col = zp_fx @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
-    stream value_col = zp_value @ ptnpos grammar "pysidwizard.grammar:GRAMMAR:pattern";
-    let row = 0;
-    let y = 0;
-    if packcnt != 0 {
-      packcnt -= 1;
+    if L.fastspeedbind && neg((tempotbl[tmppos + 1] & 0x7F) - 2) {
+      pattern_step();
     } else {
-      row := note_col[0];
-      if row >= RUN_MIN && row < RUN_MAX {
-        packcnt := row - RUN_BASE;
-        row := 0;
-      }
+      hard_restart(2);
     }
-    if !neg(row) {
-      curnot := row;
-    } else {
-      curnot := row & 0x7F;
-      y += 1;
-      let ins = inst_col[y];
-      if !neg(ins) {
-        curifx := ins;
-      } else {
-        curifx_long := ins & 0x7F;
-        y += 1;
-        let fx = fx_col[y];
-        curfx2 := fx;
-        if fx & FX_VALUE_MASK == 0 {
-          y += 1;
-          curval := value_col[y];
-        }
-      }
-    }
-    ptnpos += y;
   }
 
-  // TICK_1: the pattern's pointer again, then the pattern and orderlist step.
-  proc tick_1() {
-    let p = curptn;
-    let carry_lo = point_lo(ptnl2[p]);
-    let ptr = point_hi(ptnh2[p], carry_lo);
-    ptn_seq();
+  signal played: bool = false;
+
+  step {
+    if played {
+      restart();
+      return;
+    }
+    played := true;
+    if L.sfx && x == 2 && !L.mulply {
+      sfx_frame();
+    }
+    if L.mulply {
+      c := mulcarry;
+      multispeed();
+      mulcarry := c;
+      return;
+    }
+    fire frame;
+    match ticks {
+      0 => {}
+      2 => tick_2();
+      1, 0x80..0xFF => pattern_step();
+      _ => instrument_frame();
+    }
   }
 
-  // PTN_SEQ: the delayed transpose takes effect, and at the pattern's end ($FF) the
-  // orderlist advances: pattern numbers below $80 start a pattern, $FE ends the
-  // track (its clock held), $FF jumps (a target of $80 or more being a subtune), and
-  // the rest are orderlist effects. The hard restart one tick ahead follows, or at a
-  // tempo below 3 the row's columns.
-  proc ptn_seq() {
-    let y = ptnpos;
+  // Tick 1: the delayed transpose takes effect and, once the pattern has played out, the
+  // orderlist moves on. At tempos of three or less the next tick follows within the call.
+  proc pattern_step() {
     if L.transposesupp {
       transp := transp2;
     }
-    if packcnt == 0 {
-      y += 1;
-      if mem[zp + u16(y)] == PTN_END {
-        let playing = seq_step();
-        if !playing {
+    if row_reader.idle {
+      if row_reader.ahead == 0xFF {
+        let more = next_pattern();
+        if !more {
           return;
         }
-        y := 0;
+        fire pattern_end;
+      } else {
+        fire advance;
       }
     }
-    ptnpos := y;
-    if L.fastspeedbind {
-      if neg((tmpt3[tmppos] & 0x7F) - 3) {
-        tick_2();
-        return;
-      }
+    if L.fastspeedbind && neg((tempotbl[tmppos + 1] & 0x7F) - 3) {
+      tick_2();
+    } else {
+      hard_restart(1);
     }
-    hardrst(1);
   }
 
-  // The orderlist walk from SEQPOS+1; false when the track has ended (the clock is
-  // held one tick back and the call runs CNTPLAY).
-  proc seq_step() -> bool {
+  // The voice's registers: the chip's directly, or in a build with ghost registers the copy
+  // the shared step writes out.
+  proc put_freq(v: u16) {
+    g_freq := v;
+    if !L.allghostregs {
+      out_freq := v;
+    }
+  }
+
+  proc put_pw(v: u16) {
+    g_pw := v;
+    if !L.allghostregs {
+      out_pw := v;
+    }
+  }
+
+  proc put_wave(v: u8) {
+    g_wave := v;
+    if !L.allghostregs {
+      out_wave := v;
+    }
+  }
+
+  proc put_ad(v: u8) {
+    g_ad := v;
+    if !L.allghostregs {
+      out_ad := v;
+    }
+  }
+
+  proc put_sr(v: u8) {
+    g_sr := v;
+    if !L.allghostregs {
+      out_sr := v;
+    }
+  }
+
+  // The orderlist from SEQPOS+1: a pattern, the track's end ($FE: the clock held), a jump ($FF,
+  // a target of $80 or more a subtune) or an effect (transpose, volume, track tempo).
+  proc next_pattern() -> bool {
     let y = seqpos + 1;
-    let walking = true;
-    while walking bound 512 {
-      let a = mem[seqt + y];
+    while true bound 512 {
+      let a = orderlist[y].b;
       if !neg(a) {
         curptn := a;
         seqpos := y;
-        walking := false;
-      } elif a == SEQ_END {
+        return true;
+      }
+      if a == 0xFE {
         spdcnt -= 1;
-        cntplay();
+        instrument_frame();
         return false;
-      } elif a != SEQ_LOOP {
-        if L.seq_fx_support {
-          seq_fx(a);
-          y += 1;
-          if mem[seqt + y] == SEQ_LOOP {
-            walking := false;
-          }
-        } else {
-          walking := false;
-        }
-      } else {
-        y += 1;
-        let target = mem[seqt + y];
+      }
+      if a == 0xFF {
+        let target = orderlist[y + 1].b;
         if neg(target) {
           if L.subtunejump {
-            setseqa(target);
+            subtpos := target << 3;
+            seqt := word(subt1[x * 2 + subtpos], subt2[x * 2 + subtpos + 1]) + L.swp_base;
           }
           if L.subtune_restarts {
             subtjmp := target;
@@ -497,52 +422,36 @@ machine voice[x in 0..L.chn] {
           target := 0;
         }
         y := target;
+      } else {
+        if !L.seq_fx_support {
+          return true;
+        }
+        order_effect(a);
+        y += 1;
+        if orderlist[y].b == 0xFF {
+          return true;
+        }
       }
     }
     return true;
   }
 
-  // SEQ_FX: an orderlist effect. $80..$9F set the delayed transpose, $A0..$AF the
-  // delayed main volume, $B0..$EF the delayed track tempo (in older releases $B0..$FD).
-  proc seq_fx(a: u8) {
-    if L.seq_tempo_capped && a < 0xA0 || !L.seq_tempo_capped && neg(a - 0xA0) {
+  // An orderlist effect: $80..$9F the delayed transpose, $A0..$AF the delayed volume, the rest
+  // the delayed track tempo (to $EF in later releases).
+  proc order_effect(a: u8) {
+    if a < 0xA0 {
       if L.transposesupp {
         transp2 := a - 0x90;
       }
-    } elif L.seq_tempo_capped && a < 0xB0 || !L.seq_tempo_capped && neg(a - 0xB0) {
-      seqvolu := a & 0x0F;
-    } elif a < 0xF0 || !L.seq_tempo_capped {
-      if L.tempoprgsupp {
-        seqtempo := a - 0xB0 - u8(a < 0xB0);
-      }
+    } elif a < 0xB0 {
+      seqvolu := a.lo;
+    } elif L.tempoprgsupp && (a < 0xF0 || !L.seq_tempo_capped) {
+      seqtempo := a - 0xB0;
     }
   }
 
-  // SETSEQA: a subtune jump. The subtune's orderlist pointer for this track is
-  // copied into the track's orderlist read; X survives through XSTORE.
-  proc setseqa(a: u8) {
-    xstore := x * 7;
-    subtpos := a << 3;
-    let t = trktmpos;
-    let doubled = t << 1;
-    let track = doubled - 3 + u8(neg(t));
-    let y = (track >> 1) + subtpos;
-    let lo = subt1[y];
-    let c = false;
-    if L.swp {
-      c := carry(lo, swp_lo);
-      lo := lo + swp_lo;
-    }
-    mem[L.p_seqt1 - 1 + u16(track)] := lo;
-    let hi = subt2[y + 1];
-    if L.swp {
-      hi := hi + swp_hi + u8(c);
-    }
-    mem[L.p_seqt1 + u16(track)] := hi;
-  }
-
-  // SID-Wizard 1.0's INIT for the voice: the delayed values cleared, then the orderlist
-  // from its start, its effects run up to the first pattern.
+  // SID-Wizard 1.0 starts a subtune by running every voice's orderlist again from its start,
+  // up to the first pattern.
   proc restart() {
     transp2 := 0;
     seqtempo := 0;
@@ -551,1265 +460,711 @@ machine voice[x in 0..L.chn] {
     tmpbase := 0;
     seqpos := 0;
     subtjmp := 0;
-    let y = 0;
-    let walking = true;
-    while walking bound 256 {
-      let a = mem[seqt + y];
-      if !neg(a) {
-        curptn := a;
-        walking := false;
-      } elif a >= SEQ_END {
-        walking := false;
-      } else {
-        seq_fx(a);
-        y += 1;
-        seqpos := y;
-        if y == 0 {
-          curptn := 0;
-          walking := false;
-        }
-      }
-    }
     if L.restart_trdelay {
       trdelay := 0xFF;
     }
+    let y = 0;
+    while true bound 256 {
+      let a = orderlist[y].b;
+      if !neg(a) {
+        curptn := a;
+        return;
+      }
+      if a >= 0xFE {
+        return;
+      }
+      order_effect(a);
+      y += 1;
+      seqpos := y;
+      if y == 0 {
+        curptn := 0;
+        return;
+      }
+    }
   }
 
-  // HARDRST: a note in the row (not a note effect, not under tone portamento, not
-  // legato) silences the voice ahead of its start: gate off, the instrument's HR
-  // ADSR, and the test bit if its control byte asks; on the tick its control byte
-  // does not select, only the instrument's tables run.
-  proc hardrst(timer: u8) {
-    let note = curnot;
-    if note == 0 || note >= NOTE_FX_MIN {
-      cntplay();
-      return;
-    }
-    if curfx2 == PORTAMENTO {
-      cntplay();
-      return;
-    }
-    let c = curfx2 >= PORTAMENTO;
-    if L.portame_notefx && slidevib == NOTE_PORTA {
-      cntplay();
-      return;
-    }
+  // The hard restart of a coming note (not a note effect, tone portamento or legato): gate off
+  // and the instrument's HR ADSR on the tick its control byte selects, the test bit if asked.
+  proc hard_restart(timer: u8) {
     let y = curifx;
-    if L.hardrestypes {
-      if y != 0 {
-        if y == LEGATO {
-          cntplay();
-          return;
-        }
-        c := y >= LEGATO;
-        if !neg(y - LEGATO) {
-          y := curins;
-        }
-      } else {
-        y := curins;
-      }
-      let carry_lo = point_lo(insl2[y]);
-      let ptr = point_hi(insh2[y], carry_lo);
-      if mem[zp] & timer == 0 {
-        hrender(c);
-        return;
-      }
-    } else {
-      if y == LEGATO {
-        cntplay();
-        return;
-      }
-      c := y >= LEGATO;
-    }
-    if L.hrender_inline && L.hrgtoff_or8 {
-      if mem[zp] & 4 != 0 {
-        ptngate := 0xFE;
-        wfghost := wfghost & 0xFE | 0x08;
-      }
-      sidg_ad := mem[zp + 1];
-      sidg_sr := mem[zp + 2];
-      sidg_wave := wfghost;
+    if curnot == 0 || curnot >= NOTE_FX || curfx2 == PORTAMENTO || y == LEGATO
+        || (L.portame_notefx && slidevib == NOTE_PORTA) {
+      instrument_frame();
       return;
+    }
+    c := ite(!L.hardrestypes || y != 0, y >= LEGATO, curfx2 >= PORTAMENTO);
+    if L.hardrestypes {
+      ins := insptr[ite(y == 0 || !neg(y - LEGATO), curins, y)] + L.swp_base;
+      if instrument.control & timer == 0 {
+        hr_tables();
+        return;
+      }
     }
     if L.hrender_inline {
-      if mem[zp] & 4 != 0 {
-        wfghost := 0x18;
+      if L.hrgtoff_or8 {
+        if instrument.control & 4 != 0 {
+          ptngate := 0xFE;
+          wfghost := wfghost & 0xFE | 0x08;
+        }
+      } else {
+        if instrument.control & 4 != 0 {
+          wfghost := 0x18;
+        }
+        ptngate := 0xFE;
+        wfghost &= 0xFE;
       }
-      sidg_ad := mem[zp + 1];
-      sidg_sr := mem[zp + 2];
-      ptngate := 0xFE;
-      wfghost &= 0xFE;
-      sidg_wave := wfghost;
+      put_ad(instrument.hr_ad);
+      put_sr(instrument.hr_sr);
+      put_wave(wfghost);
       return;
     }
     ptngate := 0xFE;
     wfghost &= 0xFE;
     if L.hardrestypes {
-      if L.hr_ad_first {
-        sidg_ad := mem[zp + 1];
-        sidg_sr := mem[zp + 2];
-      } else {
-        sidg_sr := mem[zp + 2];
-        sidg_ad := mem[zp + 1];
-      }
-      if mem[zp] & 4 != 0 {
+      put_sr(instrument.hr_sr);
+      put_ad(instrument.hr_ad);
+      if instrument.control & 4 != 0 {
         wfghost := 0x18;
-        sidg_wave := 0x18;
+        put_wave(0x18);
         return;
       }
     } else {
-      sidg_ad := DEFAULT_HR_AD;
-      sidg_sr := DEFAULT_HR_SR;
+      put_ad(0x0F);
+      put_sr(0);
     }
-    hrender(c);
+    hr_tables();
   }
 
-  // HRENDER: the instrument's pointer, then its tables from the build's chosen
-  // stage (the waveform table, unless the build runs more on a hard-restart tick).
-  proc hrender(c: bool) {
-    let y = curins;
-    let c3 = point_lo(insl3[y]);
-    let ptr = point_hi(insh3[y], c3);
-    if L.vibslidealways {
-      cntply2();
-    } elif L.filteralways {
-      filtprg_chain();
-    } elif L.pulsealways {
-      setpwid_chain();
-    } else {
-      let out = wfarptb(lo(ptr), ite(L.swp, hi(ptr) != 0, c));
-    }
+  // The tables a hard-restart tick runs after the restart: the waveform table, or all from the
+  // vibrato and slides, the filter or the pulse table on, as the build does.
+  proc hr_tables() {
+    ins := insptr[curins] + L.swp_base;
+    tables(ite(L.vibslidealways, 0, ite(L.filteralways, 1, ite(L.pulsealways, 2, 3))));
   }
 
-  // The zero-page pointer from a song table's low and high bytes; an SWP export's
-  // tables hold offsets from SWP_OFFSET. Each half returns the carry the code leaves,
-  // the high half also the byte it stores (low byte of the result).
-  proc point_lo(lo: u8) -> bool {
-    if L.swp {
-      let o = swp_lo;
-      zp_lo := lo + o;
-      return carry(lo, o);
-    }
-    zp_lo := lo;
-    return false;
-  }
-
-  proc point_hi(hi: u8, c: bool) -> u16 {
-    let a = hi;
-    let cout = false;
-    if L.swp {
-      let o = swp_hi;
-      a := hi + o + u8(c);
-      cout := carry(hi, o, c);
-    }
-    zp_hi := a;
-    return word(a, u8(cout));
-  }
-
-  // TICK_2: the row's instrument column selects an instrument below SEL_INS's limit
-  // (which also resets the PW and filter tables), then the note column: a note
-  // starts the instrument (or slides to it, under tone portamento or legato), a note
-  // effect runs, and the instrument and pattern effects follow.
+  // Tick 2: the row's instrument (below the limit, also resetting the pulse and filter tables),
+  // then the note: started, slid to, or a note effect; then the row's effects.
   proc tick_2() {
-    let y = 0xFF;
-    let a = curifx;
-    if a != 0 && neg(a - L.sel_ins_limit) {
-      curins := a;
-      y := 0x3F;
+    let mask = 0xFF;
+    if curifx != 0 && neg(curifx - L.sel_ins_limit) {
+      curins := curifx;
+      mask := 0x3F;
     }
-    chknote(y);
+    note_start(mask);
   }
 
-  // CHKNOTE: Y is TABLRST's mask (the PW and filter reset-off bits it keeps).
-  proc chknote(y: u8) {
-    if L.pwresetsw || L.filtresetsw {
-      tablrst := y;
-    }
-    let ins = curins;
-    if ins == 0 {
+  // The note of a row, the pulse and filter tables' reset bits being those of `mask`.
+  proc note_start(mask: u8) {
+    tablrst := mask;
+    if curins == 0 {
       if !L.noins_rts {
-        legatoo();
+        effects();
+        put_wave(wfghost);
       }
       return;
     }
-    let carry_lo = point_lo(insl4[ins]);
-    let ptr = point_hi(insh4[ins], carry_lo);
+    ins := insptr[curins] + L.swp_base;
     let note = curnot;
+    if note >= NOTE_FX {
+      if note < 0x78 {
+        if !L.vibamfx_amp_only {
+          valstor := note;
+        }
+        vibrato_amplitude(note);
+      } else {
+        note_effect(note - 0x78);
+      }
+      effects();
+      tables(0);
+      return;
+    }
     if note == 0 {
-      insptfx();
-      cntply2();
-    } elif !neg(note - NOTE_FX_MIN) {
-      note_fx(note);
-      cntply2();
-    } else {
-      clegato(note);
-    }
-  }
-
-  // CLEGATO: the note's pitch (octave shift and transpose added); a tone
-  // portamento or a portamento note effect slides to it, legato slides at full
-  // speed, and otherwise the sound starts.
-  proc clegato(note: u8) {
-    let a = note;
-    if L.octaveshift {
-      a += mem[zp + 9];
-    }
-    if L.transposesupp {
-      a += transp;
-    }
-    dpitch := a;
-    let fx = curfx2;
-    if fx == PORTAMENTO {
-      legatoo();
+      effects();
+      tables(0);
       return;
     }
-    if L.portame_notefx && carry(PORTAMENTO, slidevib, PORTAMENTO >= fx) {
+    dpitch := note + ite(L.octaveshift, instrument.octave, 0) + ite(L.transposesupp, transp, 0);
+    if curfx2 == PORTAMENTO {
+    } elif L.portame_notefx && carry(PORTAMENTO, slidevib, PORTAMENTO >= curfx2) {
       slidevib := TONE_PORTA;
-      legatoo();
-      return;
+    } elif curifx != LEGATO {
+      start_sound();
+    } else {
+      freqmod := word(lo(freqmod), 0x7F);
+      slidevib := TONE_PORTA;
     }
-    if curifx != LEGATO {
-      strtsnd();
-      return;
-    }
-    freqmodh := 0x7F;
-    slidevib := TONE_PORTA;
-    legatoo();
+    effects();
+    put_wave(wfghost);
   }
 
-  // LEGATOO: the effects, then the waveform register.
-  proc legatoo() {
-    insptfx();
-    sidg_wave := wfghost;
-  }
-
-  // STRTSND: the sound starts. The instrument's control byte (its PW and filter
-  // reset-off bits cleared when an instrument was just selected) is kept in
-  // INSCTRL; the first-frame waveform and pitch, the table positions, the gate,
-  // vibrato, chord, PW and filter tables, and the ADSR are set (1.0: the PW and filter
-  // tables and the ADSR first, the filter shift cleared); the effects follow.
-  proc strtsnd() {
-    startsound();
-    legatoo();
-  }
-
-  proc startsound() {
+  // A note's sound: control byte (masked by the reset bits), first-frame waveform, tables from
+  // their starts, vibrato, chord, filter table and ADSR.
+  proc start_sound() {
     if L.sound_resets_flshift {
       flshift := 0;
     }
-    let ctrl = mem[zp];
+    insctrl := instrument.control;
     if L.pwresetsw || L.filtresetsw {
-      ctrl &= tablrst;
+      insctrl &= tablrst;
     }
-    insctrl := ctrl;
-    slidevib := ctrl & 0x30;
-    if L.sound_tables_first {
-      sound_tables();
-    }
-    if L.frame1switch {
-      if insctrl & 8 != 0 {
-        if L.first_frame_fixed_waveform {
-          wfghost := 0x09;
-        } else {
-          if L.first_frame_freq_by_track {
-            sidg_freqhi := freqtbh[u8(x * 7)];
-          } else {
-            sidg_freqhi := freqtbh[dpitch];
-          }
-          wfghost := mem[zp + 0x0F];
-        }
-      }
-    } else {
+    slidevib := insctrl & 0x30;
+    if !L.frame1switch {
       wfghost := 0x09;
+    } elif insctrl & 8 != 0 {
+      if L.first_frame_fixed_waveform {
+        wfghost := 0x09;
+      } else {
+        put_freq(word(lo(g_freq), freqtbh[ite(L.first_frame_freq_by_track, x * 7, dpitch)]));
+        wfghost := instrument.first_wave;
+      }
     }
-    wftpos := WFTABLEPOS;
+    wftpos := WAVE_START;
     ptngate := 0xFF;
     if L.multispeedsupp {
       arpscnt := 0xFF;
     }
     if L.arpspeedsupp {
-      arpsped := mem[zp + 7];
+      arpsped := instrument.arp_speed;
     }
-    if L.sound_tables_first {
-      startchord();
-      setvib0();
-    } else {
-      setvib0();
-      startchord();
-      sound_tables();
-    }
-  }
-
-  proc startchord() {
+    videlcnt := instrument.vibrato_delay;
+    set_vibrato(instrument.vibrato);
     if L.chordsupport {
-      let chord = mem[zp + 8];
-      curchord := chord;
-      chordpos := chdp1[chord];
+      curchord := instrument.chord;
+      chordpos := chdp[curchord];
     }
-  }
-
-  // The instrument's PW and filter tables (each unless its reset-off bit is set) and ADSR.
-  proc sound_tables() {
     if !L.pwresetsw || insctrl & 0x40 == 0 {
-      pwtpos := mem[zp + 0x0A];
+      pwtpos := instrument.pw_start;
     }
     if !L.filtresetsw || !neg(insctrl) {
-      setfltp();
+      start_filter();
     }
-    if L.adsr_ad_first {
-      sidg_ad := mem[zp + 3];
-      sidg_sr := mem[zp + 4];
-    } else {
-      sidg_sr := mem[zp + 4];
-      sidg_ad := mem[zp + 3];
-    }
+    put_sr(instrument.sr);
+    put_ad(instrument.ad);
   }
 
-  // SETFLTP: the instrument's filter table. A first row of $00 filters the voice
-  // without control of the filter, $FF unfilters it (a release with STOPFLT also
-  // stops the filter program it controls), and any other row makes the voice the
-  // filter's controller from that row.
-  proc setfltp() {
-    let y = mem[zp + 0x0B];
-    let row = mem[zp + u16(y)];
+  // The instrument's filter table: $00 filters the voice without taking the filter, $FF
+  // unfilters it, anything else takes the filter from that row.
+  proc start_filter() {
+    let y = instrument.filter_start;
+    let row = insdata[y].b;
     if row != 0xFF {
+      react filter_owner on note(x * 7, 0xFF, row != 0);
       if row != 0 {
-        fltctrl := x * 7;
         fltposi := y;
       }
-      let on = flswtbl | fswitch;
-      if on != 0 {
-        fswitch := on;
+      if flswtbl | fswitch != 0 {
+        fswitch |= flswtbl;
         return;
       }
     }
-    if L.filter_stop_rewinds && x * 7 == fltctrl {
+    if L.filter_stop_rewinds && filter_owner.mine {
       fltposi := y;
     }
-    fswitch := flswtb2 & fswitch;
+    fswitch &= flswtb2;
   }
 
-  // CNTPLAY: with an instrument selected, its pointer, then CNTPLY2.
-  proc cntplay() {
-    if curins == 0 {
-      return;
-    }
-    cntply1(curins);
-    cntply2();
-  }
-
-  proc cntply1(y: u8) {
-    let c = point_lo(insl5[y]);
-    let ptr = point_hi(insh5[y], c);
-  }
-
-  // CNTPLY2: vibrato and slides, then the filter, PW and waveform tables.
-  proc cntply2() {
-    vibslide();
-    filtprg_chain();
-  }
-
-  // FILTPRG then SETPWID and WFARPTB.
-  proc filtprg_chain() {
-    filtprg();
-    setpwid_chain();
-  }
-
-  // VIBSLIDE: SLIDEVIB selects the frequency modulation: $00 an increasing vibrato
-  // (vibrato types), below $80 a delayed vibrato, $81 slide up, $82 slide down, and
-  // $83 or above tone portamento to the note's frequency (with PORTAVIBRA, $FF keeps
-  // the vibrato and a reached target restores the instrument's vibrato).
-  proc vibslide() {
-    let y = slidevib;
-    if L.vibratotypes && y == 0 {
-      let c = carry(freqmodl, videlcnt);
-      freqmodl += videlcnt;
-      if c {
-        freqmodh += 1;
-      }
-      dovibra();
-    } elif !neg(y) {
-      if neg(videlcnt) {
-        dovibra();
-      } else {
-        videlcnt -= 1;
-      }
-    } elif y == SLIDE_DOWN {
-      subfreq(true);
-    } elif neg(y - SLIDE_DOWN) {
-      addfreq(false);
-    } elif L.portavibra && y == NOTE_PORTA {
-      targetn();
-    } else {
-      portame(!L.portavibra);
+  proc instrument_frame() {
+    if curins != 0 {
+      ins := insptr[curins] + L.swp_base;
+      tables(0);
     }
   }
 
-  // PORTAME: the difference to the note's frequency, then a step of FREQMOD
-  // towards it, or the target itself once the step reaches it.
-  proc portame(c: bool) {
-    let p = dpitch;
-    let lo = freqtbl[p];
-    storfrl := lo - freqlo - u8(!c);
-    let c1 = !borrow(lo, freqlo, !c);
-    let hi = freqtbh[p];
-    let diff_hi = hi - freqhi - u8(!c1);
-    let c2 = !borrow(hi, freqhi, !c1);
-    let diff_lo = storfrl;
-    if c2 {
-      let c3 = !borrow(diff_lo, freqmodl);
-      let c4 = !borrow(diff_hi, freqmodh, !c3);
-      if c4 {
-        addfreq(true);
-      } else {
-        portend();
-      }
-    } else {
-      let c3 = carry(diff_lo, freqmodl);
-      if carry(diff_hi, freqmodh, c3) {
-        portend();
-      } else {
-        subfreq(false);
-      }
-    }
-  }
-
-  proc portend() {
-    if L.portavibra {
-      forcvib();
-      setvib1();
-    }
-    targetn();
-  }
-
-  proc targetn() {
-    let p = dpitch;
-    freqlo := freqtbl[p];
-    freqhi := freqtbh[p];
-  }
-
-  // DOVIBRA: the vibrato counter counts VIBFREQU down; its upper half slides up.
-  proc dovibra() {
-    let a = vibracnt;
-    if a == 0 {
-      a := vibfrequ;
-    }
-    a -= 1;
-    vibracnt := a;
-    if a << 1 < vibfrequ {
-      addfreq(false);
-    } else {
-      subfreq(true);
-    }
-  }
-
-  proc subfreq(c: bool) {
-    let lo = freqlo;
-    let m = freqmodl;
-    freqlo := lo - m - u8(!c);
-    let c1 = !borrow(lo, m, !c);
-    freqhi := freqhi - freqmodh - u8(!c1);
-  }
-
-  proc addfreq(c: bool) {
-    let lo = freqlo;
-    let m = freqmodl;
-    freqlo := lo + m + u8(c);
-    let c1 = carry(lo, m, c);
-    freqhi := freqhi + freqmodh + u8(c1);
-  }
-
-  // FILTPRG: the filter table of the voice that controls the filter. A row below
-  // $80 sweeps the cutoff by its signed second column for that many frames (with
-  // fine sweep, three bits below the high byte); $80..$FD sets band, resonance and
-  // cutoff; $FE jumps; $FF stops. The third column is the keyboard track.
-  proc filtprg() {
-    if x * 7 != fltctrl {
-      return;
-    }
-    let y = fltposi;
-    let a = mem[zp + u16(y)];
-    if !neg(a) {
-      y += 1;
-      if a == cwepcnt {
-        fladvan(y);
-        return;
-      }
-      cwepcnt += 1;
-      let step = mem[zp + u16(y)];
-      let c = false;
-      let hi_step = step;
-      if L.finefiltsweep {
-        if !neg(step) {
-          let fine = (step & 7) + ctflgho;
-          c := fine >= 8;
-          ctflgho := fine & 7;
-          hi_step := mem[zp + u16(y)] >> 3;
+  // Vibrato and slides, then the filter, pulse and waveform tables; a later `from` starts at
+  // the stage it names (1 the filter, 2 the pulse, 3 the waveform).
+  proc tables(from: u8) {
+    if from == 0 {
+      let mode = slidevib;
+      if L.vibratotypes && mode == 0 {
+        freqmod += u16(videlcnt);
+        vibrato();
+      } elif !neg(mode) {
+        if neg(videlcnt) {
+          vibrato();
         } else {
-          let low = ctflgho;
-          c := carry(step | 0xF8, low);
-          ctflgho := ((step | 0xF8) + low) & 7;
-          hi_step := ((mem[zp + u16(y)] ^ 0xFF) >> 3) ^ 0xFF;
+          videlcnt -= 1;
         }
-      }
-      ctfhgho := hi_step + ctfhgho + u8(c);
-      return;
-    }
-    if a == TABLE_JUMP {
-      y += 1;
-      let target = mem[zp + u16(y)];
-      if target == fltposi {
-        return;
-      }
-      y := target;
-      a := mem[zp + u16(y)];
-      if !neg(a) {
-        setfpos(y);
-        return;
-      }
-    } elif a > TABLE_JUMP {
-      return;
-    }
-    fltband := a & 0x70;
-    resonib := a << 4;
-    y += 1;
-    ctfhgho := mem[zp + u16(y)];
-    if L.finefiltsweep {
-      ctflgho := 0;
-    }
-    fladvan(y);
-  }
-
-  proc fladvan(at: u8) {
-    let y = at + 1;
-    if L.filtkbtrack {
-      let a = mem[zp + u16(y)];
-      if L.kbtrack_fswitch && neg(a) && a < 0x90 {
-        fswitch := a & 0x0F;
-        a := 0;
-      }
-      ckbdtrk := a;
-    }
-    setfpos(y + 1);
-  }
-
-  proc setfpos(y: u8) {
-    fltposi := y;
-    cwepcnt := 0;
-  }
-
-  // SETPWID then WFARPTB, with the accumulator and carry the PW table leaves.
-  proc setpwid_chain() {
-    let c = setpwid();
-    let out = wfarptb(pwlogho, c);
-  }
-
-  // SETPWID: the PW table. A row below $80 sweeps the pulse width by its signed
-  // second column for that many frames; $80..$FD sets it; $FE jumps; $FF stops. The
-  // third column is the PW keyboard track, which scales the high nibble by the
-  // note. Returns the carry the code leaves.
-  proc setpwid() -> bool {
-    let c = pw_rows();
-    let out = endpwtb(c);
-    return out;
-  }
-
-  // SETPWID up to ENDPWTB: the table row. Returns the carry the code leaves there.
-  proc pw_rows() -> bool {
-    let y = pwtpos;
-    let a = mem[zp + u16(y)];
-    let c = false;
-    let advance = false;
-    let set = false;
-    if !neg(a) {
-      y += 1;
-      if a == pweepcnt {
-        c := true;
-        advance := true;
+      } elif mode == 0x82 {
+        freq -= freqmod;
+      } elif mode == 0x81 {
+        freq += freqmod;
+      } elif L.portavibra && mode == NOTE_PORTA {
+        freq := word(freqtbl[dpitch], freqtbh[dpitch]);
       } else {
-        pweepcnt += 1;
-        let step = mem[zp + u16(y)];
-        if neg(step) {
-          pwhigho -= 1;
-        }
-        let lo = pwlogho;
-        c := carry(step, lo);
-        pwlogho := step + lo;
-        if c {
-          pwhigho += 1;
-        }
+        portamento();
       }
-    } elif a == TABLE_JUMP {
-      y += 1;
-      let target = mem[zp + u16(y)];
-      c := target >= pwtpos;
-      if target != pwtpos {
-        y := target;
-        a := mem[zp + u16(y)];
-        if !neg(a) {
-          sepwpos(y);
-        } else {
-          set := true;
-        }
-      }
-    } elif a < TABLE_JUMP {
-      set := true;
-    } else {
-      c := true;
     }
-    if set {
-      pwhigho := a & 0x7F;
-      y += 1;
-      pwlogho := mem[zp + u16(y)];
-      advance := true;
+    if from <= 1 && filter_owner.mine {
+      fire filter;
     }
-    if advance {
-      y += 1;
-      if L.pwkeybtrack {
-        pkbdtrk := mem[zp + u16(y)];
-      }
-      sepwpos(y + 1);
-    }
-    return c;
-  }
-
-  // ENDPWTB: the PW keyboard track (the note scales the high nibble), then the PW
-  // registers. Returns the carry the code leaves.
-  proc endpwtb(cin: bool) -> bool {
-    let c = cin;
-    if L.pwkeybtrack {
-      let track = pkbdtrk;
-      let k = 0;
+    let a = lo(ins);
+    if from == 3 && L.swp {
       c := false;
-      if track != 0 {
-        let i = track + dpitch;
-        let c1 = carry(track, dpitch);
-        let e = exptabh[i];
-        let e1 = exptabh_m1[i];
-        k := e - e1 - u8(!c1);
-        c := !borrow(e, e1, !c1);
+    }
+    if from <= 2 {
+      pulse_width();
+      a := lo(pw);
+    }
+    wave_frame(a);
+  }
+
+  // Multispeed: once the first frame has passed, the instrument's arp speed picks the tables
+  // run: bit 7 the filter, bit 6 the pulse, the waveform always.
+  proc multispeed() {
+    if neg(arpscnt) {
+      return;
+    }
+    ins := insptr[curins] + L.swp_base;
+    let speed = instrument.arp_speed;
+    if neg(speed) && filter_owner.mine {
+      fire filter;
+    }
+    if !neg(speed) && speed & 0x40 == 0 && L.swp {
+      c := false;
+    }
+    if neg(speed) || speed & 0x40 != 0 {
+      pulse_width();
+    }
+    wave_frame(ite(neg(speed) || speed & 0x40 != 0, lo(pw), 0));
+  }
+
+  // The pulse table's row, then the pulse width register: its high byte plus the keyboard
+  // track's scaling of the note.
+  proc pulse_width() {
+    let f = false;
+    react pw_table on pulse() -> f;
+    c := f;
+    if !L.pwkeybtrack {
+      put_pw(pw);
+      return;
+    }
+    let k = 0;
+    c := false;
+    if pkbdtrk != 0 {
+      let i = pkbdtrk + dpitch;
+      let c1 = carry(pkbdtrk, dpitch);
+      k := exptabh[i] - exptabh_m1[i] - u8(!c1);
+      c := !borrow(exptabh[i], exptabh_m1[i], !c1);
+    }
+    let t = u16(hi(pw)) + u16(k) + u16(c);
+    put_pw(word(lo(pw), lo(t)));
+    c := t > 0xFF;
+  }
+
+  // Tone portamento: a step of FREQMOD towards the note, or the note once within a step.
+  proc portamento() {
+    let t = word(freqtbl[dpitch], freqtbh[dpitch]);
+    let r = u16(L.portavibra);
+    let d = t - freq - r;
+    if t >= freq + r {
+      if d >= freqmod {
+        freq += freqmod + 1;
+      } else {
+        arrive(t);
       }
-      let hi = pwhigho;
-      sidg_pwhi := k + hi + u8(c);
-      c := carry(k, hi, c);
+    } elif d + freqmod < d {
+      arrive(t);
     } else {
-      sidg_pwhi := pwhigho;
+      freq -= freqmod + 1;
     }
-    sidg_pwlo := pwlogho;
-    return c;
   }
 
-  // SETPWID up to WFARPTB.
-  proc at_pw_rows() {
-    let c = pw_rows();
+  // A slide reaching its note, which also gives the instrument's vibrato back.
+  proc arrive(t: u16) {
+    if L.portavibra {
+      slidevib := instrument.control & 0x30;
+      set_vibrato(instrument.vibrato);
+    }
+    freq := t;
   }
 
-  proc at_endpwtb() {
-    let c = endpwtb(cpu.c);
-  }
-
-  proc sepwpos(y: u8) {
-    pwtpos := y;
-    pweepcnt := 0;
-  }
-
-  // WFARPTB: the waveform/arpeggio table every ARPSPED+1 frames, then the pitch
-  // and waveform registers. Returns the carry the code leaves.
-  proc wfarptb(a: u8, c: bool) -> bool {
-    let cw = wftable(a, c);
-    let lo = freqlo;
-    if L.detunesupport {
-      let d = detuner;
-      sidg_freqlo := lo + d + u8(cw);
-      let c1 = carry(lo, d, cw);
-      let hi = freqhi;
-      sidg_freqhi := hi + u8(c1);
-      cw := carry(hi, 0, c1);
+  // The vibrato: VIBRACNT counts VIBFREQU down, sliding up through its lower half.
+  proc vibrato() {
+    vibracnt := ite(vibracnt == 0, vibfrequ, vibracnt) - 1;
+    if vibracnt << 1 < vibfrequ {
+      freq += freqmod;
     } else {
-      sidg_freqlo := lo;
-      sidg_freqhi := freqhi;
+      freq -= freqmod;
     }
-    sidg_wave := wfghost;
-    return cw;
   }
 
-  // The table row: $00..$0F (with arp speed) sets the row's repeat, $10..$FD the
-  // waveform (gated by PTNGATE), $FE jumps, $FF stops. The second column is the
-  // pitch: below $80 relative up, $80 none (WFARP_NOP_SUPP), $81..$DF absolute,
-  // $E0..$FF relative down, $7F the chord. The third is the detune ($FF none). A
-  // chord walks CHORDS from CHORDPOS; $7E returns to the table's next row, $7F loops.
-  proc wftable(a: u8, c: bool) -> bool {
+  // The waveform table every ARPSPED+1 frames, then frequency (plus detune and the carry) and
+  // waveform out.
+  proc wave_frame(a: u8) {
+    let row = true;
+    let reload = a;
     if L.arpspeedsupp {
       arpscnt -= 1;
-      if !neg(arpscnt) {
-        return c;
-      }
-      a := arpsped;
+      row := neg(arpscnt);
+      reload := arpsped;
     }
-    arpscnt := a & 0x3F;
-    let rows = true;
-    let cw = c;
-    while rows bound 256 {
-      rows := false;
-      let y = wftpos;
-      let wave = mem[zp + u16(y)];
-      let setwave = true;
-      cw := wave >= TABLE_JUMP;
-      if wave == TABLE_JUMP {
-        y += 1;
-        let target = mem[zp + u16(y)];
-        if neg(target) {
-          return true;
+    if row {
+      arpscnt := reload & 0x3F;
+      wave_row();
+    }
+    let f = freq + ite(L.detunesupport, u16(detuner) + u16(c), 0);
+    put_freq(f);
+    if L.detunesupport {
+      c := f < freq;
+    }
+    put_wave(wfghost);
+  }
+
+  // A waveform-table row: $00..$0F the row's repeat, $10..$FD the waveform, $FE jumps, $FF
+  // stops; the pitch is relative below $80, none at $80, absolute to $DF, relative down above,
+  // or the chord ($7F); the detune ($FF keeps it). A chord walks CHORDS, $7E back to the table.
+  proc wave_row() {
+    while true bound 256 {
+      let wave = wave_table.c0;
+      let set = true;
+      if wave == 0xFE {
+        if neg(wave_table.c1) {
+          c := true;
+          return;
         }
-        wftpos := target;
-        y := target;
-        wave := mem[zp + u16(y)];
-      } elif wave > TABLE_JUMP {
-        return true;
-      } elif L.arpspeedsupp {
-        cw := wave >= 0x10;
-        if wave < 0x10 {
-          arpscnt := wave;
-          setwave := false;
-        }
+        wftpos := wave_table.c1;
+        wave := wave_table.c0;
+      } elif wave == 0xFF {
+        c := true;
+        return;
+      } elif L.arpspeedsupp && wave < 0x10 {
+        arpscnt := wave;
+        set := false;
       }
-      if setwave {
+      if set {
         wfghost := wave & ptngate;
       }
-      y += 1;
-      let pitch = mem[zp + u16(y)];
-      y += 1;
-      if L.chordsupport {
-        cw := pitch >= CHORD_LOOP;
-      }
-      let chord = L.chordsupport && pitch == CHORD_LOOP;
-      if !chord {
-        astorez := pitch;
-        if L.detunesupport {
-          let d = mem[zp + u16(y)];
-          cw := d == 0xFF;
-          if d != 0xFF {
-            detuner := d;
-          }
-        }
-        y += 1;
-        wftpos := y;
-        pitch := astorez;
-        if !neg(pitch) {
-          cw := relptch(pitch);
-        } elif L.wfarp_nop_supp && pitch == 0x80 {
-          return true;
-        } elif pitch < 0xE0 {
-          absptch(pitch);
-          cw := false;
-        } else {
-          cw := relptch(pitch);
-        }
-      } else {
-        detuner := mem[zp + u16(y)];
-        let note = chdt1[chordpos];
-        if note == CHORD_RETURN {
-          chordpos := chdp2[curchord];
-          wftpos += 3;
-          rows := true;
-        } else {
-          if note == CHORD_LOOP {
-            let start = chdp3[curchord];
-            chordpos := start;
-            note := chdt2[start];
+      let pitch = wave_table.c1;
+      if L.chordsupport && pitch == 0x7F {
+        detuner := wave_table.c2;
+        let note = chdt[chordpos];
+        if note != 0x7E {
+          if note == 0x7F {
+            chordpos := chdp[curchord];
+            note := chdt[chordpos];
           }
           chordpos += 1;
-          cw := relptch(note);
+          let r = relative_note(note);
+          c := r;
+          return;
         }
-      }
-    }
-    return cw;
-  }
-
-  proc relptch(a: u8) -> bool {
-    let p = dpitch;
-    absptch(a + p);
-    return carry(a, p);
-  }
-
-  proc absptch(a: u8) {
-    let y = a & 0x7F;
-    freqlo := freqtbl[y];
-    freqhi := freqtbh[y];
-  }
-
-  // MULCNTP: a multispeed call runs the instrument's tables once its first frame
-  // has passed: the waveform table, with bit 6 of its arp speed the PW table too,
-  // with bit 7 also the filter table. Returns the carry the code leaves.
-  proc mulcntp(cin: bool) -> bool {
-    if neg(arpscnt) {
-      return cin;
-    }
-    let y = curins;
-    let c1 = point_lo(insl1[y]);
-    let ptr = point_hi(insh1[y], c1);
-    let speed = mem[zp + 7];
-    if neg(speed) {
-      filtprg();
-    } elif speed & 0x40 == 0 {
-      let out = wfarptb(0, ite(L.swp, hi(ptr) != 0, cin));
-      return out;
-    }
-    let c = setpwid();
-    let out = wfarptb(pwlogho, c);
-    return out;
-  }
-
-  // SETVIB0 / SETVIB1 / SETVIBR: the instrument's vibrato delay, then its vibrato
-  // frequency (low nibble, doubled) and amplitude (high nibble) as SETVAMP's.
-  proc setvib0() {
-    videlcnt := mem[zp + 6];
-    setvib1();
-  }
-
-  proc setvib1() {
-    setvibr(mem[zp + 5]);
-  }
-
-  proc setvibr(a: u8) {
-    vibfrequ := (a & 0x0F) << 1;
-    let count = a & 0x0F;
-    let y = slidevib;
-    if !L.vibratotypes || neg(y - 0x20) {
-      count >>= 1;
-    }
-    if L.vibratotypes && y == 0x30 {
-      count := 0;
-    }
-    vibracnt := count;
-    let amp = (a & 0xF0) >> 1;
-    setfmod(amp, amp == 0);
-  }
-
-  // SETFMOD: the frequency step of a slide or vibrato amplitude: from the fine
-  // exponent table below the threshold, else from the note frequency table (capped);
-  // a calculated vibrato scales it by the note, and a value its caller leaves zero
-  // (``z``) is the step itself.
-  proc setfmod(a: u8, z: bool) {
-    let y = a;
-    if L.calcvibrato {
-      if z {
-        freqmodl := a;
-        freqmodh := 0;
+        chordpos := chdp[curchord];
+        react wave_table on wave();
+      } else {
+        if L.detunesupport && wave_table.c2 != 0xFF {
+          detuner := wave_table.c2;
+        }
+        react wave_table on wave();
+        if L.wfarp_nop_supp && pitch == 0x80 {
+          c := true;
+        } elif neg(pitch) && pitch < 0xE0 {
+          freq := word(freqtbl[pitch & 0x7F], freqtbh[pitch & 0x7F]);
+          c := false;
+        } else {
+          c := relative_note(pitch);
+        }
         return;
       }
-      let half = a >> 1;
-      y := half + dpitch + u8(a & 1 != 0);
+    }
+  }
+
+  proc relative_note(a: u8) -> bool {
+    let n = (a + dpitch) & 0x7F;
+    freq := word(freqtbl[n], freqtbh[n]);
+    return carry(a, dpitch);
+  }
+
+  // The slide or vibrato step for an amplitude: scaled by the note through the exponent table,
+  // or the value itself when zero.
+  proc set_step(a: u8) {
+    let y = a;
+    if L.calcvibrato {
+      if a == 0 {
+        freqmod := 0;
+        return;
+      }
+      y := (a >> 1) + dpitch + u8(a & 1 != 0);
     }
     if y >= L.exp_end {
       y := L.exp_end;
     } elif y < L.exp_threshold {
-      freqmodl := exptbase[y];
-      freqmodh := 0;
+      freqmod := u16(exptbase[y]);
       return;
     }
-    freqmodl := vib_lo[y];
-    freqmodh := vib_hi[y];
+    freqmod := word(vib_lo[y], vib_hi[y]);
   }
 
-  // FORCVIB: the vibrato type of the instrument's control byte.
-  proc forcvib() {
-    slidevib := mem[zp] & 0x30;
+  proc set_vibrato(a: u8) {
+    vibfrequ := a.lo << 1;
+    vibracnt := ite(L.vibratotypes && slidevib == 0x30, 0, ite(!L.vibratotypes || neg(slidevib - 0x20), a.lo >> 1, a.lo));
+    set_step(a.hi << 3);
   }
 
-  // NOTE_FX: a note-column effect. $60..$77 sets the vibrato amplitude; $78..$7F
-  // dispatch through NOTEFXTBL: note portamento, sync on/off, ring on/off, gate on,
-  // gate off (with GATEOFFPTR, the instrument's gate-off table positions); $7F takes
-  // the table's zero offset. The instrument and pattern effects follow.
-  proc note_fx(a: u8) {
-    if neg(a - RUN_MAX) {
-      if !L.vibamfx_amp_only {
-        valstor := a;
-      }
-      vibamfx(a);
+  proc vibrato_amplitude(a: u8) {
+    slidevib := instrument.control & 0x30;
+    if L.vibamfx_amp_only {
+      set_step(a.lo << 3);
     } else {
-      selntfx(a);
-      note_fx_at(a, wfghost);
+      let b = instrument.vibrato;
+      b.hi := valstor;
+      set_vibrato(b);
     }
-    insptfx();
   }
 
-  // SELNTFX: the note effect's offset into the code after INDEXJ1.
-  proc selntfx(a: u8) {
-    indexj1 := notefxtbl[a];
-  }
-
-  // The note effect $78 + k with the waveform register preloaded.
-  proc note_fx_at(n: u8, wave: u8) {
-    let k = n - RUN_MAX;
-    if k == 0 || k == 7 {
-      if L.portame_notefx {
-        slidevib := NOTE_PORTA;
-        setfmod(DEFAULTPORTA, false);
-      } elif k == 7 {
-        wfghost := wave | 2;
+  // Note effects $78..: portamento at the default speed, sync and ring on and off, gate on,
+  // gate off (to the instrument's gate-off table positions).
+  proc note_effect(k: u8) {
+    match k {
+      0, 7 => {
+        if L.portame_notefx {
+          slidevib := NOTE_PORTA;
+          set_step(110);
+        } elif k == 7 {
+          wfghost |= 2;
+        }
       }
-    } elif k == 1 {
-      wfghost := wave | 2;
-    } elif k == 2 {
-      wfghost := wave & 0xFD;
-    } elif k == 3 {
-      wfghost := wave | 4;
-    } elif k == 4 {
-      wfghost := wave & 0xFB;
-    } elif k == 5 {
-      ptngate := 0xFF;
-      wfghost := wfghost | 1;
-    } else {
-      ngateof();
-    }
-  }
-
-  proc ngateof() {
-    let pos = 0;
-    if L.gateoffptr {
-      pos := mem[zp + 0x0C];
-    }
-    if pos != 0 {
-      wftpos := pos;
-    } else {
-      ptngate := 0xFE;
-      wfghost := 0xFE & wfghost;
-    }
-    if L.gateoffptr {
-      let pw = mem[zp + 0x0D];
-      if pw != 0 {
-        pwtpos := pw;
+      1 => wfghost |= 2;
+      2 => wfghost &= 0xFD;
+      3 => wfghost |= 4;
+      4 => wfghost &= 0xFB;
+      5 => {
+        ptngate := 0xFF;
+        wfghost |= 1;
       }
-      if x * 7 == fltctrl {
-        let flt = mem[zp + 0x0E];
-        if flt != 0 {
-          fltposi := flt;
+      _ => {
+        if L.gateoffptr && instrument.gateoff_wf != 0 {
+          wftpos := instrument.gateoff_wf;
+        } else {
+          ptngate := 0xFE;
+          wfghost &= 0xFE;
+        }
+        if L.gateoffptr && instrument.gateoff_pw != 0 {
+          pwtpos := instrument.gateoff_pw;
+        }
+        if L.gateoffptr && filter_owner.mine && instrument.gateoff_filter != 0 {
+          fltposi := instrument.gateoff_filter;
         }
       }
     }
   }
 
-  // INSPTFX: the instrument column's small effect ($40..$7F), then the pattern
-  // effect: $01..$1F a big effect with the row's value, $20..$FF a small effect.
-  proc insptfx() {
-    let a = curifx;
-    if !neg(a - 0x40) {
-      smalpfx(a);
+  // The instrument column's small effect ($40..), then the row's effect: big ($01..$1F, with
+  // the value) or small ($20..).
+  // Bigfx $0D/$0E's pulse width high nibble: a build whose store lands outside the player's own
+  // pulse width byte writes the memory at the address it holds instead.
+  proc set_pw_high(a: u8) {
+    if L.bigfx_pwhi_stray {
+      bigfx_pwhi[x * 7] := a.lo;
+    } else {
+      pw := word(lo(pw), a.lo);
+    }
+  }
+
+  proc effects() {
+    if curifx >= 0x40 && curifx < 0xC0 {
+      small_effect(curifx);
     }
     let fx = curfx2;
-    if fx == 0 {
-      return;
-    }
     if fx >= 0x20 {
-      smalpfx(fx);
-      return;
+      small_effect(fx);
+    } elif fx != 0 {
+      big_effect(fx, curval);
     }
-    bigptfx(fx);
-    let v = curval;
-    bigfx(fx, v, v == 0);
   }
 
-  // BIGPTFX: the big effect's address from BIGFXTABLE into INDEXJP's JMP.
-  proc bigptfx(fx: u8) {
-    let y = fx << 1;
-    indexjp := word(bigfxtable[y], bigfxtable[y + 1]);
-  }
-
-  // SMALPFX: the high nibble picks the small effect through SMALLFXTBL; the low
-  // nibble, kept in VALSTOR, is its value.
-  proc smalpfx(a: u8) {
-    smalsel(a);
-    smallfx(a >> 4, a & 0x0F);
-  }
-
-  proc smalsel(a: u8) {
-    indexj2 := smallfxtbl[a >> 4];
-    valstor := a & 0x0F;
-  }
-
-  proc smallfx(n: u8, v: u8) {
-    if n == 2 {
-      if L.allghostregs {
-        sidg_ad := setnibh(sidg_ad);
-      } else {
-        sidg_ad := setinbh(3);
+  // A small effect: the high nibble picks it, the low nibble is its value.
+  proc small_effect(a: u8) {
+    let v = a.lo;
+    valstor := v;
+    match a.hi {
+      2 => {
+        let b = ite(L.allghostregs, g_ad, instrument.ad);
+        b.hi := v;
+        put_ad(b);
       }
-    } elif n == 3 {
-      if L.allghostregs {
-        sidg_ad := setnibl(sidg_ad);
-      } else {
-        sidg_ad := setnibl(mem[zp + 3]);
+      3 => {
+        let b = ite(L.allghostregs, g_ad, instrument.ad);
+        b.lo := v;
+        put_ad(b);
       }
-    } elif n == 4 {
-      wfghost := setnibh(wfghost);
-    } elif n == 5 {
-      if L.allghostregs {
-        sidg_sr := setnibh(sidg_sr);
-      } else {
-        sidg_sr := setinbh(4);
+      4 => wfghost.hi := v;
+      5 => {
+        let b = ite(L.allghostregs, g_sr, instrument.sr);
+        b.hi := v;
+        put_sr(b);
       }
-    } elif n == 6 {
-      if L.allghostregs {
-        sidg_sr := setnibl(sidg_sr);
-      } else {
-        sidg_sr := setnibl(mem[zp + 4]);
+      6 => {
+        let b = ite(L.allghostregs, g_sr, instrument.sr);
+        b.lo := v;
+        put_sr(b);
       }
-    } elif n == 7 {
-      smalfx7(v);
-    } elif n == 8 {
-      vibamfx(v);
-    } elif n == 9 {
-      if L.vibfreqfx_supp {
-        vibfrequ := v << 1;
-      }
-    } elif n == 0x0A {
-      mainvol := v;
-      if L.seq_fx_support {
-        seqvolu := v;
-      }
-    } elif n == 0x0B {
-      if L.filter_smallfx {
-        fltband := v << 4;
-      }
-    } elif n == 0x0C {
-      smalfxc(v);
-    } elif n == 0x0D && L.detune_smallfx {
-      detuner := v << 3;
-    } elif n == 0x0D || n == 0x0E {
-      if L.wfctrl_smallfx {
-        let w = setnibl(wfghost);
-        if L.wfctrl_fx_stores {
-          wfghost := w;
+      7 => set_chord(v);
+      8 => vibrato_amplitude(v);
+      9 if L.vibfreqfx_supp => vibfrequ := v << 1;
+      0x0A => {
+        mainvol := v;
+        if L.seq_fx_support {
+          seqvolu := v;
         }
       }
-    } elif n == 0x0F {
-      if L.filter_smallfx {
-        resonib := v << 4;
-      }
+      0x0B if L.filter_smallfx => fltband := v << 4;
+      0x0C => set_arp_speed(v);
+      0x0D if L.detune_smallfx => detuner := v << 3;
+      0x0D, 0x0E if L.wfctrl_smallfx && L.wfctrl_fx_stores => wfghost.lo := valstor;
+      0x0F if L.filter_smallfx => resonib := v << 4;
     }
   }
 
-  // SETNIBL / SETINBH / SETNIBH: a nibble of a byte replaced by the effect's value.
-  proc setnibl(a: u8) -> u8 {
-    return (a & 0xF0) | valstor;
-  }
-
-  proc setinbh(y: u8) -> u8 {
-    let a = setnibh(mem[zp + u16(y)]);
-    return a;
-  }
-
-  proc setnibh(a: u8) -> u8 {
-    mergest := a & 0x0F;
-    return (valstor << 4) | mergest;
-  }
-
-  // MULTI3C: the value times three, and the carry the addition leaves.
-  proc multi3c(a: u8) -> u16 {
-    mul3tmp := a;
-    let doubled = a << 1;
-    let c = neg(a);
-    let m = mul3tmp;
-    return word(doubled + m + u8(c), u8(carry(doubled, m, c)));
-  }
-
-  proc smalfx7(a: u8) {
+  proc set_chord(a: u8) {
     if L.chordsupport {
       curchord := a;
-      chordpos := chdp4[a];
+      chordpos := chdp[a];
     }
   }
 
-  proc smalfxc(a: u8) {
+  proc set_arp_speed(a: u8) {
     if L.arpspeedsupp {
       arpsped := a;
       arpscnt := 0xFF;
     }
   }
 
-  // VIBAMFX: the instrument's vibrato with the effect's amplitude nibble (1.0: the
-  // value's low nibble as the amplitude, and the instrument's vibrato type).
-  proc vibamfx(a: u8) {
-    if L.vibamfx_amp_only {
-      let amp = (a << 4) >> 1;
-      setfmod(amp, amp == 0);
-      forcvib();
-    } else {
-      let v = setinbh(5);
-      bigfx08(v);
-    }
-  }
-
-  proc bigfx08(a: u8) {
-    forcvib();
-    setvibr(a);
-  }
-
-  // A big effect with its value: slides, portamento, register values, vibrato,
-  // table positions, chord, arp speed, detune, pulse width, cutoff, tempos, vibrato
-  // type, filter shift, delays, and filter switch/resonance; ``z`` is the zero flag the
-  // value's load leaves, which the tempo program effects test. 1.0 numbers them
-  // otherwise: $04 with $Fx sets the waveform table, $09 the vibrato type, $0F the filter
-  // shift, and $16..$1E are none.
-  proc bigfx(n: u8, a: u8, z: bool) {
-    if n == 1 {
-      slidevib := SLIDE_UP;
-      setfmod(a, a == 0);
-    } elif n == 2 {
-      slidevib := SLIDE_DOWN;
-      setfmod(a, a == 0);
-    } elif n == 3 {
-      slidevib := TONE_PORTA;
-      setfmod(a, a == 0);
-    } elif n == 4 {
-      if L.bigfx_v10 && a >= 0xF0 {
-        let m = multi3c(a & 0x0F);
-        wftpos := lo(m) + WFTABLEPOS + hi(m);
-      } else {
-        wfghost := a;
+  // A big effect with its value: slides and portamento, waveform, ADSR, chord, vibrato, table
+  // positions, arp speed, detune, pulse width, cutoff, tempos, vibrato type, filter shift and
+  // filter switch with resonance.
+  proc big_effect(n: u8, a: u8) {
+    match n {
+      1..3 => {
+        slidevib := 0x80 + n;
+        set_step(a);
       }
-    } elif n == 5 {
-      sidg_ad := a;
-    } elif n == 6 {
-      sidg_sr := a;
-    } elif n == 7 {
-      smalfx7(a);
-    } elif n == 8 {
-      bigfx08(a);
-    } elif n == 9 {
-      if L.bigfx_v10 {
-        slidevib := a & 0x30;
-      } else {
-        let m = multi3c(a);
-        wftpos := lo(m) + WFTABLEPOS + hi(m);
-      }
-    } elif n == 0x0A {
-      let m = multi3c(a);
-      pwtpos := lo(m) + mem[zp + 0x0A] + hi(m);
-      if L.table_fx_resets {
-        pweepcnt := 0;
-      }
-    } elif n == 0x0B {
-      let m = multi3c(a);
-      fltposi := lo(m) + mem[zp + 0x0B] + hi(m);
-      if L.table_fx_resets {
-        cwepcnt := 0;
-      }
-    } elif n == 0x0C {
-      smalfxc(a);
-    } elif n == 0x0D {
-      detuner := a;
-      if L.bigfx0d_falls {
-        pwhigho := a & 0x0F;
-      }
-    } elif n == 0x0E {
-      pwhigho := a & 0x0F;
-    } elif n == 0x0F {
-      if L.bigfx_v10 {
-        flshift := a;
-      } else {
-        ctfhgho := a;
-      }
-    } elif n == 0x10 {
-      maintmp(a | 0x80);
-    } elif n == 0x11 {
-      if L.tempoprgsupp {
-        tmpt7 := (a & 0x0F) | 0x80;
-        maintmp(a >> 4);
-      }
-    } elif n == 0x12 {
-      if L.tempoprgsupp && !z {
-        maintm2(tmpp1[a]);
-      }
-    } elif n == 0x13 {
-      if L.tempoprgsupp {
-        traktmp(a);
-      }
-    } elif n == 0x14 {
-      if L.tempoprgsupp {
-        let y = trktmp2(a >> 4);
-        tmpt9[y] := (a & 0x0F) | 0x80;
-      }
-    } elif n == 0x15 {
-      if L.tempoprgsupp && !z {
-        trktmp3(tmpp2[a]);
-      }
-    } elif L.bigfx_delay_16 && n >= 0x16 && n <= 0x1D {
-      if L.delaysupport {
-        delayer(a);
-      }
-    } elif n == 0x16 {
-      if !L.bigfx_v10 {
-        slidevib := a & 0x30;
-      }
-    } elif n < 0x1D {
-      if L.filtshift_supp && !L.bigfx_v10 {
-        flshift := a;
-      }
-    } elif n == 0x1D {
-      if L.delaysupport {
-        delayer(a);
-      }
-    } elif n == 0x1E {
-      if L.delaysupport {
-        if trdelay == 0 {
-          spdcnt += a;
-          delayer(spdcnt);
+      4 => {
+        if L.bigfx_v10 && a >= 0xF0 {
+          let m = times3(a.lo);
+          wftpos := m + WAVE_START;
         } else {
-          delayer(a);
+          wfghost := a;
         }
       }
-    } else {
-      if L.filt_ctrl_fx {
-        fswitch := a & 0x0F;
-        resonib := a & 0xF0;
+      5 => put_ad(a);
+      6 => put_sr(a);
+      7 => set_chord(a);
+      8 => {
+        slidevib := instrument.control & 0x30;
+        set_vibrato(a);
       }
-      if L.bigfx1f_toggle {
-        fswitch ^= 0x08;
+      9 => {
+        if L.bigfx_v10 {
+          slidevib := a & 0x30;
+        } else {
+          let m = times3(a);
+          wftpos := m + WAVE_START;
+        }
+      }
+      0x0A => {
+        let m = times3(a);
+        pwtpos := m + instrument.pw_start;
+        if L.table_fx_resets {
+          pweepcnt := 0;
+        }
+      }
+      0x0B => {
+        let m = times3(a);
+        fltposi := m + instrument.filter_start;
+        if L.table_fx_resets {
+          cwepcnt := 0;
+        }
+      }
+      0x0C => set_arp_speed(a);
+      0x0D => {
+        detuner := a;
+        if L.bigfx0d_falls {
+          set_pw_high(a);
+        }
+      }
+      0x0E => set_pw_high(a);
+      0x0F => {
+        if L.bigfx_v10 {
+          flshift := a;
+        } else {
+          cutoff := word(lo(cutoff), a);
+        }
+      }
+      0x10 => {
+        if L.tempoprgsupp {
+          tempotbl[1] := a | 0x80;
+          all_tempo(0);
+        } else {
+          main_tempo := a | 0x80;
+        }
+      }
+      0x11 if L.tempoprgsupp => {
+        tempotbl[2] := a.lo | 0x80;
+        tempotbl[1] := a.hi;
+        all_tempo(0);
+      }
+      0x12 if L.tempoprgsupp => {
+        if a != 0 {
+          all_tempo(tmpp[a]);
+        }
+      }
+      0x13 if L.tempoprgsupp => track_tempo(a | 0x80);
+      0x14 if L.tempoprgsupp => {
+        track_tempo(a.hi);
+        tempotbl[trktmpos + 2] := a.lo | 0x80;
+      }
+      0x15 if L.tempoprgsupp => {
+        if a != 0 {
+          tmpbase := tmpp[a];
+          tmppos := tmpp[a];
+        }
+      }
+      0x16..0x1D if L.bigfx_delay_16 => {
+        if L.delaysupport {
+          delay(a);
+        }
+      }
+      0x16 => {
+        if !L.bigfx_v10 {
+          slidevib := a & 0x30;
+        }
+      }
+      0x17..0x1C => {
+        if L.filtshift_supp && !L.bigfx_v10 {
+          flshift := a;
+        }
+      }
+      0x1D => {
+        if L.delaysupport {
+          delay(a);
+        }
+      }
+      0x1E => {
+        if L.delaysupport {
+          if trdelay == 0 {
+            spdcnt += a;
+            delay(spdcnt);
+          } else {
+            delay(a);
+          }
+        }
+      }
+      _ => {
+        if L.filt_ctrl_fx {
+          fswitch := a.lo;
+          resonib := a & 0xF0;
+        }
+        if L.bigfx1f_toggle {
+          fswitch ^= 0x08;
+        }
       }
     }
   }
 
-  // MAINTMP / MAINTM2: the main tempo, every voice's tempo program restarting at A.
-  proc maintmp(a: u8) {
-    tmpt6 := a;
-    maintm2(0);
-  }
-
-  proc maintm2(a: u8) {
-    if L.tempoprgsupp {
-      for v in 0..L.chn {
-        mem[L.tmppos + v * 7] := a;
-      }
-      for v in 0..L.chn {
-        mem[L.tmpbase + v * 7] := a;
-      }
-    }
-  }
-
-  // TRAKTMP: the voice's single track tempo at its TRKTMPOS slot.
-  proc traktmp(a: u8) {
-    let y = trktmp2(a | 0x80);
-  }
-
-  proc trktmp2(a: u8) -> u8 {
-    let y = trktmpos;
-    tmpt8[y] := a;
-    trktmp3(y);
-    return y;
-  }
-
-  proc trktmp3(a: u8) {
-    tmpbase := a;
-    tmppos := a;
-  }
-
-  // DELAYER: a track delay holds the voice's clock while TRDELAY counts down.
-  proc delayer(a: u8) {
-    let d = trdelay;
-    if d != 0 {
-      if d == 0xFF {
+  // A track delay holds the voice's clock while its counter runs down.
+  proc delay(a: u8) {
+    if trdelay != 0 {
+      if trdelay == 0xFF {
         trdelay := a;
       }
       spdcnt := 2;
@@ -1817,173 +1172,145 @@ machine voice[x in 0..L.chn] {
     trdelay -= 1;
   }
 
-  // Entry points at the code's labels, with the inputs the code reads from the
-  // registers: the routine as a caller with those registers enters it. A dispatched
-  // effect is the one its column (CURNOT, CURFX2) names.
-  proc at_wfarptb() {
-    let out = wfarptb(cpu.a, cpu.c);
+  proc times3(a: u8) -> u8 {
+    let t = u16(a) * 3;
+    return lo(t) + hi(t);
   }
 
-  proc at_mulcntp() {
-    let out = mulcntp(cpu.c);
+  // Every voice's tempo program from A.
+  proc all_tempo(a: u8) {
+    for v in L.order {
+      voice[v].tmppos := a;
+      voice[v].tmpbase := a;
+    }
   }
 
-  proc at_hardrst() {
-    hardrst(cpu.a);
-  }
-
-  proc at_setfmod() {
-    setfmod(cpu.a, cpu.z);
-  }
-
-  proc at_setvibr() {
-    setvibr(cpu.a);
-  }
-
-  proc at_seq_fx() {
-    seq_fx(cpu.a);
-  }
-
-  proc at_setseqa() {
-    setseqa(cpu.a);
-  }
-
-  proc at_traktmp() {
-    traktmp(cpu.a);
-  }
-
-  proc at_selntfx() {
-    selntfx(cpu.a);
-  }
-
-  proc at_note_effect() {
-    note_fx_at(curnot, cpu.a);
-  }
-
-  proc at_smalsel() {
-    smalsel(cpu.a);
-  }
-
-  proc at_small_effect() {
-    smallfx(curfx2 >> 4, cpu.a);
-  }
-
-  proc at_bigptfx() {
-    bigptfx(cpu.a);
-  }
-
-  proc at_big_effect() {
-    bigfx(curfx2, cpu.a, cpu.z);
-  }
-
-  proc at_cntply1() {
-    cntply1(cpu.y);
+  // This voice's own tempo at its slot of the tempo program.
+  proc track_tempo(a: u8) {
+    tempotbl[trktmpos + 1] := a;
+    tmpbase := trktmpos;
+    tmppos := trktmpos;
   }
 }
 
-// COMMONREGS: the voices' ghost registers copied to the chip (a build with them),
-// then the filter switches and resonance, volume and band, and the cutoff: its high
-// byte scaled by the keyboard track of the filter controller's note and shifted by
-// the filter-shift effect, its low bits from the fine sweep.
+// The shared registers: filter switches and resonance, volume and band, and the cutoff (its top
+// byte scaled by the filter owner's note through the keyboard track, then shifted).
 machine commonregs {
-  cell sid: u8[32] @ L.sid out per_proc;
-
   step {
-
     if L.allghostregs {
       for v in L.order {
-        sid[v * 7 + 6] := mem[L.sidg + v * 7 + 6];
-        sid[v * 7 + 5] := mem[L.sidg + v * 7 + 5];
-        sid[v * 7] := mem[L.sidg + v * 7];
-        sid[v * 7 + 1] := mem[L.sidg + v * 7 + 1];
-        sid[v * 7 + 2] := mem[L.sidg + v * 7 + 2];
-        sid[v * 7 + 3] := mem[L.sidg + v * 7 + 3];
-        sid[v * 7 + 4] := mem[L.sidg + v * 7 + 4];
+        voice[v].out_freq := voice[v].g_freq;
+        voice[v].out_pw := voice[v].g_pw;
+        voice[v].out_wave := voice[v].g_wave;
+        voice[v].out_ad := voice[v].g_ad;
+        voice[v].out_sr := voice[v].g_sr;
       }
     }
     sid_resfc := fswitch | resonib;
     if !L.echo_support {
       sid_fmvol := mainvol | fltband;
     }
-    let cutoff = ctfhgho;
+    let cut = hi(cutoff);
+    let top = cut;
     let c = false;
-    if L.filtkbtrack {
-      let track = ckbdtrk;
-      let k = 0;
-      if track != 0 {
-        let p = mem[L.dpitch + u16(fltctrl)];
-        c := carry(track, p);
-        k := exptabh[track + p];
+    if L.filtkbtrack && ckbdtrk != 0 {
+      let p = 0;
+      for v in L.order {
+        if fltctrl == v * 7 {
+          p := voice[v].dpitch;
+        }
       }
-      cutoff := k + ctfhgho + u8(c);
-      c := carry(k, ctfhgho, c);
+      let k = exptabh[ckbdtrk + p];
+      c := carry(ckbdtrk, p);
+      top := k + cut + u8(c);
+      c := carry(k, cut, c);
     }
     if L.filtshift_supp {
-      let shift = flshift;
-      let shifted = cutoff + shift + u8(c);
-      cutoff := shifted;
+      top := top + flshift + u8(c);
     }
-    sid_fcut_hi := cutoff;
-    if L.finefiltsweep {
-      sid_fcut_lo := ctflgho;
+    sid_fcut := u16(top) << 3 | u16(lo(cutoff) & 7);
+  }
+}
+
+// The play call's entry: a hand-edited player toggles its own gate and plays on alternate calls,
+// and the carry a multispeed call enters with passes from voice to voice.
+machine play {
+  step {
+    if L.play_gate {
+      let g = gate ^ L.gate_mask;
+      gate := g;
+      if neg(g) != L.gate_minus {
+        finish;
+      }
+    }
+    mulcarry := cpu.c;
+    if L.retainzeropage {
+      ins := L.init_zp;
     }
   }
 }
 
-// SID-Wizard 1.0's SUBTJMP, at COMMONREGS: an orderlist jump to a subtune (its number kept
-// in the immediate) sets the subtune's orderlists and tempos, then every voice restarts,
-// each clearing the immediate.
+// An SFX build's SFXinit, the host's call that starts a sound effect on the third voice: A the
+// length, X the note and Y the instrument; the music's instrument is kept unless an effect is
+// still playing, and the voice's envelope and waveform registers are cleared for a stable start.
+machine sfxinit {
+  step {
+    sfxleng := cpu.a;
+    voice[2].curnot := cpu.x;
+    if neg(sfxtimer) {
+      curinstemp := voice[2].curins;
+    }
+    sfxtimer := cpu.a;
+    voice[2].curins := cpu.y;
+    voice[2].curifx := 0;
+    voice[2].slidevib := 0;
+    voice[2].out_ad := 0;
+    voice[2].out_sr := 0;
+    voice[2].out_wave := 0;
+    if !L.allghostregs {
+      voice[2].g_ad := 0;
+      voice[2].g_sr := 0;
+      voice[2].g_wave := 0;
+    }
+  }
+}
+
+// A subtune started from an orderlist jump (SID-Wizard 1.0): the subtune's orderlists and main
+// tempos are set, then every voice restarts.
 machine subtune {
   signal jump: bool = false;
 
   step {
-    let s = subtjmp;
-    if s != 0 {
-      setstune(s & 0x7F);
+    if subtjmp != 0 {
+      let y = (subtjmp & 0x7F) << 3;
+      for v in L.order {
+        voice[v].seqt := word(subt1[y + v * 2], subt1[y + v * 2 + 1]);
+      }
+      tempotbl[1] := subt1[y + L.chn * 2];
+      tempotbl[2] := subt2[y + L.chn * 2];
       jump := true;
-    }
-  }
-
-  proc at_setstune() {
-    setstune(cpu.a);
-  }
-
-  // SETSTUNE: each voice's orderlist read and the two main tempos from SUBTUNES.
-  proc setstune(a: u8) {
-    let y = a << 3;
-    for v in 0..L.chn {
-      mem[L.p_seqt1 + v * 4] := subt1[y + v * 2];
-      mem[L.p_seqt1 + v * 4 + 1] := subt1[y + v * 2 + 1];
-    }
-    tempotbl[1] := subt1[y + L.chn * 2];
-    tempotbl[2] := subt2[y + L.chn * 2];
-  }
-}
-
-// RETPLAY: the zero-page pointer as the call found it.
-machine retplay {
-  step {
-    if L.retainzeropage {
-      zp := play.zp_saved;
     }
   }
 }
 
 schedule {
-  play;
-  if !L.mulply || L.multispeedsupp {
-    for v in L.order {
-      voice[v];
-    }
-    if L.subtune_restarts {
-      subtune;
-      if subtune.jump {
-        for v in L.order {
-          voice[v];
+  if L.sfxinit {
+    sfxinit;
+  } else {
+    play;
+    if !L.mulply || L.multispeedsupp {
+      for v in L.order {
+        voice[v];
+      }
+      if L.subtune_restarts {
+        subtune;
+        if subtune.jump {
+          for v in L.order {
+            voice[v];
+          }
         }
       }
+      commonregs;
     }
-    commonregs;
-    retplay;
   }
 }

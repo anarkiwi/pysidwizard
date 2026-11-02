@@ -24,7 +24,7 @@ from pysidwizard import (
     straight_tempo,
 )
 from pysidwizard.constants import INST_WF_TABLE_POS
-from tests._toy import SETUP_FRAMES, assert_6502, emu, grid, labels, note_word, toy_swm
+from tests._toy import SETUP_FRAMES, assert_6502, emu, grid, note_word, toy_swm, variable
 
 # Row 0's TICK_2 runs on call SETUP_FRAMES; its WF row reaches the SID on the next call.
 NOTE = SETUP_FRAMES + 1
@@ -63,13 +63,11 @@ def _trace(
     cpu = emu(player)
     regs: List[List[int]] = []
     mem: Dict[str, List[int]] = {cell: [] for cell in cells}
-    lab: Dict[str, int] = {}
     for call in range(frames):
         assert player.play_frame() == cpu.play_frame(), f"call {call} SID writes"
-        lab = lab or labels(player)
         regs.append(list(player.regs))
         for cell in cells:
-            mem[cell].append(player.memory[lab[cell]])
+            mem[cell].append(variable(player, cell))
     return player, regs, mem
 
 

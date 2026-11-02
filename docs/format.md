@@ -394,9 +394,8 @@ and validates.
 
 ### Player correctness
 
-`tests/test_playspec.py` proves spec routines against the player's 6502 (`tv.validate`)
-and plays whole songs with the full 64 KiB outside the stack page equal to the tune's
-own 6502 (`EmuPlayer`) after every call; `tests/test_spec_player.py` does the same for
+`tests/test_playspec.py` plays whole songs with the SID registers, and the gate and test edges
+of each call, equal to the tune's own 6502 (`EmuPlayer`); `tests/test_spec_player.py` does the same for
 every SID-Maker build and the example modules. `tests/test_oracle.py` compares
 `SWMPlayer` frame by frame with the
 [`anarkiwi/sidtrace`](https://github.com/anarkiwi/sidtrace) sidplayfp oracle over a

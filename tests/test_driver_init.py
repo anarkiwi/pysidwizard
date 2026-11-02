@@ -201,12 +201,12 @@ def test_song_runs_init_to_pick_the_subtune():
 
 
 def test_format_plays_the_selected_subtune():
-    """The format's ``subtune`` is the 0-based song: PREX's song 4 is its second player."""
+    """The format's ``subtune`` is the 0-based song: PREX's song 2 is its second subtune."""
     data = _tune("GAMES/M-R/PREX.sid")
-    model = FORMAT.parser.parse(data, subtune=3)
-    assert model.sequences == parse_sid_song(data, 4).sequences
+    model = FORMAT.parser.parse(data, subtune=1)
+    assert model.sequences == parse_sid_song(data, 2).sequences
     assert FORMAT.parser.parse(data).sequences == parse_sid(data).sequences
-    expected = SWMPlayer(parse_sid_song(data, 4)).render_grid(200)
+    expected = SWMPlayer(parse_sid_song(data, 2)).render_grid(200)
     assert FORMAT.player(model).render_grid(200) == expected
     assert expected != SWMPlayer(parse_sid_song(data, 1)).render_grid(200)
 

@@ -6,38 +6,32 @@
 
 ## What it states
 
-| `player.asm` | Spec |
-|---|---|
-| PLAYER: DOTRACK per voice, the last voice first | `schedule`, `voice[x]` (`x` 0..2, X = 7·x) |
-| DOTRACK's tick clock and the TICK_0 / TICK_1 / TICK_2 / CNTPLAY dispatch | `dotrack`, `tick` |
-| TICK_0: pattern pointer, delayed volume and track tempo, the row | `tick_0`, `read_row` |
-| HARDRST / NEWNOTE / HRGTOFF / HRENDER | `hardrst`, `hrender` |
-| TICK_1 / PTN_SEQ / SEQSUB / SEQ_FX / SETSEQA | `tick_1`, `ptn_seq`, `seq_step`, `seq_fx`, `setseqa` |
-| TICK_2 / SEL_INS / CHKNOTE / STRTINS / CLEGATO / LEGATOO | `tick_2`, `clegato`, `legatoo` |
-| STRTSND / SETFLTP / SETADSR | `strtsnd`, `startsound`, `setfltp` |
-| CNTPLAY / VIBSLIDE (vibrato, slides, portamento) | `cntplay`, `cntply1`, `vibslide`, `portame`, `dovibra` |
-| FilterProgram, SETPWID, WFARPTB (chords) to WRWFGHO | `filtprg`, `setpwid`, `wfarptb`, `wftable` |
-| SETVIB0 / SETVIB1 / SETVIBR / SETFMOD / FORCVIB | same names |
-| NOTE_FX, INSPTFX, SMALPFX, BIGPTFX and every effect | `note_fx`, `insptfx`, `smalpfx`, `bigfx`, ... |
-| COMMONREGS, RETPLAY | `commonregs`, `retplay` |
-| MULPLY / MULCNTP | `voice[x]` with `L.mulply`, `mulcntp` |
-| SFX builds (channel 3 sound effects) | `L.sfx` |
-| SWP exports (relative song pointers) | `L.swp`, `point_lo` / `point_hi` |
-| ECHO_SUPPORT builds (the echo engine writes `$D418`) | `L.echo_support` |
-| 1.0's SUBTJMP / SETSTUNE / INIT: a subtune jump restarts every voice | `subtune`, `setstune`, a second pass of `voice[x]` (`restart`) |
+The spec is written from the format, in the playspec's own abstractions, not routine by routine
+from `player.asm`:
 
-Each `.if feature.X_ON` is `if L.x` (the names of `pysidwizard.features.FACETS`); each
-release difference of the 1.0..1.9 players is a flag too (`first_frame_*`,
-`filter_stop_rewinds`, `kbtrack_fswitch`, `wfctrl_fx_stores`, `hr_ad_first`,
-`adsr_ad_first`, `seq_tempo_capped`, `table_fx_resets`, and 1.0's `subtune_restarts`,
-`sound_tables_first`, `sound_resets_flshift`, `vibamfx_amp_only`, `bigfx_v10`, and the
-early releases' `hrender_inline`, `hrgtoff_or8`, `restart_trdelay`, `noins_rts`,
-`bigfx0d_falls`, `bigfx_delay_16`, `bigfx1f_toggle`). Self-modified immediates are
-`operand` cells; the computed effect dispatch (`bcc *+2` / `jmp abs` from NOTEFXTBL,
-SMALLFXTBL, BIGFXTABLE) writes its operand and branches on the effect number. Registers
-a routine passes on (the carry into WFARPTB and WRPITCH, the accumulator into WFARPTB,
-the zero flag into SETFMOD and the tempo effects) are parameters; the carry one voice's
-multispeed call leaves for the next is a signal.
+| Format | Spec |
+|---|---|
+| PLAYER: the voices last first, then COMMONREGS | `schedule`, `voice[x]`, `commonregs` |
+| A tick counter against a tempo program | the `beat` counter and the `tempo_program` handler; `step` dispatches on `ticks` |
+| A pattern row: note, instrument, effect, value, runs of empty rows | the `row_reader` cursor, the `row_prep` handler |
+| The orderlist: patterns, track end, jumps, subtunes, transpose, volume and tempo effects | `next_pattern`, `order_effect` |
+| Hard restart, note start, legato and tone portamento | `hard_restart`, `note_start`, `start_sound` |
+| The instrument's pulse, filter and waveform tables | the `pw_table`, `filter_table` and `wave_table` cursors, the `filter_owner` |
+| Vibrato, slides, portamento, chords, detune | `tables`, `portamento`, `vibrato`, `wave_row`, `set_vibrato` |
+| Note, small and big effects | `note_effect`, `small_effect`, `big_effect` |
+| MULPLY, the multispeed entry | `L.mulply`, `multispeed` |
+| SFX builds, SWP exports, echo builds, hand-edited play gates | `L.sfx`, `L.swp`, `L.echo_support`, `L.play_gate` |
+| 1.0's subtune jump restarting every voice | the `subtune` machine, `restart` |
+
+Every player variable is a `state`, at no address, that starts from what the init left in it
+(`L.init_<name>`, a list over the voices for a voice's own). A build's features and the release
+differences of the 1.0..1.9 players are flags (`L.<flag>`; the features are those of
+`pysidwizard.features.FACETS`) that guard branches, match arms and `ite`. The instrument any voice
+last selected is the pointer state `ins`, which a call that keeps the zero page resets to the
+init's. The carry one table leaves for the next (WFARPTB's detune add, the multispeed call's
+chain from voice to voice) is a per-voice signal; the accumulator and zero flag a routine passes
+on are parameters. A build with ghost registers writes the chip from the voices' registers once
+all have played.
 
 FREQTBL and FREQTBH are `notes(lo, -1)` / `notes(hi, -1)`: table index `i` is standard
 note `i - 1` (index 0 is B-1). `FORMAT.spec_player(swm, notes=clock)` answers every read of
@@ -60,11 +54,9 @@ reads the image.
   assembled from the flags as `player.asm` assembles the routine, so a wrong flag fails
   the match. The dispatch tables are checked entry by entry against the routines their
   effect numbers name.
-- Per-voice variables are laid out from VARIABLES (the row reader's PTNPOS) in bunches
-  of 7 bytes × 3 voices, the TMPBASE and SIDG bunches present as the flags say, in 1.0's
-  bunch order or the later one, whichever every matched operand agrees with.
-- A variable cell is `per_proc`: a routine that addresses it apart from the rest binds
-  `<name>@<proc>` for its spec procs, so a player relocated per routine is stated.
+- `init_<name>`: what the init left in each player variable, read at the addresses its
+  routines name, zero for a variable the build lacks. `playspec.binding` returns only the
+  names the spec declares; `playspec.labels` every address the binder found.
 
 `binding` raises `ValueError` for players the spec does not state: multi-SID builds,
 players partly relocated within a routine (#121), players with effect routines stripped
@@ -77,32 +69,16 @@ build's cells, or jumps into it.
 
 ## Verification (`tests/test_playspec.py`)
 
-- `SpecPlayer` over the spec against the tune's own 6502 (`EmuPlayer`): the SID registers
-  and the 64 KiB outside the stack page equal after every call of the whole song, on
-  every single-SID 1.97 example export (default suite) and every stated oracle tune
-  (`-m oracle`). A tune without a play address (the echo export, whose engine calls
-  PLAYER from its own interrupt) has its PLAYER called each frame. `scripts/sw_spec_diff.py` reports the first differing call of a tune,
-  `scripts/sw_spec_census.py` runs many in parallel.
-- `tv.validate` proofs, X = 0: on a set covering every build and, in the oracle job, a
-  1.0 player (`pantheon`, with its voice restart); each routine from its label (a stretch to the next
-  routine or to a dispatch where its code runs on), each dispatched effect from its
-  table entry with its effect number assumed in the column. The table and sound-start
-  routines are oracle tests, proven by cases that together cover every state:
-  - FILTPRG and SETPWID (to ENDPWTB) by the kind of the row's first byte (`$80..$FD`,
-    `$FE`, `$FF`, and `$00..$7F` split into a sweep ended at its counter or a step of
-    either sign); ENDPWTB on its own;
-  - VIBSLIDE by SLIDEVIB's branches, a portamento further by its direction to the
-    note's frequency and the carries out of its low-byte difference, comparison and
-    step (the satisfiable combinations), its cases in four shards;
-  - STRTSND under the assumption that the instrument pointer lies in the module's data,
-    above the instrument pointer tables and below `$CE00`, so its bytes alias no player
-    cell, operand or chip register (as in every player the editor or SID-Maker builds);
-  - WFARPTB (to RTS) on builds without chords: a chord's `$7E` return re-reads the table
-    up to 256 times, a loop the SMT lowering unrolls to its bound.
-
-  Each test runs `scripts/sw_proof_census.py NAME --only LABEL --shard K/N --jobs 1` in
-  its own interpreter: z3's search, so a proof's time, depends on every term made before
-  it, and a fresh interpreter makes it reproducible. `--seeds S` proves under z3 seeds
-  0..S-1 and `--cases` times each case apart, exposing a case whose time depends on
-  solver heuristics.
+- `SpecPlayer` over the spec against the tune's own 6502 (`EmuPlayer`): the SID registers,
+  with the bits the chip ignores masked, and per voice whether the gate was cleared and set
+  again or TEST was set within the call, equal after every call of the whole song, on every
+  single-SID 1.97 example export (default suite) and every stated oracle tune (`-m oracle`). A
+  tune without a play address (the echo export, whose engine calls PLAYER from its own
+  interrupt) has its PLAYER called each frame. `scripts/sw_spec_diff.py` reports the first
+  differing call of a tune, `scripts/sw_spec_census.py` runs many in parallel.
+- The spec run natively and in Python, call by call, over each export: the SID writes and
+  registers equal.
 - `pysidtracker playspec check` on a bound layout.
+- `scripts/sw_builds.py` groups tunes by the build flags the binder reads;
+  `scripts/sw_state_diff.py` finds the first call whose player variables differ between two
+  specs; `scripts/sw_native_check.py` lists the tunes a spec does not play on the native core.

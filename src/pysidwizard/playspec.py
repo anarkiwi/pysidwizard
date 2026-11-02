@@ -21,31 +21,6 @@ from .playspec_effects import _effects, _sfx
 
 _SPEC_TEXT = resources.files(__package__).joinpath("specs/sidwizard.play").read_text()
 SPEC = parse_spec(_SPEC_TEXT)
-# The spec's per_proc cells, each placed at the layout field of its own name.
-_PER_PROC = frozenset(re.findall(r"cell (\w+):[^@;]+@\s*L\.\1\b[^;]*per_proc", _SPEC_TEXT))
-# Per_proc cells placed at a layout field derived from another one, with the offset.
-_DERIVED = {"zp": (("zp_lo", 0), ("zp_hi", 1))}
-# The spec procs that state each routine's accesses, for a routine's own variable address.
-_ROUTINE_PROCS: Dict[str, Tuple[str, ...]] = {
-    "TICK_0": ("tick_0",),
-    "TICK_1": ("tick_1",),
-    "TICK_2": ("tick_2", "chknote", "clegato", "legatoo"),
-    "the row reader": ("read_row",),
-    "PTN_SEQ": ("ptn_seq", "seq_step"),
-    "SEQ_FX": ("seq_fx", "at_seq_fx"),
-    "HARDRST": ("hardrst", "hrender", "at_hardrst"),
-    "STRTSND": ("strtsnd", "startsound", "startchord", "sound_tables", "setfltp"),
-    "VIBSLIDE": ("vibslide", "portame", "portend", "targetn", "dovibra", "subfreq", "addfreq"),
-    "FILTPRG": ("filtprg", "fladvan", "setfpos"),
-    "SETPWID": ("setpwid", "sepwpos", "pw_table"),
-    "WFARPTB": ("wfarptb", "wftable", "relptch", "absptch", "at_wfarptb"),
-    "WRPITCH": ("wfarptb", "wftable", "relptch", "absptch", "at_wfarptb"),
-    "SETFMOD": ("setfmod", "at_setfmod"),
-    "SETINBL": ("setnibl", "setinbh", "setnibh", "multi3c"),
-    "NOTE_FX": ("note_fx", "note_fx_at", "ngateof", "at_note_effect"),
-    "big effect $0e": ("bigfx", "at_big_effect"),
-    "PLAYER": ("sfx",),
-}
 
 VOICE_STRIDE = 7
 CHANNELS = 3
@@ -167,6 +142,13 @@ _PLAYER = (
     "20 {chknote:w} 4C ?? ?? AC {curinstemp_ref:w} 8C {curins_v2:w} 20 {sfx_hr:w} "
     "CE {sfxtimer_ref:w} |> 20 {dotrack:w} A2 07 20 {dotrack:w} A2 00 20 {dotrack:w}"
 )
+# SFXinit, the host's call that starts a sound effect: A the length, X the note, Y the instrument.
+_SFXINIT = (
+    "8D {sfxleng_ref:w} 8E {curnot_v2:w} 2C {sfxtimer_ref:w} 10 06 AE {curins_v2:w} "
+    "8E {curinstemp_ref:w} 8D {sfxtimer_ref:w} 8C {curins_v2:w} A9 00 8D {curifx_v2:w} "
+    "8D {slidevib_v2:w}"
+)
+_SFXINIT_LENGTH = CodePattern(_SFXINIT).length
 # A hand-edited PLAYER entry that toggles its own immediate and returns on alternate calls.
 _GATE = "A9 {at_gate} 49 {gate_mask} 8D {gate_ref:w} {gate_branch} 01 60"
 _MULPLY = _ZP_SAVE + (
@@ -205,7 +187,6 @@ class _Scan:
         self.image = image(view)
         self.flags = flags
         self.found: Dict[str, int] = {}
-        self.sites: Dict[str, Dict[str, int]] = {}
 
     def word(self, addr: int) -> int:
         """The little-endian word at ``addr``."""
@@ -270,43 +251,12 @@ class _Scan:
         self.put(routine, name, value)
 
     def put(self, routine: str, name: str, value: int) -> None:
-        """Record ``name``; a different earlier value is an inconsistent build, unless
-        ``name`` is a per_proc cell, which each routine may address on its own."""
-        if name in _PER_PROC:
-            key = routine if routine in _ROUTINE_PROCS else ""
-            first = self.sites.setdefault(name, {}).setdefault(key, value)
-            if first == value:
-                self.found.setdefault(name, value)
-                return
-            self.found[name] = first
+        """Record ``name``; a different earlier value is an inconsistent build."""
         if self.found.setdefault(name, value) != value:
             raise ValueError(
                 f"SID-Wizard {routine} addresses {name} at ${value:04x}, the player at "
                 f"${self.found[name]:04x}: a partly relocated player is not stated"
             )
-
-    def per_proc(self) -> Dict[str, int]:
-        """Each per_proc cell's shared address (the one its routines without spec procs
-        use, else its commonest) and ``name@proc`` for each other routine's spec procs."""
-        out: Dict[str, int] = {}
-        for name, sites in self.sites.items():
-            values = list(sites.values())
-            shared = sites.get("", max(values, key=values.count))
-            self.found[name] = shared
-            for routine, value in sites.items():
-                if value == shared:
-                    continue
-                for proc in _ROUTINE_PROCS[routine]:
-                    if out.setdefault(f"{name}@{proc}", value) != value:
-                        raise ValueError(
-                            f"SID-Wizard {proc} addresses {name} at ${value:04x} and "
-                            f"${out[f'{name}@{proc}']:04x}"
-                        )
-        for name, derived in _DERIVED.items():
-            for key in [k for k in out if k.split("@")[0] == name]:
-                for field, offset in derived:
-                    out[f"{field}@{key.split('@')[1]}"] = out[key] + offset
-        return out
 
 
 def _commonregs(scan: _Scan, addr: int) -> None:
@@ -765,6 +715,16 @@ def _entries(view: bytes) -> List[Tuple[int, int, int, Optional[int]]]:
     return [(e, p, c, mulplies.get(c)) for e, p, c in players]
 
 
+def _sfxinit(view: bytes, player: int) -> Optional[int]:
+    """The address of SFXinit, the code in front of SFX_HR, of the SFX build whose PLAYER is
+    ``player``; None for a build without sound effects."""
+    probe = _Scan(view, {"retainzeropage": None, "sfx": None})
+    if probe.match("PLAYER", player, _PLAYER) is None or not probe.flags["sfx"]:
+        return None
+    addr = probe.found["sfx_hr"] - _SFXINIT_LENGTH
+    return addr if probe.match("SFXinit", addr, _SFXINIT) is not None else None
+
+
 def _gate(view: bytes, player: int) -> Optional[dict]:
     """The hand-edited gate in front of ``player``: its fields, or None."""
     entry = player - CodePattern(_GATE).length
@@ -780,9 +740,14 @@ def _gate(view: bytes, player: int) -> Optional[dict]:
 
 
 def entries(view) -> set:
-    """Every SID-Wizard play entry (PLAYER or its gate) and MULPLY in ``view``."""
+    """Every SID-Wizard entry in ``view``: PLAYER or its gate, MULPLY and an SFX build's SFXinit."""
     view = bytes(view)
-    return {e for entry, _p, _c, m in _entries(view) for e in (entry, m) if e is not None}
+    return {
+        e
+        for entry, p, _c, m in _entries(view)
+        for e in (entry, m, _sfxinit(view, p))
+        if e is not None
+    }
 
 
 def detect(view, entry: int) -> tuple:
@@ -822,12 +787,16 @@ def _hrender_exit(found: dict, flags: dict) -> None:
         flags[flag] = flag in exits
 
 
-def _scan(scan: _Scan, player: int, commonregs: int, mulply: Optional[int]) -> dict:
+def _scan(
+    scan: _Scan, player: int, commonregs: int, mulply: Optional[int], sfxinit: Optional[int]
+) -> dict:
     """Every routine from PLAYER (and MULPLY) on, and the play gate in front of PLAYER."""
     scan.put("PLAYER", "player", player)
     scan.at("PLAYER", player, _PLAYER)
     if scan.flags["sfx"]:
         scan.at("SFX_HR", scan.found["sfx_hr"], "8D {sfx_ad:w} 8D {sfx_sr:w} 8D {sfx_wave:w} 60")
+        if sfxinit is not None:
+            scan.at("SFXinit", sfxinit, _SFXINIT)
     scan.put("PLAYER", "commonregs", commonregs)
     _commonregs(scan, commonregs)
     if mulply is not None:
@@ -838,20 +807,64 @@ def _scan(scan: _Scan, player: int, commonregs: int, mulply: Optional[int]) -> d
     _cntplay(scan)
     _subroutines(scan)
     _effects(scan)
-    overrides = scan.per_proc()
-    for name, derived in _DERIVED.items():
-        for field, offset in derived:
-            scan.found[field] = scan.found[name] + offset
-    return {**scan.found, **overrides}
+    swp = scan.flags.get("swp") and "swp_offset" in scan.found
+    scan.found["swp_base"] = scan.word(scan.found["swp_offset"]) if swp else 0
+    return dict(scan.found)
 
 
-def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) -> dict:
-    """The playspec layout of the player whose PLAYER or MULPLY is ``entry`` (default: the
+_VOICE_WORDS = {"freq": "freqlo", "pw": "pwlogho", "freqmod": "freqmodl"}
+_VOICE_BYTES = (
+    "wfghost ptngate pweepcnt packcnt spdcnt seqpos ptnpos wftpos pwtpos arpscnt curptn curnot"
+    " dpitch curifx curins curfx2 curval slidevib videlcnt vibfrequ vibracnt transp"
+    " tmpbase tmppos arpsped pkbdtrk curchord chordpos flswtbl flswtb2 trktmpos seqtempo transp2"
+    " detuner trdelay"
+).split()
+_GHOSTS = (("freq", 0, 2), ("pw", 2, 2), ("wave", 4, 1), ("ad", 5, 1), ("sr", 6, 1))
+_SHARED_BYTES = (
+    "tablrst insctrl fltctrl fltposi cwepcnt fswitch resonib mainvol fltband ckbdtrk flshift"
+    " seqvolu valstor subtpos subtjmp gate curinstemp"
+).split()
+
+
+def _initial(view: bytes, found: dict) -> Dict[str, object]:
+    """``init_<variable>``: what the init left in each player variable, a list over the voices
+    for a voice's own, zero for one the build lacks; the spec keeps them as state from there."""
+
+    def byte(addr: int) -> int:
+        return view[addr] if addr else 0
+
+    def word(addr: int) -> int:
+        return byte(addr) | byte(addr + 1 if addr else 0) << 8
+
+    voices = range(CHANNELS)
+    out: Dict[str, object] = {
+        f"init_{n}": [word(found[a] and found[a] + 7 * x) for x in voices]
+        for n, a in _VOICE_WORDS.items()
+    }
+    out.update(
+        {f"init_{n}": [byte(found[n] and found[n] + 7 * x) for x in voices] for n in _VOICE_BYTES}
+    )
+    out.update({f"init_{n}": byte(found[n]) for n in _SHARED_BYTES})
+    for name, offset, width in _GHOSTS:
+        out[f"init_g_{name}"] = [
+            int.from_bytes(view[found["sidg"] + 7 * x + offset :][:width], "little") for x in voices
+        ]
+    out["init_seqt"] = [word(found["p_seqt1"] + 4 * x) for x in voices]
+    out["init_cutoff"] = byte(found["ctflgho"]) | byte(found["ctfhgho"]) << 8
+    out["init_main_tempo"] = byte(found["tempo"])
+    out["init_zp"] = word(found["zp"])
+    return out
+
+
+def _found(view, entry: Optional[int] = None, variant: Optional[tuple] = None) -> dict:
+    """Everything the binder reads from the player whose PLAYER or MULPLY is ``entry`` (default: the
     first PLAYER) in the memory ``view``, for ``variant`` ``(features, quirks)`` (default:
     :func:`detect`'s). Raises :class:`ValueError` for a build the spec does not state.
     """
     view = bytes(view)
-    found_entries = [e for e in _entries(view) if entry is None or entry in (e[0], e[3])]
+    found_entries = [
+        e for e in _entries(view) if entry is None or entry in (e[0], e[3], _sfxinit(view, e[1]))
+    ]
     if not found_entries:
         where = "" if entry is None else f" at ${entry:04x}"
         raise ValueError(
@@ -860,12 +873,16 @@ def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) 
     play_entry, player, commonregs, mulply = found_entries[0]
     features, quirks = variant or detect(view, player)
     flags = _flags(features, quirks)
-    found = _scan(_Scan(view, flags), player, commonregs, mulply)
+    sfxinit = _sfxinit(view, player)
+    found = _scan(_Scan(view, flags), player, commonregs, mulply, sfxinit)
     flags["play_gate"] = play_entry != player and entry in (None, play_entry)
     _hrender_exit(found, flags)
     _vars(found, flags)
+    if len({found[n] for n in ("zp_note", "zp_inst", "zp_fx", "zp_value")}) > 1:
+        raise ValueError("SID-Wizard reads the pattern's columns through different pointers")
     if flags["sfx"]:
         _sfx(found)
+    found["bigfx_pwhi_stray"] = found["bigfx_pwhi"] != found["pwhigho"]
     found["sid"] = found["sid_resfc"] - 0x17
     if not flags["allghostregs"]:
         found["sidg"] = found["sid"]
@@ -877,14 +894,29 @@ def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) 
     found.update(
         {k: bool(getattr(features, k, False)) if v is None else v for k, v in flags.items()}
     )
-    found.update(chn=CHANNELS, mulply=entry is not None and entry == mulply, order=list(_ORDER))
-    found["chain"] = [a * 16 + b for a, b in zip(_ORDER, _ORDER[1:], strict=False)]
+    found.update(
+        chn=CHANNELS,
+        mulply=entry is not None and entry == mulply,
+        sfxinit=entry is not None and entry == sfxinit,
+        order=list(_ORDER),
+    )
+    found.update(_initial(view, found))
     return found
 
 
+def binding(view, entry: Optional[int] = None, variant: Optional[tuple] = None) -> dict:
+    """The playspec layout of the player whose PLAYER or MULPLY is ``entry`` (default: the
+    first PLAYER) in the memory ``view``, for ``variant`` ``(features, quirks)`` (default:
+    :func:`detect`'s): the facts the spec names, read from the image. Raises
+    :class:`ValueError` for a build the spec does not state.
+    """
+    found = _found(view, entry, variant)
+    return {k: v for k, v in found.items() if k in SPEC.layout}
+
+
 def labels(view, entry: Optional[int] = None) -> Dict[str, int]:
-    """The addresses :func:`binding` finds, by name."""
-    found = binding(view, entry)
+    """Every address the binder finds in the player, by name."""
+    found = _found(view, entry)
     return {k: v for k, v in found.items() if isinstance(v, int) and not isinstance(v, bool)}
 
 
@@ -900,19 +932,19 @@ def binder(variant: Optional[tuple] = None) -> Callable[[bytes, int], dict]:
 
 def row_reader(view) -> int:
     """The address of the row reader: its ``LDY PTNPOS,X``."""
-    return binding(view)["read_row"]
+    return _found(view)["read_row"]
 
 
 def reader_end(view) -> int:
     """The address after the row reader's last instruction (``STA PTNPOS,X``)."""
-    return binding(view)["reader_end"]
+    return _found(view)["reader_end"]
 
 
 def clock(view) -> int:
     """The address of the tick clock: its first instruction."""
-    return binding(view)["dotrack"]
+    return _found(view)["dotrack"]
 
 
 def clock_stop(view) -> int:
     """The clock's ``CMP #0``: where both its exits have written all they write."""
-    return binding(view)["tick_0"] - 7
+    return _found(view)["tick_0"] - 7
