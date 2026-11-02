@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 from pysidtracker import SidImage, parse_sid_header
 from pysidtracker.oracle import EmuPlayer
@@ -103,35 +102,35 @@ _PARTS = {
 }
 
 
-def _slot(player: SWMPlayer, name: str, voice: int):
-    """``(values, index, byte)`` of the spec state ``name`` of ``voice`` (or the shared one) in
-    the player's state list; ``byte`` is the byte of a word state ``name`` names, else None."""
+def _name(player: SWMPlayer, name: str, voice: int) -> Tuple[str, Optional[int]]:
+    """``(declared state name, byte)`` of the variable ``name`` of ``voice`` (or the shared one);
+    ``byte`` is the byte of a word state ``name`` names, else None."""
     if player.entry is None:
         player.play_frame()
-    program, _frame, values = player._instance(player.entry)  # pylint: disable=protected-access
     want, byte = _PARTS.get(name, (name, None))
-    found = [
-        k
-        for k, (ident, _w, _d) in enumerate(program.controls)
-        if re.sub(r"_\d+$", "", ident[len("state_") :]) == want
-    ]
-    order = playspec.binding(player.view(), player.entry)["order"]
-    return values, found[order.index(voice)] if len(found) > 1 else found[0], byte
+    try:
+        player.state(want)
+        return want, byte
+    except KeyError:
+        return f"voice[{voice}].{want}", byte
 
 
 def variable(player: SWMPlayer, name: str, voice: int = 0) -> int:
     """The player variable ``name`` the spec keeps as state: ``voice``'s own, or the shared one.
 
     A word variable is read by its byte names (``freqlo``, ``pwhigho``, ``freqmodl``...)."""
-    values, k, byte = _slot(player, name, voice)
-    return values[k] if byte is None else values[k] >> 8 * byte & 0xFF
+    full, byte = _name(player, name, voice)
+    value = player.state(full)
+    return value if byte is None else value >> 8 * byte & 0xFF
 
 
 def set_variable(player: SWMPlayer, name: str, value: int, voice: int = 0) -> None:
     """Store ``value`` in the player variable ``name`` (a byte of a word by its byte name)."""
-    values, k, byte = _slot(player, name, voice)
-    values[k] = (
-        value if byte is None else values[k] & ~(0xFF << 8 * byte) & 0xFFFF | value << 8 * byte
+    full, byte = _name(player, name, voice)
+    old = player.state(full)
+    player.set_state(
+        full,
+        value if byte is None else old & ~(0xFF << 8 * byte) & 0xFFFF | value << 8 * byte,
     )
 
 

@@ -89,7 +89,6 @@ state mainvol: u8 = L.init_mainvol;
 state fltband: u8 = L.init_fltband;
 state ckbdtrk: u8 = L.init_ckbdtrk;
 state cutoff: u16 = L.init_cutoff;
-state coarse: u8 = L.init_cutoff >> 8;
 state flshift: u8 = L.init_flshift;
 state seqvolu: u8 = L.init_seqvolu;
 state valstor: u8 = L.init_valstor;
@@ -112,7 +111,7 @@ owner filter_owner: fltctrl { id x * 7; none 0xFF; on note claim; }
 // jump, stop; the third byte is the keyboard track or a filter switch.
 cursor filter_table {
   table @ ins width 3;
-  pos fltposi; count cwepcnt; values cutoff, coarse, fltband, resonib, ckbdtrk, fswitch;
+  pos fltposi; count cwepcnt; values cutoff, fltband, resonib, ckbdtrk, fswitch;
   on filter step;
   match c0 {
     0..0x7f if L.finefiltsweep => sweep(into=cutoff, count=c0, step=c1, frac=3)
@@ -120,7 +119,7 @@ cursor filter_table {
            ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
            ckbdtrk = c2 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) != 0x80,
            ckbdtrk = c2 if L.filtkbtrack && !L.kbtrack_fswitch;
-    0..0x7f => sweep(into=coarse, count=c0, step=c1)
+    0..0x7f => sweep(into=cutoff.hi, count=c0, step=c1)
       then fswitch = c2 & 0x0f if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
            ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
            ckbdtrk = c2 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) != 0x80,
@@ -131,7 +130,7 @@ cursor filter_table {
            ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
            ckbdtrk = c2 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) != 0x80,
            ckbdtrk = c2 if L.filtkbtrack && !L.kbtrack_fswitch;
-    0x80..0xfd => value(fltband = c0 & 0x70, resonib = c0 << 4, coarse = c1)
+    0x80..0xfd => value(fltband = c0 & 0x70, resonib = c0 << 4, cutoff.hi = c1)
       then cwepcnt = 0,
            fswitch = c2 & 0x0f if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
            ckbdtrk = 0 if L.filtkbtrack && L.kbtrack_fswitch when (c2 & 0xf0) == 0x80,
@@ -1076,10 +1075,8 @@ machine voice[x in 0..L.chn] {
       0x0F => {
         if L.bigfx_v10 {
           flshift := a;
-        } elif L.finefiltsweep {
-          cutoff := word(lo(cutoff), a);
         } else {
-          coarse := a;
+          cutoff := word(lo(cutoff), a);
         }
       }
       0x10 => {
@@ -1202,7 +1199,7 @@ machine commonregs {
     if !L.echo_support {
       sid_fmvol := mainvol | fltband;
     }
-    let cut = ite(L.finefiltsweep, hi(cutoff), coarse);
+    let cut = hi(cutoff);
     let top = cut;
     let c = false;
     if L.filtkbtrack && ckbdtrk != 0 {
