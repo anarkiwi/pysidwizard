@@ -274,7 +274,7 @@ machine voice[x in 0..L.chn] {
       }
     }
     last_ins := curins;
-    wave_frame(lo(insptr[last_ins] + L.swp_base));
+    wave_frame();
   }
 
   // Tick 2: the row's instrument (below the limit, also resetting the pulse and filter tables),
@@ -412,7 +412,7 @@ machine voice[x in 0..L.chn] {
     let t = u16(hi(pw)) + u16(k) + u16(c);
     out_pw := word(lo(pw), lo(t));
     c := t > 0xFF;
-    wave_frame(lo(pw));
+    wave_frame();
   }
 
   // Tone portamento: a step of FREQMOD towards the note, or the note once within a step.
@@ -444,7 +444,7 @@ machine voice[x in 0..L.chn] {
 
   // The waveform table every ARPSPED+1 frames, then frequency (plus detune and the carry) and
   // waveform out.
-  proc wave_frame(speed: u8) {
+  proc wave_frame() {
     arpscnt -= 1;
     if neg(arpscnt) {
       arpscnt := arpsped & 0x3F;
